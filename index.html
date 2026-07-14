@@ -493,8 +493,7 @@ function getOcrWorker(){
 // Reihen aus Wortpositionen rekonstruieren (funktioniert fuer PDF-Textlayer UND OCR-Woerter gleichermassen)
 // points: [{str, x, y, width}]  y aufsteigend = von oben nach unten
 function reconstructLines(points, tol){
-  const pts = points.filter(p => p.str && p.str.trim().length > 0)
-    .map(p => ({ ...p, width: (p.width!=null && p.width>0) ? p.width : p.str.length * (tol*1.2) }));
+  const pts = points.filter(p => p.str && p.str.trim().length > 0);
   pts.sort((a,b) => a.y - b.y || a.x - b.x);
   const rows = [];
   pts.forEach(p => {
@@ -504,25 +503,9 @@ function reconstructLines(points, tol){
   });
   rows.sort((a,b) => a.y - b.y);
 
-  // Innerhalb einer Zeile bei grossem Wortabstand (Spaltenluecke, z.B. Adresse links / Notizbox
-  // rechts auf gleicher Hoehe) in mehrere logische Zeilen aufteilen. Der Abstand wird vom ENDE
-  // des vorherigen Wortes bis zum Start des naechsten gemessen -- sonst wuerden auch einzelne
-  // lange Woerter (z.B. "Gebaeudetechnik") faelschlicherweise als Luecke erkannt.
-  const columnGap = tol * 7;
-  const lines = [];
-  rows.forEach(row => {
+  const lines = rows.map(row => {
     row.items.sort((a,b) => a.x - b.x);
-    let segment = [row.items[0]];
-    for(let k=1; k<row.items.length; k++){
-      const prev = row.items[k-1];
-      const gap = row.items[k].x - (prev.x + prev.width);
-      if(gap > columnGap){
-        lines.push(segment.map(i=>i.str).join(" ").replace(/\s+/g," ").trim());
-        segment = [];
-      }
-      segment.push(row.items[k]);
-    }
-    if(segment.length) lines.push(segment.map(i=>i.str).join(" ").replace(/\s+/g," ").trim());
+    return row.items.map(i=>i.str).join(" ").replace(/\s+/g," ").trim();
   });
   return lines.filter(l => l.length > 0);
 }
@@ -667,22 +650,22 @@ function parseInvoiceText(text){
   // gleicher Zeilenhoehe wie die Adresse -- das OCR fasst das faelschlicherweise zusammen.
   // Wir begrenzen die Erfassung daher auf ein Schweizer PLZ+Ort-Muster und schneiden bekannte
   // Stoerwoerter ab, statt bis zum Zeilenende zu lesen.
-  m = text.match(/Objekt:?\s*[\"']?\s*([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
+  m = text.match(/Objekt:?\s*[\"']?\s*([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:[ \t]+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
   if(!m) m = text.match(/Objekt:?\s*[\"']?\s*([^\n]+)/i);
   if(m) result.objekt = sanitizeObjekt(m[1]);
 
   if(!result.objekt){
-    m = text.match(/\d{5,}\s*\/\s*([A-ZÄÖÜ][^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/);
+    m = text.match(/\d{5,}\s*\/\s*([A-ZÄÖÜ][^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:[ \t]+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/);
     if(!m) m = text.match(/\d{5,}\s*\/\s*([A-ZÄÖÜ][^\n]{5,80})/);
     if(m) result.objekt = sanitizeObjekt(m[1]);
   }
   if(!result.objekt){
-    m = text.match(/ADRESSE\s+([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
+    m = text.match(/ADRESSE\s+([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:[ \t]+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
     if(!m) m = text.match(/ADRESSE\s+([^\n]+)/i);
     if(m) result.objekt = sanitizeObjekt(m[1]);
   }
   if(!result.objekt){
-    m = text.match(/Baustelle\s+[\d\/A-Za-z.\-]+\s*\n?\s*([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
+    m = text.match(/Baustelle\s+[\d\/A-Za-z.\-]+\s*\n?\s*([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:[ \t]+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
     if(!m) m = text.match(/Baustelle\s+[\d\/A-Za-z.\-]+\s*\n?\s*([^\n]+)/i);
     if(m) result.objekt = sanitizeObjekt(m[1]);
   }
