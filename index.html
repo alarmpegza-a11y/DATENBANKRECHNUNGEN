@@ -1,0 +1,1637 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PE Rechnungskontrolle</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+  import {
+    getAuth, onAuthStateChanged, signInWithEmailAndPassword,
+    createUserWithEmailAndPassword, signOut
+  } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
+  import {
+    getFirestore, collection, doc, setDoc, addDoc, updateDoc, deleteDoc,
+    onSnapshot, getDoc, serverTimestamp
+  } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBQe-d5khPWpymt7YrRzVNgQehJbUCqFFg",
+    authDomain: "rechnungendatenbank.firebaseapp.com",
+    projectId: "rechnungendatenbank",
+    storageBucket: "rechnungendatenbank.firebasestorage.app",
+    messagingSenderId: "542268178127",
+    appId: "1:542268178127:web:f139163b5053c66cf581ba"
+  };
+
+  const fbApp = initializeApp(firebaseConfig);
+  const auth = getAuth(fbApp);
+  const dbFs = getFirestore(fbApp);
+
+  // Bruecke zum bestehenden (nicht-modularen) App-Code: einfache, promise-basierte Helfer.
+  window.fb = {
+    onAuthChange: (cb) => onAuthStateChanged(auth, cb),
+    login: (email, pw) => signInWithEmailAndPassword(auth, email, pw),
+    signup: (email, pw) => createUserWithEmailAndPassword(auth, email, pw),
+    logout: () => signOut(auth),
+    serverTimestamp: () => serverTimestamp(),
+
+    getUserDoc: async (uid) => {
+      const snap = await getDoc(doc(dbFs, "users", uid));
+      return snap.exists() ? snap.data() : null;
+    },
+    watchUserDoc: (uid, cb, onErr) => onSnapshot(doc(dbFs, "users", uid), cb, onErr),
+    watchCollection: (name, cb, onErr) => onSnapshot(collection(dbFs, name), cb, onErr),
+
+    setDoc: (col, id, data) => setDoc(doc(dbFs, col, id), data),
+    setDocMerge: (col, id, data) => setDoc(doc(dbFs, col, id), data, { merge: true }),
+    updateDoc: (col, id, data) => updateDoc(doc(dbFs, col, id), data),
+    deleteDoc: (col, id) => deleteDoc(doc(dbFs, col, id)),
+    addDoc: async (col, data) => {
+      const ref = await addDoc(collection(dbFs, col), data);
+      return ref.id;
+    },
+  };
+  window.dispatchEvent(new CustomEvent("fb-ready"));
+</script>
+<style>
+  :root{
+    --bg:#ffffff;
+    --surface:#f6f7f9;
+    --surface-2:#eef0f3;
+    --border:#dfe3e8;
+    --text:#181b20;
+    --text-dim:#6b7280;
+    --accent:#1e3a5f;
+    --accent-light:#eaf0f7;
+    --ok:#1e824c;
+    --ok-bg:#e9f6ef;
+    --warn:#b3471a;
+    --warn-bg:#fdece3;
+    --danger:#b3261e;
+    --danger-bg:#fbeceb;
+    --radius:8px;
+    --shadow:0 1px 2px rgba(20,20,30,0.06), 0 1px 1px rgba(20,20,30,0.04);
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    background:var(--bg);
+    color:var(--text);
+    font-size:14px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum";}
+  .app{display:flex;min-height:100vh;}
+  .sidebar{
+    width:220px;flex-shrink:0;background:var(--accent);color:#fff;
+    display:flex;flex-direction:column;padding:20px 0;
+  }
+  .sidebar .brand{
+    padding:0 20px 20px 20px;font-weight:700;font-size:15px;letter-spacing:0.02em;
+    border-bottom:1px solid rgba(255,255,255,0.15);margin-bottom:12px;
+  }
+  .sidebar .brand small{display:block;font-weight:400;opacity:0.65;font-size:11px;margin-top:2px;}
+  .navbtn{
+    background:none;border:none;color:rgba(255,255,255,0.75);text-align:left;
+    padding:11px 20px;font-size:13.5px;cursor:pointer;display:flex;align-items:center;gap:10px;
+    border-left:3px solid transparent;transition:background .12s;
+  }
+  .navbtn:hover{background:rgba(255,255,255,0.08);}
+  .navbtn.active{background:rgba(255,255,255,0.12);color:#fff;border-left-color:#fff;font-weight:600;}
+  .navbtn .badge{margin-left:auto;background:rgba(255,255,255,0.18);border-radius:10px;padding:1px 7px;font-size:11px;}
+  .main{flex:1;padding:28px 36px;max-width:1180px;}
+  h1{font-size:20px;margin:0 0 4px 0;letter-spacing:-0.01em;}
+  h2{font-size:16px;margin:0 0 14px 0;}
+  .subtitle{color:var(--text-dim);font-size:13px;margin:0 0 24px 0;}
+  .card{
+    background:#fff;border:1px solid var(--border);border-radius:var(--radius);
+    padding:20px;margin-bottom:18px;box-shadow:var(--shadow);
+  }
+  .drop{
+    border:2px dashed var(--border);border-radius:var(--radius);padding:36px 20px;
+    text-align:center;color:var(--text-dim);cursor:pointer;transition:.15s;background:var(--surface);
+  }
+  .drop.hover{border-color:var(--accent);background:var(--accent-light);color:var(--accent);}
+  .drop b{color:var(--text);}
+  input[type=file]{display:none;}
+  button{
+    font-family:inherit;font-size:13px;cursor:pointer;border-radius:6px;border:1px solid var(--border);
+    background:#fff;padding:8px 14px;color:var(--text);font-weight:500;transition:.12s;
+  }
+  button:hover{background:var(--surface);}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  button.primary:hover{background:#16304d;}
+  button.danger{color:var(--danger);}
+  button.small{padding:4px 9px;font-size:12px;}
+  button:disabled{opacity:0.45;cursor:not-allowed;}
+  input[type=text], input[type=number], input[type=date], select, textarea{
+    font-family:inherit;font-size:13px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;
+    background:#fff;color:var(--text);width:100%;
+  }
+  label.field{display:block;margin-bottom:12px;}
+  label.field span{display:block;font-size:11.5px;color:var(--text-dim);margin-bottom:4px;font-weight:600;text-transform:uppercase;letter-spacing:.03em;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{
+    text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-dim);
+    padding:8px 10px;border-bottom:1px solid var(--border);font-weight:600;
+  }
+  td{padding:9px 10px;border-bottom:1px solid var(--surface-2);vertical-align:middle;}
+  tr:last-child td{border-bottom:none;}
+  tr:hover td{background:var(--surface);}
+  .row{display:flex;gap:14px;}
+  .row > *{flex:1;min-width:0;}
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:600;}
+  .pill.ok{background:var(--ok-bg);color:var(--ok);}
+  .pill.warn{background:var(--warn-bg);color:var(--warn);}
+  .pill.danger{background:var(--danger-bg);color:var(--danger);}
+  .pill.neutral{background:var(--surface-2);color:var(--text-dim);}
+  .empty{
+    text-align:center;padding:50px 20px;color:var(--text-dim);
+  }
+  .proj-list-item{
+    display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--border);
+    border-radius:var(--radius);margin-bottom:10px;cursor:pointer;background:#fff;transition:.12s;
+  }
+  .proj-list-item:hover{border-color:var(--accent);box-shadow:var(--shadow);}
+  .proj-list-item .pname{font-weight:600;font-size:14px;}
+  .proj-list-item .paddr{color:var(--text-dim);font-size:12.5px;margin-top:2px;}
+  .proj-list-item .pmeta{margin-left:auto;text-align:right;}
+  .barwrap{background:var(--surface-2);border-radius:5px;height:7px;overflow:hidden;margin-top:5px;}
+  .bar{height:100%;border-radius:5px;background:var(--accent);transition:width .2s;}
+  .bar.over{background:var(--danger);}
+  .catgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;}
+  .catbox{border:1px solid var(--border);border-radius:8px;padding:13px 14px;background:var(--surface);}
+  .catbox .ck{font-weight:600;font-size:13px;display:flex;justify-content:space-between;align-items:baseline;}
+  .catbox .cv{font-size:12px;color:var(--text-dim);margin-top:2px;}
+  .backlink{background:none;border:none;color:var(--accent);font-weight:600;padding:0;margin-bottom:14px;font-size:13px;cursor:pointer;}
+  .backlink:hover{text-decoration:underline;background:none;}
+  .toast{
+    position:fixed;bottom:22px;right:22px;background:var(--text);color:#fff;padding:11px 18px;
+    border-radius:8px;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,0.2);z-index:999;
+    animation:fadein .15s ease-out;
+  }
+  @keyframes fadein{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+  .itemrow select{min-width:150px;}
+  .flag{color:var(--danger);font-weight:700;}
+  .muted{color:var(--text-dim);}
+  .tag{font-size:11px;background:var(--surface-2);border-radius:4px;padding:2px 6px;color:var(--text-dim);}
+  textarea.raw{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;height:160px;color:var(--text-dim);}
+  .section-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);margin:20px 0 10px 0;}
+  .close-x{background:none;border:none;color:var(--text-dim);font-size:18px;cursor:pointer;padding:0 4px;line-height:1;}
+  .close-x:hover{color:var(--danger);background:none;}
+  tr.needs-review td{background:var(--warn-bg);}
+  .srcbadge{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 7px;border-radius:4px;}
+  .srcbadge.ocr{background:#fdf2e3;color:#8a5a12;}
+  .srcbadge.text{background:#e6f2ea;color:#1e824c;}
+  .progresswrap{background:var(--surface-2);border-radius:5px;height:6px;overflow:hidden;margin-top:8px;}
+  .progressbar{height:100%;background:var(--accent);transition:width .15s;}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="sidebar">
+    <div class="brand">PE Rechnungskontrolle<small>Subunternehmer-Abgleich</small></div>
+    <button class="navbtn active" data-view="upload">📄 Neue Rechnung</button>
+    <button class="navbtn" data-view="suppliers">🏢 Subunternehmer <span class="badge" id="supCount">0</span></button>
+    <button class="navbtn" data-view="projects">🏗️ Aufträge <span class="badge" id="projCount">0</span></button>
+    <button class="navbtn" data-view="invoices">🧾 Alle Rechnungen <span class="badge" id="invCount">0</span><span class="badge" id="reviewBadge" style="background:var(--danger);display:none;">0</span></button>
+    <button class="navbtn" id="navAdmin" data-view="admin" style="display:none;">👤 Benutzerverwaltung</button>
+    <div style="margin-top:auto;padding:14px 20px 0 20px;">
+      <div id="currentUserBox" style="color:#fff;margin-bottom:10px;"></div>
+      <button id="resetAllBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.75);font-size:12px;">🗑️ Alle Daten löschen (Admin)</button>
+    </div>
+  </div>
+  <div class="main" id="main"></div>
+</div>
+
+<script>
+/* ============================= DATA LAYER ============================= */
+/* Aktuell: localStorage. Spaeter 1:1 auf Firebase Firestore umstellbar   */
+
+const DEFAULT_CATEGORIES = [
+  { key: "VW", label: "Vorwand-Element (VW)", unit: "Stk", keywords: ["vorwand","vw-element","vw "] },
+  { key: "TW", label: "Trennwand (TW)", unit: "Stk", keywords: ["trennwand","tw-element","tw ","trw"] },
+  { key: "Beplankung", label: "Beplankung", unit: "m²", keywords: ["beplank"] },
+  { key: "Ausflockung", label: "Ausflockung", unit: "m³", keywords: ["ausflock","ausgeflockt"] },
+  { key: "Elemente", label: "Elemente (allg.)", unit: "Stk", keywords: ["element"] },
+  { key: "Sonstiges", label: "Sonstiges", unit: "Stk", keywords: [] },
+];
+
+// Bekannte Subunternehmer -> sauberer Anzeigename (hilft bei Logos/Stilschriften, die OCR schlecht liest)
+const KNOWN_SUPPLIERS = [
+  { hint: "froh haustechnik", name: "Froh Haustechnik GmbH" },
+  { hint: "fubs", name: "FUBS Brandschutz" },
+  { hint: "5b gipser", name: "5B Gipser GmbH" },
+  { hint: "gipser", name: "5B Gipser GmbH" },
+];
+
+const DEFAULT_PERMISSIONS = { deleteAuftraege: false, deleteSubunternehmer: false, deleteAnyRechnung: false };
+
+let DB = { projects: [], invoices: [], categories: DEFAULT_CATEGORIES.slice() };
+let allUsers = []; // fuer die Benutzerverwaltung (Admin)
+let currentUser = null;     // { uid, email } von Firebase Auth
+let currentProfile = null;  // { email, role, permissions } aus Firestore users/{uid}
+let unsubProjects = null, unsubInvoices = null, unsubProfile = null, unsubUsers = null;
+
+let currentView = "upload";
+let currentProjectId = null;
+let currentSupplierName = null;
+let navStack = [];
+let expandedInvoiceId = null;
+
+function navigateTo(view, opts={}){
+  navStack.push({ view: currentView, projectId: currentProjectId, supplierName: currentSupplierName });
+  if(opts.projectId !== undefined) currentProjectId = opts.projectId;
+  if(opts.supplierName !== undefined) currentSupplierName = opts.supplierName;
+  currentView = view;
+  render();
+}
+function goBack(fallbackView){
+  const prev = navStack.pop();
+  if(prev){
+    currentView = prev.view;
+    currentProjectId = prev.projectId;
+    currentSupplierName = prev.supplierName;
+  } else {
+    currentView = fallbackView;
+  }
+  render();
+}
+
+function uid(prefix){ return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+/* ============================= AUTH & RECHTE ============================= */
+
+function isAdmin(){ return !!(currentProfile && currentProfile.role === "admin"); }
+function hasPerm(key){ return isAdmin() || !!(currentProfile && currentProfile.permissions && currentProfile.permissions[key]); }
+
+function toDateSafe(v){
+  if(!v) return null;
+  if(v instanceof Date) return v;
+  if(typeof v.toDate === "function") return v.toDate();
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function canDeleteInvoice(inv){
+  if(!currentUser) return false;
+  if(isAdmin() || hasPerm("deleteAnyRechnung")) return true;
+  if(inv.createdBy !== currentUser.uid) return false;
+  const created = toDateSafe(inv.createdAt);
+  if(!created) return false;
+  return (Date.now() - created.getTime()) < 5 * 60 * 60 * 1000;
+}
+
+function showDbError(context, err){
+  console.error(context, err);
+  const banner = document.createElement("div");
+  banner.style.cssText = "position:fixed;top:0;left:0;right:0;background:var(--danger);color:#fff;padding:10px 20px;font-size:13px;z-index:9999;text-align:center;";
+  banner.textContent = `⚠ Datenbankfehler (${context}): ${err.code || err.message || err}. Meist bedeutet das: die Firestore-Regeln wurden noch nicht veröffentlicht, oder du bist nicht als Nutzer in "users/{uid}" eingetragen.`;
+  document.body.prepend(banner);
+}
+
+function startDataListeners(){
+  if(unsubProjects) unsubProjects();
+  if(unsubInvoices) unsubInvoices();
+  unsubProjects = window.fb.watchCollection("projects", (snap)=>{
+    DB.projects = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+    render();
+  }, (err)=> showDbError("projects", err));
+  unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
+    DB.invoices = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+    render();
+  }, (err)=> showDbError("invoices", err));
+}
+function stopDataListeners(){
+  if(unsubProjects){ unsubProjects(); unsubProjects=null; }
+  if(unsubInvoices){ unsubInvoices(); unsubInvoices=null; }
+  if(unsubProfile){ unsubProfile(); unsubProfile=null; }
+  if(unsubUsers){ unsubUsers(); unsubUsers=null; }
+  DB.projects = []; DB.invoices = []; allUsers = [];
+}
+
+async function saveProject(p){
+  const { id, ...data } = p;
+  await window.fb.setDocMerge("projects", id, data);
+}
+async function saveInvoice(inv){
+  const { id, ...data } = inv;
+  await window.fb.setDocMerge("invoices", id, data);
+}
+async function createProject(data){
+  return await window.fb.addDoc("projects", { ...data, createdBy: currentUser.uid, createdAt: window.fb.serverTimestamp() });
+}
+async function createInvoice(data){
+  return await window.fb.addDoc("invoices", { ...data, createdBy: currentUser.uid, createdByEmail: currentUser.email, createdAt: window.fb.serverTimestamp() });
+}
+async function deleteProjectDoc(id){ await window.fb.deleteDoc("projects", id); }
+async function deleteInvoiceDoc(id){ await window.fb.deleteDoc("invoices", id); }
+
+function renderAuthScreen(mode){
+  document.querySelector(".app").style.display = "none";
+  let authRoot = document.getElementById("authRoot");
+  if(!authRoot){
+    authRoot = document.createElement("div");
+    authRoot.id = "authRoot";
+    document.body.appendChild(authRoot);
+  }
+  authRoot.style.cssText = "max-width:380px;margin:80px auto;padding:0 20px;";
+  const isSignup = mode === "signup";
+  authRoot.innerHTML = `
+    <div class="card">
+      <h1 style="margin-bottom:4px;">PE Rechnungskontrolle</h1>
+      <p class="subtitle">${isSignup ? "Konto erstellen" : "Anmelden"}</p>
+      <label class="field"><span>E-Mail</span><input type="email" id="authEmail" autocomplete="username"></label>
+      <label class="field"><span>Passwort</span><input type="password" id="authPw" autocomplete="${isSignup?'new-password':'current-password'}"></label>
+      <div id="authError" class="flag" style="margin-bottom:10px;font-size:13px;"></div>
+      <button class="primary" id="authSubmit" style="width:100%;margin-bottom:10px;">${isSignup ? "Konto erstellen" : "Anmelden"}</button>
+      <button id="authToggle" style="width:100%;">${isSignup ? "Ich habe bereits ein Konto" : "Neu hier? Konto erstellen"}</button>
+    </div>
+  `;
+  document.getElementById("authToggle").addEventListener("click", ()=> renderAuthScreen(isSignup ? "login" : "signup"));
+  document.getElementById("authSubmit").addEventListener("click", async ()=>{
+    const email = document.getElementById("authEmail").value.trim();
+    const pw = document.getElementById("authPw").value;
+    const errEl = document.getElementById("authError");
+    errEl.textContent = "";
+    if(!email || !pw){ errEl.textContent = "Bitte E-Mail und Passwort eingeben."; return; }
+    try{
+      if(isSignup){
+        const cred = await window.fb.signup(email, pw);
+        await window.fb.setDoc("users", cred.user.uid, {
+          email, role: "mitarbeiter", permissions: { ...DEFAULT_PERMISSIONS }, createdAt: window.fb.serverTimestamp(),
+        });
+      } else {
+        await window.fb.login(email, pw);
+      }
+    }catch(e){
+      errEl.textContent = translateAuthError(e);
+    }
+  });
+}
+function translateAuthError(e){
+  const c = e.code || "";
+  if(c.includes("wrong-password") || c.includes("invalid-credential")) return "E-Mail oder Passwort falsch.";
+  if(c.includes("user-not-found")) return "Kein Konto mit dieser E-Mail gefunden.";
+  if(c.includes("email-already-in-use")) return "Diese E-Mail ist bereits registriert.";
+  if(c.includes("weak-password")) return "Passwort zu kurz (mind. 6 Zeichen).";
+  if(c.includes("invalid-email")) return "Ungültige E-Mail-Adresse.";
+  return "Fehler: " + (e.message || c);
+}
+
+function initAuth(){
+  window.fb.onAuthChange((user)=>{
+    if(!user){
+      currentUser = null; currentProfile = null;
+      stopDataListeners();
+      renderAuthScreen("login");
+      return;
+    }
+    currentUser = { uid: user.uid, email: user.email };
+    document.querySelector(".app").style.display = "";
+    const authRoot = document.getElementById("authRoot");
+    if(authRoot) authRoot.remove();
+
+    if(unsubProfile) unsubProfile();
+    unsubProfile = window.fb.watchUserDoc(user.uid, (snap)=>{
+      currentProfile = snap.exists() ? snap.data() : null;
+      if(!snap.exists()) console.warn("Kein users/"+user.uid+"-Dokument gefunden -- Rolle bleibt 'Mitarbeiter' ohne Extra-Rechte.");
+      updateSidebarForUser();
+      if(isAdmin() && !unsubUsers){
+        unsubUsers = window.fb.watchCollection("users", (usnap)=>{
+          allUsers = usnap.docs.map(d=>({ id: d.id, ...d.data() }));
+          if(currentView==="admin") render();
+        }, (err)=> showDbError("users", err));
+      }
+      render();
+    }, (err)=> showDbError("users/"+user.uid, err));
+    startDataListeners();
+  });
+}
+
+function updateSidebarForUser(){
+  const el = document.getElementById("currentUserBox");
+  if(!el) return;
+  if(!currentUser){ el.innerHTML = ""; return; }
+  const roleLabel = isAdmin() ? "Admin" : "Mitarbeiter";
+  const profileFound = currentProfile !== null;
+  el.innerHTML = `
+    <div style="font-size:12px;opacity:.85;">${escapeHtml(currentUser.email)}</div>
+    <div style="font-size:11px;opacity:.6;margin-bottom:2px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
+    <div style="font-size:9.5px;opacity:.45;margin-bottom:6px;word-break:break-all;font-family:monospace;" title="Deine Auth-UID -- muss exakt mit der Dokument-ID in Firestore users/ übereinstimmen">
+      UID: ${escapeHtml(currentUser.uid)}
+      <button id="copyUidBtn" style="padding:1px 6px;font-size:9px;margin-left:4px;">Kopieren</button>
+    </div>
+    <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
+  `;
+  document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
+  document.getElementById("copyUidBtn").addEventListener("click", (e)=>{
+    e.stopPropagation();
+    navigator.clipboard.writeText(currentUser.uid).then(()=> toast("UID kopiert."));
+  });
+  document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
+  document.getElementById("resetAllBtn").style.display = isAdmin() ? "" : "none";
+}
+
+/* ============================= PDF -> TEXT (hybrid: Text-Layer oder OCR) ============================= */
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const OCR_SCALE = 4.0; // ~288dpi Rendering -> deutlich bessere OCR-Genauigkeit als Standardaufloesung
+let ocrWorkerPromise = null;
+function getOcrWorker(){
+  if(!ocrWorkerPromise){
+    ocrWorkerPromise = Tesseract.createWorker("deu", 1, { logger: () => {} });
+  }
+  return ocrWorkerPromise;
+}
+
+// Reihen aus Wortpositionen rekonstruieren (funktioniert fuer PDF-Textlayer UND OCR-Woerter gleichermassen)
+// points: [{str, x, y, width}]  y aufsteigend = von oben nach unten
+function reconstructLines(points, tol){
+  const pts = points.filter(p => p.str && p.str.trim().length > 0)
+    .map(p => ({ ...p, width: (p.width!=null && p.width>0) ? p.width : p.str.length * (tol*1.2) }));
+  pts.sort((a,b) => a.y - b.y || a.x - b.x);
+  const rows = [];
+  pts.forEach(p => {
+    let row = rows.find(l => Math.abs(l.y - p.y) < tol);
+    if(!row){ row = { y: p.y, items: [] }; rows.push(row); }
+    row.items.push(p);
+  });
+  rows.sort((a,b) => a.y - b.y);
+
+  // Innerhalb einer Zeile bei grossem Wortabstand (Spaltenluecke, z.B. Adresse links / Notizbox
+  // rechts auf gleicher Hoehe) in mehrere logische Zeilen aufteilen. Der Abstand wird vom ENDE
+  // des vorherigen Wortes bis zum Start des naechsten gemessen -- sonst wuerden auch einzelne
+  // lange Woerter (z.B. "Gebaeudetechnik") faelschlicherweise als Luecke erkannt.
+  const columnGap = tol * 7;
+  const lines = [];
+  rows.forEach(row => {
+    row.items.sort((a,b) => a.x - b.x);
+    let segment = [row.items[0]];
+    for(let k=1; k<row.items.length; k++){
+      const prev = row.items[k-1];
+      const gap = row.items[k].x - (prev.x + prev.width);
+      if(gap > columnGap){
+        lines.push(segment.map(i=>i.str).join(" ").replace(/\s+/g," ").trim());
+        segment = [];
+      }
+      segment.push(row.items[k]);
+    }
+    if(segment.length) lines.push(segment.map(i=>i.str).join(" ").replace(/\s+/g," ").trim());
+  });
+  return lines.filter(l => l.length > 0);
+}
+
+function parseTsvWords(tsv){
+  // Tesseract-TSV: level 5 = einzelnes Wort. Spalten: level,page,block,par,line,word,left,top,width,height,conf,text
+  const out = [];
+  const rows = tsv.split("\n");
+  for(let i=1;i<rows.length;i++){
+    const cols = rows[i].split("\t");
+    if(cols.length < 12) continue;
+    if(cols[0] !== "5") continue;
+    const left = parseFloat(cols[6]), top = parseFloat(cols[7]), width = parseFloat(cols[8]), height = parseFloat(cols[9]);
+    const text = cols[11];
+    if(!text || !text.trim()) continue;
+    out.push({ str: text, x: left, y: top + height/2, width });
+  }
+  return out;
+}
+
+async function extractPagesFromPDF(file, onProgress){
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const pages = [];
+  for(let i = 1; i <= pdf.numPages; i++){
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const totalChars = content.items.reduce((s,it) => s + (it.str||"").length, 0);
+
+    if(totalChars > 15){
+      // Fall A: PDF hat eine echte Textebene (kein Scan) -> schnell & praezise
+      const pts = content.items.map(it => ({ str: it.str, x: it.transform[4], y: -it.transform[5], width: it.width || 0 }));
+      const lines = reconstructLines(pts, 3);
+      pages.push({ pageNum: i, text: lines.join("\n"), source: "text" });
+      if(onProgress) onProgress(i, pdf.numPages, "text");
+    } else {
+      // Fall B: gescanntes Dokument, keine Textebene -> OCR noetig
+      if(onProgress) onProgress(i, pdf.numPages, "ocr-start");
+      const viewport = page.getViewport({ scale: OCR_SCALE });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const ctx = canvas.getContext("2d");
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      const worker = await getOcrWorker();
+      const { data } = await worker.recognize(canvas, {}, { tsv: true });
+      let lines;
+      const tsvWords = data.tsv ? parseTsvWords(data.tsv) : [];
+      if(tsvWords.length){
+        lines = reconstructLines(tsvWords, 14);
+      } else if(data.words && data.words.length){
+        const pts = data.words.map(w => ({
+          str: w.text,
+          x: w.bbox.x0,
+          y: (w.bbox.y0 + w.bbox.y1) / 2,
+          width: w.bbox.x1 - w.bbox.x0,
+        }));
+        lines = reconstructLines(pts, 14);
+      } else {
+        lines = (data.text || "").split("\n").map(l=>l.trim()).filter(Boolean);
+      }
+      pages.push({ pageNum: i, text: lines.join("\n"), source: "ocr" });
+      if(onProgress) onProgress(i, pdf.numPages, "ocr-done");
+    }
+  }
+  return pages;
+}
+
+/* ============================= SEITEN -> EINZELNE RECHNUNGEN TRENNEN ============================= */
+
+function classifyPage(text){
+  const t = text.toLowerCase();
+  // Nur die eigentliche Ausmassblatt-Beilage erkennen (Titel "Ausmassblatt Nr." bzw. Mess-Tabellenkopf),
+  // nicht eine Rechnung, die lediglich "gem. Ausmassblatt" als Positionstext erwähnt.
+  if(/ausmassblatt\s*nr/.test(t)) return "attachment";
+  if(/abmessung\s*in\s*m/.test(t) && /l[aä]nge/.test(t) && /breite/.test(t)) return "attachment";
+  if(/zahlteil|empfangsschein/.test(t)) return "attachment";
+  if(text.replace(/\s/g,"").length < 80) return "attachment"; // fast leere Seite / reiner QR-Beleg
+  return "invoice_start";
+}
+
+function splitPagesIntoInvoices(pages){
+  const groups = [];
+  let current = null;
+  pages.forEach(p => {
+    const type = classifyPage(p.text);
+    if(type === "invoice_start" || !current){
+      current = { pages: [p.pageNum], allText: p.text, sources: [p.source] };
+      groups.push(current);
+    } else {
+      current.pages.push(p.pageNum);
+      current.allText += "\n" + p.text;
+      current.sources.push(p.source);
+    }
+  });
+  return groups;
+}
+
+/* ============================= RECHNUNGSTEXT PARSEN ============================= */
+
+function parseInvoiceText(text){
+  const rawLines = text.split("\n").map(l=>l.trim()).filter(l=>l.length>0);
+  const lower = text.toLowerCase();
+
+  const result = { lieferant:"", rechnungsnr:"", datum:"", objekt:"", auftragsnummer:"", total:null, items:[] };
+
+  // --- Lieferant ---
+  for(const line of rawLines.slice(0,14)){
+    const l = line.toLowerCase();
+    if((l.includes("gmbh") || / ag\b/.test(l) || l.endsWith("ag")) && !l.includes("pe fabrikation") && !l.includes("fabrikations ag")){
+      result.lieferant = line.replace(/\s{2,}/g," ").trim();
+      break;
+    }
+  }
+  if(!result.lieferant){
+    for(const s of KNOWN_SUPPLIERS){
+      if(lower.includes(s.hint)){ result.lieferant = s.name; break; }
+    }
+  }
+  if(!result.lieferant && rawLines.length) result.lieferant = rawLines[0];
+
+  // Anzeigename vereinheitlichen, falls ein bekannter Sub erkannt wurde
+  for(const s of KNOWN_SUPPLIERS){
+    if(result.lieferant.toLowerCase().includes(s.hint)){ result.lieferant = s.name; break; }
+  }
+
+  // --- Rechnungsnummer ---
+  let m = text.match(/Rechnung(?:s-?Nr\.?)?\.?\s*[:\-]?\s*([A-Za-z0-9.\-\/]{3,})/i);
+  if(m) result.rechnungsnr = m[1].trim();
+  m = text.match(/Rechnung\s+(RE-\d+)/i);
+  if(m) result.rechnungsnr = m[1];
+
+  // --- Datum ---
+  m = text.match(/Datum:?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i);
+  if(!m) m = text.match(/,\s*den\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i);
+  if(!m) m = text.match(/(\d{1,2}\.\d{1,2}\.\d{4})/);
+  if(m) result.datum = m[1];
+
+  // --- Objekt / Adresse ---
+  // Gescannte Rechnungen haben oft eine handschriftliche Notiz-Box (FA erf./Mat.preis/Fibu) auf
+  // gleicher Zeilenhoehe wie die Adresse -- das OCR fasst das faelschlicherweise zusammen.
+  // Wir begrenzen die Erfassung daher auf ein Schweizer PLZ+Ort-Muster und schneiden bekannte
+  // Stoerwoerter ab, statt bis zum Zeilenende zu lesen.
+  m = text.match(/Objekt:?\s*[\"']?\s*([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
+  if(!m) m = text.match(/Objekt:?\s*[\"']?\s*([^\n]+)/i);
+  if(m) result.objekt = sanitizeObjekt(m[1]);
+
+  if(!result.objekt){
+    m = text.match(/\d{5,}\s*\/\s*([A-ZÄÖÜ][^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/);
+    if(!m) m = text.match(/\d{5,}\s*\/\s*([A-ZÄÖÜ][^\n]{5,80})/);
+    if(m) result.objekt = sanitizeObjekt(m[1]);
+  }
+  if(!result.objekt){
+    m = text.match(/ADRESSE\s+([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
+    if(!m) m = text.match(/ADRESSE\s+([^\n]+)/i);
+    if(m) result.objekt = sanitizeObjekt(m[1]);
+  }
+  if(!result.objekt){
+    m = text.match(/Baustelle\s+[\d\/A-Za-z.\-]+\s*\n?\s*([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
+    if(!m) m = text.match(/Baustelle\s+[\d\/A-Za-z.\-]+\s*\n?\s*([^\n]+)/i);
+    if(m) result.objekt = sanitizeObjekt(m[1]);
+  }
+
+  // --- Auftragsnummer ---
+  m = text.match(/AUFTRAGSNR\.?[:\-]?\s*([A-Za-z0-9.\-\/]+)/i);
+  if(!m) m = text.match(/Auftrag(?:s)?-?Nr\.?:?\s*([A-Za-z0-9.\-\/]+)/i);
+  if(!m) m = text.match(/Auf-?Nr\.?:?\s*([A-Za-z0-9.\-\/]+)/i);
+  if(m) result.auftragsnummer = m[1].trim();
+  if(!result.auftragsnummer){
+    m = text.match(/(\d{6,})\s*\/\s*[A-ZÄÖÜ]/);
+    if(m) result.auftragsnummer = m[1];
+  }
+
+  // --- Gesamtbetrag ---
+  const totalMatches = [...text.matchAll(/(?:Rechnungsbetrag|Betrag inkl\.?\s*MWST|Total)\s*[:\-]?\s*([\d'.,]+)\s*(?:CHF)?/gi)];
+  if(totalMatches.length){
+    const last = totalMatches[totalMatches.length-1][1];
+    result.total = parseSwissNumber(last);
+  }
+
+  // --- Positionen ---
+  const categories = DB.categories && DB.categories.length ? DB.categories : DEFAULT_CATEGORIES;
+  const catBeplankung = categories.find(c=>c.key==="Beplankung");
+  const catAusflockung = categories.find(c=>c.key==="Ausflockung");
+  const catSonstiges = categories.find(c=>c.key==="Sonstiges");
+
+  rawLines.forEach(line => {
+    const l = line.toLowerCase();
+    if(/^(bezeichnung|pos\.|menge|einheit|preis|total$|zzgl|zwischensumme|mwst-?nr|iban|bic|telefon|rechnungsbetrag)/i.test(l)) return;
+    // Verweis auf das Ausmassblatt selbst ueberspringen -- die Menge wird separat ueber
+    // den "Total m3"-Wert des Ausmassblatts erfasst, sonst wuerde doppelt gezaehlt.
+    if(l.includes("ausmassblatt")) return;
+
+    const priceMatches = [...line.matchAll(/([\d']+[.,]\d{2})/g)];
+    const lastPrice = priceMatches.length ? parseSwissNumber(priceMatches[priceMatches.length-1][1]) : null;
+
+    const unitMatch = line.match(/(\d+(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?)\b/i);
+
+    let cat = null, menge = null, einheit = null, preis = lastPrice;
+
+    if(unitMatch){
+      einheit = normalizeUnit(unitMatch[2]);
+      menge = parseSwissNumber(unitMatch[1]);
+      // Faustregel aus dem Betrieb: m² ist immer Beplankung, m³ ist immer Ausflockung --
+      // unabhaengig davon, ob das Schlagwort auf derselben Zeile steht (OCR trennt Tabellenspalten oft).
+      if(einheit === "m²") cat = catBeplankung;
+      else if(einheit === "m³") cat = catAusflockung;
+      else {
+        // Stk-Einheit: ueber Schluesselwoerter der spezifischeren Kategorien (VW/TW/Elemente) entscheiden
+        cat = categories.find(c => c.key!=="Beplankung" && c.key!=="Ausflockung" && c.key!=="Sonstiges" && c.keywords.some(kw=>l.includes(kw))) || catSonstiges;
+      }
+    } else {
+      // Keine explizite Einheit im Text: nur bei einer dezimal formatierten Zahl (z.B. "4.00")
+      // als Stk-Menge werten -- vermeidet Verwechslung mit Positionsnummern oder Adressziffern.
+      for(const c of categories){
+        if(c.key==="Beplankung" || c.key==="Ausflockung" || c.key==="Sonstiges") continue;
+        if(c.keywords.some(kw => l.includes(kw))){ cat = c; break; }
+      }
+      if(!cat) return;
+      const decMatch = line.match(/(\d+[.,]\d{1,2})\b/);
+      if(decMatch) menge = parseSwissNumber(decMatch[1]);
+      einheit = cat.unit;
+    }
+
+    if(menge === null || !cat) return;
+    // Nullzeilen (z.B. unbenutzte Tarifzeilen "m2 36.00 CHF 0.00 CHF") interessieren nicht --
+    // nur Positionen mit tatsaechlich verrechnetem Betrag zaehlen als echte Menge.
+    if(preis !== null && preis === 0) return;
+
+    result.items.push({ id: uid("it"), category: cat.key, label: line.slice(0,70), menge, einheit, preis });
+  });
+
+  const totalM3 = text.match(/Total\s*m3\s*([\d'.,]+)/i);
+  if(totalM3 && !result.items.some(it=>it.category==="Ausflockung")){
+    result.items.push({ id: uid("it"), category: "Ausflockung", label: "Total m³ (Ausmassblatt)", menge: parseSwissNumber(totalM3[1]), einheit: "m³", preis: null });
+  }
+
+  return result;
+}
+
+function sanitizeObjekt(s){
+  if(!s) return "";
+  let t = s.replace(/^["'\s]+/,"").trim();
+  // Bekannte Stoerwoerter aus der Notiz-Box (FA erf. / Mat.preis / Fibu) und Absender-Stempel
+  // abschneiden -- alles ab dem ersten Treffer verwerfen.
+  t = t.split(/\bFA\s*erf\.?\b|\bMat\.?\s*preis\b|\bFibu\b|\bEPE\b|\bErinerung\b|\bKundennummer\b|\bAnsprechpartner\b/i)[0];
+  // Angehaengtes Datum/"...den 12.03.2026" abschneiden (haeufig durch Spalten-Zusammenfuehrung)
+  t = t.replace(/,?\s*(den\s+)?\d{1,2}\.\d{1,2}\.\d{2,4}.*$/i, "");
+  t = t.replace(/,?\s*\bden\s*$/i, "");
+  t = t.replace(/\s{2,}/g," ").replace(/[,\s]+$/,"").trim();
+  // Ergebnis verwerfen, wenn es nicht wie eine echte Adresse aussieht (zu kurz oder keine
+  // zusammenhaengende Buchstabenfolge -- z.B. Reste wie "SLI ,Fibu" oder blosse Ziffern).
+  if(t.length < 5) return "";
+  if(!/[A-Za-zÄÖÜäöü]{3,}/.test(t)) return "";
+  return t;
+}
+function normalizeUnit(u){
+  u = u.toLowerCase().replace(".","");
+  if(u==="m2"||u==="m²") return "m²";
+  if(u==="m3"||u==="m³") return "m³";
+  if(u==="stk") return "Stk";
+  return u;
+}
+function parseSwissNumber(s){
+  if(s===undefined||s===null) return null;
+  s = String(s).replace(/'/g,"").replace(/\s/g,"");
+  if(/,\d{1,2}$/.test(s) && !s.includes(".")) s = s.replace(",",".");
+  else s = s.replace(/,/g,"");
+  const n = parseFloat(s);
+  return isNaN(n) ? null : n;
+}
+
+/* ============================= AUFTRAG MATCHING ============================= */
+
+function buildProjectName(parsed){
+  if(parsed.objekt) return parsed.objekt.trim();
+  const lief = (parsed.lieferant||"").trim();
+  const auf = (parsed.auftragsnummer||"").trim();
+  if(lief && auf) return `${lief} – Auftrag ${auf}`;
+  if(lief) return `${lief} – ${new Date().toLocaleDateString("de-CH")}`;
+  return "Unbenannter Auftrag";
+}
+
+function findMatchingProject(parsed){
+  if(!parsed.objekt && !parsed.auftragsnummer) return null;
+  const objLower = (parsed.objekt||"").toLowerCase();
+  if(parsed.auftragsnummer){
+    const byNum = DB.projects.find(p => p.auftragsnummer && p.auftragsnummer === parsed.auftragsnummer);
+    if(byNum) return byNum;
+  }
+  if(objLower){
+    const tokenize = s => s.replace(/[,\d]/g," ").split(/\s+/).filter(w=>w.length>3);
+    const parsedTokens = tokenize(objLower);
+    for(const p of DB.projects){
+      const pTokens = tokenize((p.address||"").toLowerCase());
+      const overlap = parsedTokens.filter(t => pTokens.includes(t));
+      if(overlap.length >= 1) return p;
+    }
+  }
+  return null;
+}
+
+/* ============================= RENDERING ============================= */
+
+const mainEl = document.getElementById("main");
+
+function render(){
+  document.querySelectorAll(".navbtn").forEach(b=>b.classList.toggle("active", b.dataset.view===currentView));
+  document.getElementById("projCount").textContent = DB.projects.length;
+  document.getElementById("invCount").textContent = DB.invoices.length;
+  document.getElementById("supCount").textContent = getSuppliers().length;
+  const reviewCount = DB.invoices.filter(invoiceNeedsReview).length;
+  const reviewBadge = document.getElementById("reviewBadge");
+  reviewBadge.textContent = reviewCount;
+  reviewBadge.style.display = reviewCount > 0 ? "" : "none";
+
+  if(currentView==="upload") renderUpload();
+  else if(currentView==="projects") renderProjects();
+  else if(currentView==="projectDetail") renderProjectDetail(currentProjectId);
+  else if(currentView==="invoices") renderInvoices();
+  else if(currentView==="suppliers") renderSuppliers();
+  else if(currentView==="supplierDetail") renderSupplierDetail(currentSupplierName);
+  else if(currentView==="admin") renderAdmin();
+}
+
+function getSuppliers(){
+  const names = new Set();
+  DB.invoices.forEach(inv => { if(inv.lieferant) names.add(inv.lieferant); });
+  return Array.from(names).sort();
+}
+
+function renderUpload(){
+  mainEl.innerHTML = `
+    <h1>Neue Rechnung erfassen</h1>
+    <p class="subtitle">PDF hochladen — auch mehrere Rechnungen verschiedener Subunternehmer in einer Datei werden automatisch erkannt und getrennt. Gescannte PDFs werden per OCR gelesen, das kann je nach Seitenzahl etwas dauern.</p>
+    <div class="card">
+      <div class="drop" id="dropzone">
+        <div style="font-size:28px;margin-bottom:8px;">📄</div>
+        <div><b>PDF hierher ziehen</b> oder klicken zum Auswählen</div>
+        <div style="font-size:12px;margin-top:6px;">Mehrere Dateien und mehrere Rechnungen pro Datei möglich</div>
+        <input type="file" id="fileInput" accept="application/pdf" multiple>
+      </div>
+      <div id="uploadStatus" style="margin-top:12px;"></div>
+    </div>
+    <div id="reviewArea"></div>
+  `;
+  const dz = document.getElementById("dropzone");
+  const fi = document.getElementById("fileInput");
+  dz.addEventListener("click", ()=>fi.click());
+  dz.addEventListener("dragover", e=>{e.preventDefault(); dz.classList.add("hover");});
+  dz.addEventListener("dragleave", ()=>dz.classList.remove("hover"));
+  dz.addEventListener("drop", e=>{
+    e.preventDefault(); dz.classList.remove("hover");
+    handleFiles(e.dataTransfer.files);
+  });
+  fi.addEventListener("change", e=>handleFiles(e.target.files));
+}
+
+async function handleFiles(fileList){
+  const files = Array.from(fileList).filter(f=>f.type==="application/pdf" || f.name.endsWith(".pdf"));
+  if(!files.length) return;
+  const statusEl = document.getElementById("uploadStatus");
+
+  if(typeof Notification !== "undefined" && Notification.permission === "default"){
+    try{ await Notification.requestPermission(); }catch(e){}
+  }
+
+  for(const file of files){
+    try{
+      statusEl.innerHTML = `<div class="muted">"${escapeHtml(file.name)}" — lese Seiten…</div><div class="progresswrap"><div class="progressbar" id="pbar" style="width:0%"></div></div>`;
+      const pbar = document.getElementById("pbar");
+
+      const pages = await extractPagesFromPDF(file, (i, total, phase) => {
+        const pct = Math.round((i/total)*100);
+        if(pbar) pbar.style.width = pct + "%";
+        const label = phase === "ocr-start" ? `Seite ${i}/${total} wird per OCR gelesen (Scan erkannt)…`
+                    : phase === "ocr-done" ? `Seite ${i}/${total} gelesen (OCR).`
+                    : `Seite ${i}/${total} gelesen (Textebene).`;
+        statusEl.querySelector("div").textContent = `"${file.name}" — ${label}`;
+      });
+
+      const groups = splitPagesIntoInvoices(pages);
+      statusEl.innerHTML = `<div class="muted">"${escapeHtml(file.name)}": <b>${groups.length}</b> Rechnung(en) erkannt, getrennt und automatisch gespeichert.</div>`;
+
+      groups.forEach(g => {
+        const parsed = parseInvoiceText(g.allText);
+        parsed._filename = file.name;
+        parsed._pages = g.pages;
+        parsed._rawText = g.allText;
+        parsed._ocrUsed = g.sources.includes("ocr");
+        appendReviewCard(parsed);
+      });
+    }catch(err){
+      console.error(err);
+      statusEl.innerHTML = `<span class="flag">Fehler beim Lesen von "${escapeHtml(file.name)}": ${escapeHtml(err.message||"unbekannt")}</span>`;
+    }
+  }
+}
+
+async function appendReviewCard(parsed){
+  const area = document.getElementById("reviewArea");
+  const match = findMatchingProject(parsed);
+  const catOptions = (DB.categories||DEFAULT_CATEGORIES).map(c=>`<option value="${c.key}">${c.label}</option>`).join("");
+
+  // --- Sofort speichern: Auftrag automatisch zuordnen oder neu anlegen, dann Rechnung ablegen ---
+  let projectId;
+  if(match){
+    projectId = match.id;
+  } else {
+    const name = buildProjectName(parsed);
+    projectId = await createProject({ name, address: parsed.objekt||"", auftragsnummer: "", soll: {} });
+  }
+  const items = parsed.items.length ? parsed.items.slice() : [];
+  const invoiceData = {
+    projectId,
+    lieferant: parsed.lieferant || "",
+    rechnungsnr: parsed.rechnungsnr || "",
+    datum: parsed.datum || "",
+    total: parsed.total,
+    filename: parsed._filename || "",
+    items: items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis })),
+  };
+  const invoiceId = await createInvoice(invoiceData);
+  const invoice = { id: invoiceId, ...invoiceData, createdBy: currentUser.uid, createdByEmail: currentUser.email, createdAt: new Date() };
+  // Optimistisch lokal einfuegen, damit die Karte sofort erscheint (onSnapshot bestaetigt gleich danach)
+  if(!DB.invoices.some(i=>i.id===invoiceId)) DB.invoices.push(invoice);
+
+  document.getElementById("projCount").textContent = DB.projects.length;
+  document.getElementById("invCount").textContent = DB.invoices.length;
+  document.getElementById("supCount").textContent = getSuppliers().length;
+  const reviewBadge = document.getElementById("reviewBadge");
+  const reviewCount = DB.invoices.filter(invoiceNeedsReview).length;
+  reviewBadge.textContent = reviewCount;
+  reviewBadge.style.display = reviewCount > 0 ? "" : "none";
+  notifyIfNeedsReview(invoice);
+
+  const projOptions = () => `<option value="">— neuen Auftrag anlegen —</option>` +
+    DB.projects.map(p=>`<option value="${p.id}" ${invoice.projectId===p.id?"selected":""}>${escapeHtml(p.name)}</option>`).join("");
+
+  const pageLabel = parsed._pages && parsed._pages.length>1
+    ? `Seiten ${parsed._pages[0]}–${parsed._pages[parsed._pages.length-1]}`
+    : `Seite ${parsed._pages ? parsed._pages[0] : "?"}`;
+
+  const needsReview = invoiceNeedsReview(invoice);
+  const wrap = document.createElement("div");
+  wrap.className = "card";
+  if(needsReview) wrap.style.border = "2px solid var(--danger)";
+  wrap.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <h2>${escapeHtml(parsed._filename||"Rechnung")} <span class="muted" style="font-weight:400;font-size:12px;">(${pageLabel})</span></h2>
+        <div style="display:flex;gap:6px;">
+          ${needsReview ? `<span class="pill danger">⚠ Prüfen nötig</span>` : `<span class="pill ok">✓ gespeichert</span>`}
+          <span class="srcbadge ${parsed._ocrUsed?'ocr':'text'}">${parsed._ocrUsed?'OCR':'Textebene'}</span>
+        </div>
+      </div>
+      ${needsReview
+        ? `<p class="subtitle" style="margin-top:-8px;color:var(--danger);font-weight:600;">⚠ Der Scan konnte nicht alles zuverlässig erkennen (Lieferant und/oder Mengen fehlen). Bitte unten korrigieren.</p>`
+        : `<p class="subtitle" style="margin-top:-8px;">Automatisch erfasst und dem Auftrag zugeordnet. Fehler kannst du direkt hier oder später im Auftrag korrigieren.</p>`}
+
+      <div class="row">
+        <label class="field"><span>Lieferant</span><input type="text" data-f="lieferant" value="${escapeAttr(invoice.lieferant)}"></label>
+        <label class="field"><span>Rechnungsnr.</span><input type="text" data-f="rechnungsnr" value="${escapeAttr(invoice.rechnungsnr)}"></label>
+        <label class="field"><span>Datum</span><input type="text" data-f="datum" value="${escapeAttr(invoice.datum)}" placeholder="TT.MM.JJJJ"></label>
+      </div>
+      <div class="row">
+        <label class="field"><span>Objekt / Adresse (aus Rechnung)</span><input type="text" data-f="objekt" value="${escapeAttr(parsed.objekt)}" disabled title="Nur informativ -- Zuordnung erfolgt ueber die Auswahl unten"></label>
+        <label class="field"><span>Auftragsnr. Subunternehmer</span><input type="text" data-f="auftragsnummer" value="${escapeAttr(parsed.auftragsnummer)}" disabled></label>
+        <label class="field"><span>Rechnungsbetrag CHF</span><input type="text" data-f="total" value="${invoice.total!==null&&invoice.total!==undefined?invoice.total:""}"></label>
+      </div>
+      <label class="field"><span>Zugeordneter Auftrag</span>
+        <select class="projectSelect">${projOptions()}</select>
+      </label>
+
+      <div class="section-title">Erkannte Positionen — bitte prüfen &amp; korrigieren</div>
+      <table>
+        <thead><tr><th>Kategorie</th><th>Beschreibung (Original)</th><th>Menge</th><th>Einheit</th><th>Preis CHF</th><th></th></tr></thead>
+        <tbody class="itemsBody"></tbody>
+      </table>
+      <button class="small addItemBtn" style="margin-top:8px;">+ Position hinzufügen</button>
+
+      <div style="margin-top:8px;">
+        <button class="close-x showRaw" style="font-size:12px;color:var(--text-dim);">Rohtext anzeigen ▾</button>
+        <textarea class="raw" style="display:none;width:100%;margin-top:8px;" readonly>${escapeHtml(parsed._rawText||"")}</textarea>
+      </div>
+
+      <div style="margin-top:18px;display:flex;gap:10px;">
+        <button class="goToProject">Zum Auftrag →</button>
+        <button class="danger deleteInvoice">Rechnung löschen</button>
+      </div>
+  `;
+  area.appendChild(wrap);
+
+  function findInvoice(){ return DB.invoices.find(i=>i.id===invoice.id) || invoice; }
+
+  // Kopfdaten: Aenderung uebernehmen und bei Fokusverlust speichern (kein Speichern pro Tastendruck)
+  wrap.querySelectorAll("[data-f]").forEach(inp=>{
+    if(inp.tagName==="SELECT") return;
+    inp.addEventListener("input", ()=>{
+      const inv = findInvoice(); if(!inv) return;
+      const f = inp.dataset.f;
+      if(f==="total") inv.total = inp.value===""?null:parseFloat(inp.value);
+      else if(!inp.disabled) inv[f] = inp.value;
+    });
+    inp.addEventListener("change", ()=>{ const inv = findInvoice(); if(inv) saveInvoice(inv); });
+  });
+
+  const itemsBody = wrap.querySelector(".itemsBody");
+  function renderItems(){
+    const inv = findInvoice(); if(!inv) return;
+    itemsBody.innerHTML = inv.items.map(it=>`
+      <tr class="itemrow" data-id="${it.id}">
+        <td><select data-f="category">${catOptions}</select></td>
+        <td><input type="text" data-f="label" value="${escapeAttr(it.label||"")}"></td>
+        <td style="width:90px;"><input type="number" step="any" data-f="menge" value="${it.menge!==null&&it.menge!==undefined?it.menge:""}"></td>
+        <td style="width:80px;"><input type="text" data-f="einheit" value="${escapeAttr(it.einheit||"")}"></td>
+        <td style="width:100px;"><input type="number" step="any" data-f="preis" value="${it.preis!==null&&it.preis!==undefined?it.preis:""}"></td>
+        <td><button class="close-x" data-remove="${it.id}">✕</button></td>
+      </tr>
+    `).join("");
+    itemsBody.querySelectorAll("select[data-f=category]").forEach(sel=>{
+      const row = sel.closest("tr");
+      const it = inv.items.find(i=>i.id===row.dataset.id);
+      sel.value = it.category;
+      sel.addEventListener("change", ()=>{ it.category = sel.value; saveInvoice(inv); });
+    });
+    itemsBody.querySelectorAll("input").forEach(inp=>{
+      const row = inp.closest("tr");
+      const it = inv.items.find(i=>i.id===row.dataset.id);
+      inp.addEventListener("input", ()=>{
+        const f = inp.dataset.f;
+        it[f] = (f==="menge"||f==="preis") ? (inp.value===""?null:parseFloat(inp.value)) : inp.value;
+      });
+      inp.addEventListener("change", ()=> saveInvoice(inv));
+    });
+    itemsBody.querySelectorAll("[data-remove]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const i = findInvoice(); if(!i) return;
+        i.items = i.items.filter(x=>x.id!==btn.dataset.remove);
+        saveInvoice(i);
+        renderItems();
+      });
+    });
+  }
+  renderItems();
+
+  wrap.querySelector(".addItemBtn").addEventListener("click", ()=>{
+    const inv = findInvoice(); if(!inv) return;
+    inv.items.push({id:uid("it"),category:"Sonstiges",label:"",menge:null,einheit:"Stk",preis:null});
+    saveInvoice(inv);
+    renderItems();
+  });
+
+  wrap.querySelector(".showRaw").addEventListener("click", (e)=>{
+    const ta = wrap.querySelector("textarea.raw");
+    const show = ta.style.display==="none";
+    ta.style.display = show?"block":"none";
+    e.target.textContent = show ? "Rohtext ausblenden ▴" : "Rohtext anzeigen ▾";
+  });
+
+  wrap.querySelector(".projectSelect").addEventListener("change", async (e)=>{
+    const inv = findInvoice(); if(!inv) return;
+    let newProjectId = e.target.value;
+    if(!newProjectId){
+      const name = buildProjectName(parsed);
+      newProjectId = await createProject({ name, address: parsed.objekt||"", auftragsnummer: "", soll: {} });
+      document.getElementById("projCount").textContent = DB.projects.length;
+    }
+    inv.projectId = newProjectId;
+    saveInvoice(inv);
+    toast("Auftrag geändert.");
+  });
+
+  wrap.querySelector(".goToProject").addEventListener("click", ()=>{
+    const inv = findInvoice(); if(!inv) return;
+    navigateTo("projectDetail", { projectId: inv.projectId });
+  });
+
+  const delBtn = wrap.querySelector(".deleteInvoice");
+  if(!canDeleteInvoice(invoice)){
+    delBtn.disabled = true;
+    delBtn.title = "Du kannst nur eigene Rechnungen innerhalb von 5 Stunden löschen.";
+  }
+  delBtn.addEventListener("click", async ()=>{
+    if(!canDeleteInvoice(findInvoice())){ toast("Keine Berechtigung zum Löschen."); return; }
+    if(!confirm("Diese Rechnung wirklich löschen?")) return;
+    await deleteInvoiceDoc(invoice.id);
+    DB.invoices = DB.invoices.filter(i=>i.id!==invoice.id);
+    wrap.remove();
+    document.getElementById("invCount").textContent = DB.invoices.length;
+    toast("Rechnung gelöscht.");
+  });
+}
+
+function roundNum(n){ return Math.round(n*100)/100; }
+
+function mengeSummary(invs){
+  const agg = aggregateByCategory(invs);
+  const keys = Object.keys(agg).filter(k=>agg[k].menge);
+  if(!keys.length) return "keine Mengen erfasst";
+  return keys.map(k=>`${k}: ${roundNum(agg[k].menge)} ${agg[k].einheit||""}`).join(" · ");
+}
+
+function addSearchBox(container, placeholder, onFilter){
+  const box = document.createElement("div");
+  box.style.marginBottom = "14px";
+  box.innerHTML = `<input type="text" placeholder="${escapeAttr(placeholder)}" style="max-width:340px;">`;
+  container.appendChild(box);
+  const input = box.querySelector("input");
+  input.addEventListener("input", ()=> onFilter(input.value.trim().toLowerCase()));
+  return input;
+}
+
+function renderSuppliers(){
+  const suppliers = getSuppliers();
+  if(!suppliers.length){
+    mainEl.innerHTML = `
+      <h1>Subunternehmer</h1>
+      <p class="subtitle">Ordner pro Subunternehmer — zeigt alle Aufträge, an denen dieser Sub beteiligt ist.</p>
+      <div class="empty">Noch keine Rechnungen erfasst. Lade zuerst eine Rechnung hoch.</div>
+    `;
+    return;
+  }
+  mainEl.innerHTML = `
+    <h1>Subunternehmer</h1>
+    <p class="subtitle">${suppliers.length} Subunternehmer erfasst — klicke für alle zugehörigen Aufträge.</p>
+    <div id="searchSlot"></div>
+    <div id="supList"></div>
+  `;
+  addSearchBox(document.getElementById("searchSlot"), "Subunternehmer suchen…", (q)=>{
+    document.querySelectorAll("#supList .proj-list-item").forEach(el=>{
+      el.style.display = el.dataset.search.includes(q) ? "" : "none";
+    });
+  });
+
+  const list = document.getElementById("supList");
+  list.innerHTML = suppliers.map(name=>{
+    const invs = DB.invoices.filter(i=>i.lieferant===name);
+    const projectIds = new Set(invs.map(i=>i.projectId));
+    return `
+      <div class="proj-list-item" data-name="${escapeAttr(name)}" data-search="${escapeAttr(name.toLowerCase())}">
+        <div>
+          <div class="pname">🏢 ${escapeHtml(name)}</div>
+          <div class="paddr">${projectIds.size} Auftrag/Aufträge · ${invs.length} Rechnung(en)</div>
+          <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
+        </div>
+        <div class="pmeta">
+          ${hasPerm('deleteSubunternehmer') ? `<button class="small danger" data-delsup="${escapeAttr(name)}">Löschen</button>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+  list.querySelectorAll(".proj-list-item").forEach(el=>{
+    el.addEventListener("click", (e)=>{
+      if(e.target.closest("[data-delsup]")) return;
+      navigateTo("supplierDetail", { supplierName: el.dataset.name });
+    });
+  });
+  list.querySelectorAll("[data-delsup]").forEach(btn=>{
+    btn.addEventListener("click", async (e)=>{
+      e.stopPropagation();
+      if(!hasPerm('deleteSubunternehmer')){ toast("Keine Berechtigung."); return; }
+      const name = btn.dataset.delsup;
+      if(!confirm(`Alle Rechnungen von "${name}" wirklich löschen?`)) return;
+      const toDelete = DB.invoices.filter(i=>i.lieferant===name);
+      for(const inv of toDelete) await deleteInvoiceDoc(inv.id);
+      const remainingInvoices = DB.invoices.filter(i=>i.lieferant!==name);
+      const orphanProjects = DB.projects.filter(p => !remainingInvoices.some(i=>i.projectId===p.id));
+      for(const p of orphanProjects) await deleteProjectDoc(p.id);
+      toast(`Subunternehmer "${name}" gelöscht.`);
+    });
+  });
+}
+
+function renderSupplierDetail(name){
+  if(!name){ goBack("suppliers"); return; }
+  const invs = DB.invoices.filter(i=>i.lieferant===name);
+  const projectIds = Array.from(new Set(invs.map(i=>i.projectId)));
+  const projects = projectIds.map(id=>DB.projects.find(p=>p.id===id)).filter(Boolean);
+
+  mainEl.innerHTML = `
+    <button class="backlink" id="backBtn">← Zurück zu Subunternehmern</button>
+    <h1>🏢 ${escapeHtml(name)}</h1>
+    <p class="subtitle">${projects.length} Auftrag/Aufträge mit Rechnungen von diesem Sub. Klicke einen Auftrag für Rechnungen und Soll/Ist-Vergleich.</p>
+    <div id="searchSlot"></div>
+    <div id="supProjList"></div>
+  `;
+  document.getElementById("backBtn").addEventListener("click", ()=>{ goBack("suppliers"); });
+  addSearchBox(document.getElementById("searchSlot"), "Auftrag suchen…", (q)=>{
+    document.querySelectorAll("#supProjList .proj-list-item").forEach(el=>{
+      el.style.display = el.dataset.search.includes(q) ? "" : "none";
+    });
+  });
+
+  const list = document.getElementById("supProjList");
+  list.innerHTML = projects.map(p=>{
+    const pInvs = invs.filter(i=>i.projectId===p.id);
+    const overCount = countOverBudget(p);
+    return `
+      <div class="proj-list-item" data-id="${p.id}" data-search="${escapeAttr((p.name+" "+(p.address||"")).toLowerCase())}">
+        <div>
+          <div class="pname">${escapeHtml(p.name)}</div>
+          <div class="paddr">${escapeHtml(p.address||"—")} · ${pInvs.length} Rechnung(en) von ${escapeHtml(name)}</div>
+          <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(pInvs))}</div>
+        </div>
+        ${overCount>0 ? `<span class="pill danger">⚠ ${overCount} über Soll</span>` : `<span class="pill ok">im Soll</span>`}
+      </div>
+    `;
+  }).join("");
+  list.querySelectorAll(".proj-list-item").forEach(el=>{
+    el.addEventListener("click", ()=>{
+      navigateTo("projectDetail", { projectId: el.dataset.id });
+    });
+  });
+}
+
+function renderProjects(){
+  if(!DB.projects.length){
+    mainEl.innerHTML = `
+      <h1>Aufträge</h1>
+      <p class="subtitle">Übersicht über alle Aufträge mit Soll/Ist-Vergleich.</p>
+      <div class="empty">Noch keine Aufträge. Lade zuerst eine Rechnung hoch — der Auftrag wird dabei automatisch angelegt.</div>
+    `;
+    return;
+  }
+  mainEl.innerHTML = `
+    <h1>Aufträge</h1>
+    <p class="subtitle">${DB.projects.length} Auftrag/Aufträge — klicke für Details und Soll/Ist-Vergleich.</p>
+    <div id="searchSlot"></div>
+    <div id="projList"></div>
+  `;
+  addSearchBox(document.getElementById("searchSlot"), "Auftrag suchen…", (q)=>{
+    document.querySelectorAll("#projList .proj-list-item").forEach(el=>{
+      el.style.display = el.dataset.search.includes(q) ? "" : "none";
+    });
+  });
+
+  const list = document.getElementById("projList");
+  list.innerHTML = DB.projects.map(p=>{
+    const invs = DB.invoices.filter(i=>i.projectId===p.id);
+    const overCount = countOverBudget(p);
+    const needsReview = invs.some(invoiceNeedsReview);
+    return `
+      <div class="proj-list-item" data-id="${p.id}" data-search="${escapeAttr((p.name+" "+(p.address||"")).toLowerCase())}">
+        <div>
+          <div class="pname">${escapeHtml(p.name)}</div>
+          <div class="paddr">${escapeHtml(p.address||"—")} ${p.auftragsnummer?`· Auftragsnr. ${escapeHtml(p.auftragsnummer)}`:""}</div>
+          <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
+        </div>
+        <div class="pmeta">
+          <div class="muted" style="font-size:12px;">${invs.length} Rechnung(en)</div>
+        </div>
+        ${needsReview ? `<span class="pill warn">⚠ Prüfen nötig</span>` : (overCount>0 ? `<span class="pill danger">⚠ ${overCount} über Soll</span>` : `<span class="pill ok">im Soll</span>`)}
+      </div>
+    `;
+  }).join("");
+  list.querySelectorAll(".proj-list-item").forEach(el=>{
+    el.addEventListener("click", ()=>{
+      navigateTo("projectDetail", { projectId: el.dataset.id });
+    });
+  });
+}
+
+function invoiceNeedsReview(inv){
+  if(!inv.lieferant) return true;
+  if(!inv.items || inv.items.length===0) return true;
+  if(inv.items.some(it=>it.menge===null || it.menge===undefined)) return true;
+  return false;
+}
+
+function notifyIfNeedsReview(inv){
+  if(!invoiceNeedsReview(inv)) return;
+  if(typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  try{
+    new Notification("⚠ Rechnung benötigt Prüfung", {
+      body: `${inv.filename || "Rechnung"} — ${inv.lieferant || "Lieferant unbekannt"}: Scan unvollständig, bitte korrigieren.`,
+      tag: inv.id,
+    });
+  }catch(e){}
+}
+
+function countOverBudget(p){
+  const invs = DB.invoices.filter(i=>i.projectId===p.id);
+  const ist = aggregateByCategory(invs);
+  let over = 0;
+  Object.keys(p.soll||{}).forEach(cat=>{
+    const soll = p.soll[cat];
+    if(soll && soll.menge!=null && (ist[cat]?.menge||0) > soll.menge) over++;
+  });
+  return over;
+}
+
+function aggregateByCategory(invoices){
+  const agg = {};
+  invoices.forEach(inv=>{
+    inv.items.forEach(it=>{
+      if(!agg[it.category]) agg[it.category] = { menge:0, einheit: it.einheit, chf:0 };
+      if(it.menge) agg[it.category].menge += it.menge;
+      if(it.einheit) agg[it.category].einheit = it.einheit;
+      if(it.preis) agg[it.category].chf += it.preis;
+    });
+  });
+  return agg;
+}
+
+function renderProjectDetail(projectId){
+  const p = DB.projects.find(x=>x.id===projectId);
+  if(!p){ currentView="projects"; render(); return; }
+  const invs = DB.invoices.filter(i=>i.projectId===p.id).sort((a,b)=> (a.datum||"").localeCompare(b.datum||""));
+  const ist = aggregateByCategory(invs);
+  const categories = DB.categories || DEFAULT_CATEGORIES;
+  const totalCHF = invs.reduce((s,i)=>s+(i.total||0),0);
+  const otherProjects = DB.projects.filter(x=>x.id!==p.id);
+
+  mainEl.innerHTML = `
+    <button class="backlink" id="backBtn">← Zurück zu Aufträgen</button>
+
+    <div class="card">
+      <div class="section-title">Auftrag — Name &amp; Adresse (bei Bedarf korrigieren)</div>
+      <div class="row">
+        <label class="field"><span>Name des Auftrags</span><input type="text" id="editProjName" value="${escapeAttr(p.name)}"></label>
+        <label class="field"><span>Adresse / Objekt</span><input type="text" id="editProjAddress" value="${escapeAttr(p.address||"")}"></label>
+        <label class="field"><span>Deine Auftragsnummer</span><input type="text" id="editProjAuftragsnr" value="${escapeAttr(p.auftragsnummer||"")}"></label>
+      </div>
+      <div class="row" style="align-items:flex-end;">
+        <label class="field"><span>Mit anderem Auftrag zusammenführen (falls doppelt angelegt)</span>
+          <select id="mergeSelect" ${hasPerm('deleteAuftraege')?"":"disabled"}>
+            <option value="">— Auftrag wählen —</option>
+            ${otherProjects.map(op=>`<option value="${op.id}">${escapeHtml(op.name)}</option>`).join("")}
+          </select>
+        </label>
+        <button class="danger" id="mergeBtn" style="flex:0 0 auto;" ${hasPerm('deleteAuftraege')?"":"disabled title=\"Nur Admin/berechtigte Nutzer können Aufträge zusammenführen bzw. löschen\""}>Zusammenführen</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Soll / Ist pro Kategorie</h2>
+      <div class="catgrid" id="catGrid"></div>
+    </div>
+
+    <div class="card">
+      <h2>Rechnungen zu diesem Auftrag (${invs.length}) — Total CHF ${formatCHF(totalCHF)}</h2>
+      ${invs.length ? `
+      <table>
+        <thead><tr><th>Datum</th><th>Lieferant</th><th>Rechnungsnr.</th><th>Positionen</th><th>Betrag CHF</th><th></th></tr></thead>
+        <tbody>
+          ${invs.map(inv=>`
+            <tr class="${invoiceNeedsReview(inv)?'needs-review':''}">
+              <td>${escapeHtml(inv.datum||"—")}</td>
+              <td>${escapeHtml(inv.lieferant||"—")}</td>
+              <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
+              <td>${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen nötig</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
+              <td class="num">${inv.total!=null?formatCHF(inv.total):"—"}</td>
+              <td style="white-space:nowrap;">
+                <button class="small" data-edit="${inv.id}">Bearbeiten</button>
+                <button class="small danger" data-del="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title=\"Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin\""}>Löschen</button>
+              </td>
+            </tr>
+            <tr class="editRow" data-editrow="${inv.id}" style="display:${expandedInvoiceId===inv.id?'table-row':'none'};">
+              <td colspan="6"><div id="editPanel-${inv.id}"></div></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      ` : `<div class="empty">Noch keine Rechnungen für diesen Auftrag.</div>`}
+    </div>
+  `;
+
+  document.getElementById("backBtn").addEventListener("click", ()=>{ goBack("projects"); });
+
+  document.getElementById("editProjName").addEventListener("change", (e)=>{ p.name = e.target.value; saveProject(p); });
+  document.getElementById("editProjAddress").addEventListener("change", (e)=>{ p.address = e.target.value; saveProject(p); });
+  document.getElementById("editProjAuftragsnr").addEventListener("change", (e)=>{ p.auftragsnummer = e.target.value; saveProject(p); });
+
+  document.getElementById("mergeBtn").addEventListener("click", async ()=>{
+    if(!hasPerm('deleteAuftraege')){ toast("Keine Berechtigung zum Zusammenführen/Löschen von Aufträgen."); return; }
+    const targetId = document.getElementById("mergeSelect").value;
+    if(!targetId){ toast("Bitte zuerst einen Auftrag zum Zusammenführen wählen."); return; }
+    const target = DB.projects.find(x=>x.id===targetId);
+    if(!target) return;
+    if(!confirm(`Alle Rechnungen von "${p.name}" zu "${target.name}" verschieben und "${p.name}" löschen?`)) return;
+    for(const inv of DB.invoices.filter(i=>i.projectId===p.id)){
+      inv.projectId = target.id;
+      await saveInvoice(inv);
+    }
+    await deleteProjectDoc(p.id);
+    toast("Aufträge zusammengeführt.");
+    currentProjectId = target.id;
+    render();
+  });
+
+  const grid = document.getElementById("catGrid");
+  grid.innerHTML = categories.map(c=>{
+    const istVal = ist[c.key]?.menge || 0;
+    const sollVal = p.soll?.[c.key]?.menge;
+    const hasSoll = sollVal !== undefined && sollVal !== null && sollVal !== "";
+    const pct = hasSoll && sollVal>0 ? Math.min(100,(istVal/sollVal)*100) : (istVal>0?100:0);
+    const over = hasSoll && istVal > sollVal;
+    if(!ist[c.key] && !hasSoll) return "";
+    return `
+      <div class="catbox">
+        <div class="ck"><span>${c.label}</span>${over?`<span class="flag">⚠</span>`:""}</div>
+        <div class="cv num">
+          Ist: <b>${istVal}</b> ${c.unit}
+          ${hasSoll ? ` / Soll: <b>${sollVal}</b> ${c.unit}` : ` <span class="muted">(kein Soll gesetzt)</span>`}
+        </div>
+        <div class="barwrap"><div class="bar ${over?"over":""}" style="width:${pct}%"></div></div>
+        <div style="margin-top:8px;">
+          <input type="number" step="any" placeholder="Soll-Menge setzen" data-soll-cat="${c.key}" value="${hasSoll?sollVal:""}" style="font-size:12px;padding:5px 7px;">
+        </div>
+      </div>
+    `;
+  }).join("");
+  grid.querySelectorAll("[data-soll-cat]").forEach(inp=>{
+    inp.addEventListener("change", ()=>{
+      const cat = inp.dataset.sollCat;
+      if(!p.soll) p.soll = {};
+      const val = inp.value===""? null : parseFloat(inp.value);
+      const catDef = categories.find(c=>c.key===cat);
+      p.soll[cat] = { menge: val, einheit: catDef?catDef.unit:"" };
+      saveProject(p);
+      renderProjectDetail(projectId);
+    });
+  });
+
+  mainEl.querySelectorAll("[data-del]").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const inv = DB.invoices.find(i=>i.id===btn.dataset.del);
+      if(!inv || !canDeleteInvoice(inv)){ toast("Keine Berechtigung zum Löschen."); return; }
+      if(!confirm("Diese Rechnung wirklich löschen?")) return;
+      await deleteInvoiceDoc(btn.dataset.del);
+      renderProjectDetail(projectId);
+    });
+  });
+
+  mainEl.querySelectorAll("[data-edit]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      expandedInvoiceId = (expandedInvoiceId === btn.dataset.edit) ? null : btn.dataset.edit;
+      renderProjectDetail(projectId);
+    });
+  });
+  if(expandedInvoiceId){
+    const panel = document.getElementById(`editPanel-${expandedInvoiceId}`);
+    if(panel) renderInvoiceEditPanel(panel, expandedInvoiceId, ()=>renderProjectDetail(projectId));
+  }
+}
+
+function renderInvoiceEditPanel(panel, invoiceId, onChange){
+  const inv = DB.invoices.find(i=>i.id===invoiceId);
+  if(!inv) return;
+  const catOptions = (DB.categories||DEFAULT_CATEGORIES).map(c=>`<option value="${c.key}">${c.label}</option>`).join("");
+  panel.innerHTML = `
+    <div style="background:var(--surface);border-radius:8px;padding:16px;margin:6px 0;">
+      <div class="row">
+        <label class="field"><span>Lieferant</span><input type="text" data-ef="lieferant" value="${escapeAttr(inv.lieferant||"")}"></label>
+        <label class="field"><span>Rechnungsnr.</span><input type="text" data-ef="rechnungsnr" value="${escapeAttr(inv.rechnungsnr||"")}"></label>
+        <label class="field"><span>Datum</span><input type="text" data-ef="datum" value="${escapeAttr(inv.datum||"")}"></label>
+        <label class="field"><span>Betrag CHF</span><input type="number" step="any" data-ef="total" value="${inv.total!=null?inv.total:""}"></label>
+      </div>
+      <div class="section-title">Positionen</div>
+      <table>
+        <thead><tr><th>Kategorie</th><th>Beschreibung</th><th>Menge</th><th>Einheit</th><th>Preis CHF</th><th></th></tr></thead>
+        <tbody class="editItemsBody"></tbody>
+      </table>
+      <button class="small addEditItemBtn" style="margin-top:8px;">+ Position hinzufügen</button>
+    </div>
+  `;
+  panel.querySelectorAll("[data-ef]").forEach(inp=>{
+    inp.addEventListener("input", ()=>{
+      const f = inp.dataset.ef;
+      inv[f] = (f==="total") ? (inp.value===""?null:parseFloat(inp.value)) : inp.value;
+    });
+    inp.addEventListener("change", ()=> saveInvoice(inv));
+  });
+  const body = panel.querySelector(".editItemsBody");
+  function renderRows(){
+    body.innerHTML = inv.items.map(it=>`
+      <tr data-id="${it.id}">
+        <td><select data-if="category">${catOptions}</select></td>
+        <td><input type="text" data-if="label" value="${escapeAttr(it.label||"")}"></td>
+        <td style="width:90px;"><input type="number" step="any" data-if="menge" value="${it.menge!=null?it.menge:""}"></td>
+        <td style="width:80px;"><input type="text" data-if="einheit" value="${escapeAttr(it.einheit||"")}"></td>
+        <td style="width:100px;"><input type="number" step="any" data-if="preis" value="${it.preis!=null?it.preis:""}"></td>
+        <td><button class="close-x" data-removeitem="${it.id}">✕</button></td>
+      </tr>
+    `).join("");
+    body.querySelectorAll("select[data-if=category]").forEach(sel=>{
+      const row = sel.closest("tr");
+      const it = inv.items.find(i=>i.id===row.dataset.id);
+      sel.value = it.category;
+      sel.addEventListener("change", ()=>{ it.category = sel.value; saveInvoice(inv); onChange(); });
+    });
+    body.querySelectorAll("input").forEach(inp=>{
+      const row = inp.closest("tr");
+      const it = inv.items.find(i=>i.id===row.dataset.id);
+      inp.addEventListener("input", ()=>{
+        const f = inp.dataset.if;
+        it[f] = (f==="menge"||f==="preis") ? (inp.value===""?null:parseFloat(inp.value)) : inp.value;
+      });
+      inp.addEventListener("change", ()=>{ saveInvoice(inv); onChange(); });
+    });
+    body.querySelectorAll("[data-removeitem]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        inv.items = inv.items.filter(i=>i.id!==btn.dataset.removeitem);
+        saveInvoice(inv);
+        renderRows();
+        onChange();
+      });
+    });
+  }
+  renderRows();
+  panel.querySelector(".addEditItemBtn").addEventListener("click", ()=>{
+    inv.items.push({id:uid("it"),category:"Sonstiges",label:"",menge:null,einheit:"Stk",preis:null});
+    saveInvoice(inv);
+    renderRows();
+    onChange();
+  });
+}
+
+function renderInvoices(){
+  if(!DB.invoices.length){
+    mainEl.innerHTML = `<h1>Alle Rechnungen</h1><div class="empty">Noch keine Rechnungen erfasst.</div>`;
+    return;
+  }
+  const sorted = DB.invoices.slice().sort((a,b)=> (b.datum||"").localeCompare(a.datum||""));
+  mainEl.innerHTML = `
+    <h1>Alle Rechnungen</h1>
+    <p class="subtitle">${DB.invoices.length} Rechnung(en) über alle Aufträge.</p>
+    <div id="searchSlot"></div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Datum</th><th>Lieferant</th><th>Auftrag</th><th>Rechnungsnr.</th><th>Mengen</th><th></th></tr></thead>
+        <tbody id="invTableBody">
+          ${sorted.map(inv=>{
+            const p = DB.projects.find(x=>x.id===inv.projectId);
+            const search = [(inv.lieferant||""),(p?p.name:""),(inv.rechnungsnr||"")].join(" ").toLowerCase();
+            return `<tr style="cursor:pointer;" data-goto="${inv.projectId}" data-search="${escapeAttr(search)}" class="${invoiceNeedsReview(inv)?'needs-review':''}">
+              <td>${escapeHtml(inv.datum||"—")}</td>
+              <td>${escapeHtml(inv.lieferant||"—")}</td>
+              <td>${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
+              <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
+              <td>${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+  addSearchBox(document.getElementById("searchSlot"), "Rechnungen suchen…", (q)=>{
+    document.querySelectorAll("#invTableBody tr").forEach(el=>{
+      el.style.display = el.dataset.search.includes(q) ? "" : "none";
+    });
+  });
+  mainEl.querySelectorAll("[data-goto]").forEach(row=>{
+    row.addEventListener("click", ()=>{
+      navigateTo("projectDetail", { projectId: row.dataset.goto });
+    });
+  });
+}
+
+function renderAdmin(){
+  if(!isAdmin()){
+    mainEl.innerHTML = `<h1>Benutzerverwaltung</h1><div class="empty">Nur für Admins zugänglich.</div>`;
+    return;
+  }
+  mainEl.innerHTML = `
+    <h1>Benutzerverwaltung</h1>
+    <p class="subtitle">${allUsers.length} Benutzer registriert. Als Admin kannst du Rollen und Einzelrechte vergeben.</p>
+    <div class="card">
+      <table>
+        <thead><tr><th>E-Mail</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th></tr></thead>
+        <tbody>
+          ${allUsers.map(u=>`
+            <tr data-uid="${u.id}">
+              <td>${escapeHtml(u.email||u.id)}</td>
+              <td>
+                <select data-role>
+                  <option value="mitarbeiter" ${u.role!=="admin"?"selected":""}>Mitarbeiter</option>
+                  <option value="admin" ${u.role==="admin"?"selected":""}>Admin</option>
+                </select>
+              </td>
+              <td><input type="checkbox" data-perm="deleteAuftraege" ${u.permissions?.deleteAuftraege?"checked":""} ${u.role==="admin"?"disabled":""}></td>
+              <td><input type="checkbox" data-perm="deleteSubunternehmer" ${u.permissions?.deleteSubunternehmer?"checked":""} ${u.role==="admin"?"disabled":""}></td>
+              <td><input type="checkbox" data-perm="deleteAnyRechnung" ${u.permissions?.deleteAnyRechnung?"checked":""} ${u.role==="admin"?"disabled":""}></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      <p class="subtitle" style="margin-top:14px;">Admins haben automatisch alle Rechte. Mitarbeiter dürfen ohne Häkchen nur ihre eigenen Rechnungen der letzten 5 Stunden löschen.</p>
+    </div>
+  `;
+  mainEl.querySelectorAll("tr[data-uid]").forEach(row=>{
+    const targetUid = row.dataset.uid;
+    row.querySelector("[data-role]").addEventListener("change", async (e)=>{
+      const role = e.target.value;
+      await window.fb.updateDoc("users", targetUid, { role });
+      toast("Rolle aktualisiert.");
+    });
+    row.querySelectorAll("[data-perm]").forEach(cb=>{
+      cb.addEventListener("change", async ()=>{
+        const key = cb.dataset.perm;
+        const u = allUsers.find(x=>x.id===targetUid);
+        const permissions = { ...DEFAULT_PERMISSIONS, ...(u?.permissions||{}), [key]: cb.checked };
+        await window.fb.updateDoc("users", targetUid, { permissions });
+        toast("Rechte aktualisiert.");
+      });
+    });
+  });
+}
+
+/* ============================= HELPERS ============================= */
+
+function formatCHF(n){
+  return n.toLocaleString("de-CH", {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function escapeHtml(s){
+  return String(s??"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function escapeAttr(s){ return escapeHtml(s); }
+function toast(msg){
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(), 2600);
+}
+
+document.querySelectorAll(".navbtn").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    navStack = [];
+    currentView = btn.dataset.view;
+    render();
+  });
+});
+
+document.getElementById("resetAllBtn").addEventListener("click", async ()=>{
+  if(!isAdmin()){ toast("Nur der Admin kann alle Daten löschen."); return; }
+  if(!confirm("Wirklich ALLE Aufträge und Rechnungen (für ALLE Benutzer) unwiderruflich löschen?")) return;
+  for(const inv of DB.invoices) await deleteInvoiceDoc(inv.id);
+  for(const p of DB.projects) await deleteProjectDoc(p.id);
+  currentView = "upload";
+  currentProjectId = null;
+  currentSupplierName = null;
+  navStack = [];
+  render();
+  toast("Alle Daten gelöscht.");
+});
+
+if(window.fb){ initAuth(); } else { window.addEventListener("fb-ready", initAuth); }
+</script>
+</body>
+</html>
