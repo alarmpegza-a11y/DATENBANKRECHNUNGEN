@@ -1182,16 +1182,35 @@ function renderSuppliers(){
 
 function renderSupplierDetail(name){
   if(!name){ goBack("suppliers"); return; }
-  const invs = DB.invoices.filter(i=>i.lieferant===name);
+  const invs = DB.invoices.filter(i=>i.lieferant===name).sort((a,b)=> (b.datum||"").localeCompare(a.datum||""));
   const projectIds = Array.from(new Set(invs.map(i=>i.projectId)));
   const projects = projectIds.map(id=>DB.projects.find(p=>p.id===id)).filter(Boolean);
 
   mainEl.innerHTML = `
     <button class="backlink" id="backBtn">← Zurück zu Subunternehmern</button>
     <h1>🏢 ${escapeHtml(name)}</h1>
-    <p class="subtitle">${projects.length} Auftrag/Aufträge mit Rechnungen von diesem Sub. Klicke einen Auftrag für Rechnungen und Soll/Ist-Vergleich.</p>
+    <p class="subtitle">${projects.length} Auftrag/Aufträge mit Rechnungen von diesem Sub. Klicke einen Auftrag für Soll/Ist-Vergleich.</p>
     <div id="searchSlot"></div>
     <div id="supProjList"></div>
+
+    <div class="section-title" style="margin-top:24px;">Alle Rechnungen von ${escapeHtml(name)} (${invs.length})</div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Datum</th><th>Auftrag</th><th>Rechnungsnr.</th><th>Mengen</th><th></th></tr></thead>
+        <tbody>
+          ${invs.length ? invs.map(inv=>{
+            const p = DB.projects.find(x=>x.id===inv.projectId);
+            return `<tr class="${invoiceNeedsReview(inv)?'needs-review':''}">
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
+              <td><button class="small danger" data-delinv2="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
+            </tr>`;
+          }).join("") : `<tr><td colspan="5" class="muted">Keine Rechnungen.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
   `;
   document.getElementById("backBtn").addEventListener("click", ()=>{ goBack("suppliers"); });
   addSearchBox(document.getElementById("searchSlot"), "Auftrag suchen…", (q)=>{
@@ -1218,6 +1237,23 @@ function renderSupplierDetail(name){
   list.querySelectorAll(".proj-list-item").forEach(el=>{
     el.addEventListener("click", ()=>{
       navigateTo("projectDetail", { projectId: el.dataset.id });
+    });
+  });
+
+  mainEl.querySelectorAll("[data-goto]").forEach(cell=>{
+    cell.addEventListener("click", ()=>{
+      navigateTo("projectDetail", { projectId: cell.dataset.goto });
+    });
+  });
+  mainEl.querySelectorAll("[data-delinv2]").forEach(btn=>{
+    btn.addEventListener("click", async (e)=>{
+      e.stopPropagation();
+      const inv = DB.invoices.find(i=>i.id===btn.dataset.delinv2);
+      if(!inv || !canDeleteInvoice(inv)){ toast("Keine Berechtigung zum Löschen."); return; }
+      if(!confirm("Diese Rechnung wirklich löschen?")) return;
+      await deleteInvoiceDoc(inv.id);
+      toast("Rechnung gelöscht.");
+      renderSupplierDetail(name);
     });
   });
 }
@@ -1259,12 +1295,28 @@ function renderProjects(){
           <div class="muted" style="font-size:12px;">${invs.length} Rechnung(en)</div>
         </div>
         ${needsReview ? `<span class="pill warn">⚠ Prüfen nötig</span>` : (overCount>0 ? `<span class="pill danger">⚠ ${overCount} über Soll</span>` : `<span class="pill ok">im Soll</span>`)}
+        ${hasPerm('deleteAuftraege') ? `<button class="small danger" data-delproj="${p.id}" style="margin-left:10px;">Löschen</button>` : ""}
       </div>
     `;
   }).join("");
   list.querySelectorAll(".proj-list-item").forEach(el=>{
-    el.addEventListener("click", ()=>{
+    el.addEventListener("click", (e)=>{
+      if(e.target.closest("[data-delproj]")) return;
       navigateTo("projectDetail", { projectId: el.dataset.id });
+    });
+  });
+  list.querySelectorAll("[data-delproj]").forEach(btn=>{
+    btn.addEventListener("click", async (e)=>{
+      e.stopPropagation();
+      if(!hasPerm('deleteAuftraege')){ toast("Keine Berechtigung."); return; }
+      const p = DB.projects.find(x=>x.id===btn.dataset.delproj);
+      if(!p) return;
+      const invs = DB.invoices.filter(i=>i.projectId===p.id);
+      if(!confirm(`Auftrag "${p.name}" wirklich löschen? Dabei werden auch alle ${invs.length} zugehörigen Rechnungen gelöscht.`)) return;
+      for(const inv of invs) await deleteInvoiceDoc(inv.id);
+      await deleteProjectDoc(p.id);
+      toast("Auftrag gelöscht.");
+      renderProjects();
     });
   });
 }
@@ -1338,6 +1390,7 @@ function renderProjectDetail(projectId){
           </select>
         </label>
         <button class="danger" id="mergeBtn" style="flex:0 0 auto;" ${hasPerm('deleteAuftraege')?"":"disabled title=\"Nur Admin/berechtigte Nutzer können Aufträge zusammenführen bzw. löschen\""}>Zusammenführen</button>
+        <button class="danger" id="deleteProjBtn" style="flex:0 0 auto;" ${hasPerm('deleteAuftraege')?"":"disabled title=\"Nur Admin/berechtigte Nutzer können Aufträge löschen\""}>Auftrag löschen</button>
       </div>
     </div>
 
@@ -1361,7 +1414,7 @@ function renderProjectDetail(projectId){
               <td class="num">${inv.total!=null?formatCHF(inv.total):"—"}</td>
               <td style="white-space:nowrap;">
                 <button class="small" data-edit="${inv.id}">Bearbeiten</button>
-                <button class="small danger" data-del="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title=\"Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin\""}>Löschen</button>
+                <button class="small danger" data-del="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin' "}>Löschen</button>
               </td>
             </tr>
             <tr class="editRow" data-editrow="${inv.id}" style="display:${expandedInvoiceId===inv.id?'table-row':'none'};">
@@ -1395,6 +1448,15 @@ function renderProjectDetail(projectId){
     toast("Aufträge zusammengeführt.");
     currentProjectId = target.id;
     render();
+  });
+
+  document.getElementById("deleteProjBtn").addEventListener("click", async ()=>{
+    if(!hasPerm('deleteAuftraege')){ toast("Keine Berechtigung zum Löschen von Aufträgen."); return; }
+    if(!confirm(`Auftrag "${p.name}" wirklich löschen? Dabei werden auch alle ${invs.length} zugehörigen Rechnungen gelöscht.`)) return;
+    for(const inv of invs) await deleteInvoiceDoc(inv.id);
+    await deleteProjectDoc(p.id);
+    toast("Auftrag gelöscht.");
+    goBack("projects");
   });
 
   const grid = document.getElementById("catGrid");
@@ -1542,12 +1604,13 @@ function renderInvoices(){
           ${sorted.map(inv=>{
             const p = DB.projects.find(x=>x.id===inv.projectId);
             const search = [(inv.lieferant||""),(p?p.name:""),(inv.rechnungsnr||"")].join(" ").toLowerCase();
-            return `<tr style="cursor:pointer;" data-goto="${inv.projectId}" data-search="${escapeAttr(search)}" class="${invoiceNeedsReview(inv)?'needs-review':''}">
-              <td>${escapeHtml(inv.datum||"—")}</td>
-              <td>${escapeHtml(inv.lieferant||"—")}</td>
-              <td>${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
-              <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
-              <td>${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
+            return `<tr data-search="${escapeAttr(search)}" class="${invoiceNeedsReview(inv)?'needs-review':''}">
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.lieferant||"—")}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
+              <td><button class="small danger" data-delinv="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
             </tr>`;
           }).join("")}
         </tbody>
@@ -1559,9 +1622,20 @@ function renderInvoices(){
       el.style.display = el.dataset.search.includes(q) ? "" : "none";
     });
   });
-  mainEl.querySelectorAll("[data-goto]").forEach(row=>{
-    row.addEventListener("click", ()=>{
-      navigateTo("projectDetail", { projectId: row.dataset.goto });
+  mainEl.querySelectorAll("[data-goto]").forEach(cell=>{
+    cell.addEventListener("click", ()=>{
+      navigateTo("projectDetail", { projectId: cell.dataset.goto });
+    });
+  });
+  mainEl.querySelectorAll("[data-delinv]").forEach(btn=>{
+    btn.addEventListener("click", async (e)=>{
+      e.stopPropagation();
+      const inv = DB.invoices.find(i=>i.id===btn.dataset.delinv);
+      if(!inv || !canDeleteInvoice(inv)){ toast("Keine Berechtigung zum Löschen."); return; }
+      if(!confirm("Diese Rechnung wirklich löschen?")) return;
+      await deleteInvoiceDoc(inv.id);
+      toast("Rechnung gelöscht.");
+      renderInvoices();
     });
   });
 }
