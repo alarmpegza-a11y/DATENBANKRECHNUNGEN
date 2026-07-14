@@ -10,7 +10,7 @@
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
   import {
     getAuth, onAuthStateChanged, signInWithEmailAndPassword,
-    createUserWithEmailAndPassword, signOut
+    createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
     getFirestore, collection, doc, setDoc, addDoc, updateDoc, deleteDoc,
@@ -29,6 +29,7 @@
   const fbApp = initializeApp(firebaseConfig);
   const auth = getAuth(fbApp);
   const dbFs = getFirestore(fbApp);
+  setPersistence(auth, browserLocalPersistence).catch(e => console.warn("Persistence-Fehler:", e));
 
   // Bruecke zum bestehenden (nicht-modularen) App-Code: einfache, promise-basierte Helfer.
   window.fb = {
@@ -199,7 +200,7 @@
     <button class="navbtn" data-view="suppliers">🏢 Subunternehmer <span class="badge" id="supCount">0</span></button>
     <button class="navbtn" data-view="projects">🏗️ Aufträge <span class="badge" id="projCount">0</span></button>
     <button class="navbtn" data-view="invoices">🧾 Alle Rechnungen <span class="badge" id="invCount">0</span><span class="badge" id="reviewBadge" style="background:var(--danger);display:none;">0</span></button>
-    <button class="navbtn" id="navAdmin" data-view="admin" style="display:none;">👤 Benutzerverwaltung</button>
+    <button class="navbtn" id="navAdmin" data-view="admin" style="display:none;">👤 Benutzerverwaltung <span class="badge" id="pendingBadge" style="background:var(--danger);display:none;">0</span></button>
     <div style="margin-top:auto;padding:14px 20px 0 20px;">
       <div id="currentUserBox" style="color:#fff;margin-bottom:10px;"></div>
       <button id="resetAllBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.75);font-size:12px;">🗑️ Alle Daten löschen (Admin)</button>
@@ -268,6 +269,7 @@ function uid(prefix){ return prefix + "_" + Date.now().toString(36) + Math.rando
 
 function isAdmin(){ return !!(currentProfile && currentProfile.role === "admin"); }
 function hasPerm(key){ return isAdmin() || !!(currentProfile && currentProfile.permissions && currentProfile.permissions[key]); }
+function isApproved(){ return isAdmin() || !!(currentProfile && currentProfile.approved === true); }
 
 function toDateSafe(v){
   if(!v) return null;
@@ -345,15 +347,18 @@ function renderAuthScreen(mode){
     <div class="card">
       <h1 style="margin-bottom:4px;">PE Rechnungskontrolle</h1>
       <p class="subtitle">${isSignup ? "Konto erstellen" : "Anmelden"}</p>
-      <label class="field"><span>E-Mail</span><input type="email" id="authEmail" autocomplete="username"></label>
-      <label class="field"><span>Passwort</span><input type="password" id="authPw" autocomplete="${isSignup?'new-password':'current-password'}"></label>
-      <div id="authError" class="flag" style="margin-bottom:10px;font-size:13px;"></div>
-      <button class="primary" id="authSubmit" style="width:100%;margin-bottom:10px;">${isSignup ? "Konto erstellen" : "Anmelden"}</button>
-      <button id="authToggle" style="width:100%;">${isSignup ? "Ich habe bereits ein Konto" : "Neu hier? Konto erstellen"}</button>
+      <form id="authForm">
+        <label class="field"><span>E-Mail</span><input type="email" id="authEmail" name="username" autocomplete="username" required></label>
+        <label class="field"><span>Passwort</span><input type="password" id="authPw" name="password" autocomplete="${isSignup?'new-password':'current-password'}" required></label>
+        <div id="authError" class="flag" style="margin-bottom:10px;font-size:13px;"></div>
+        <button type="submit" class="primary" id="authSubmit" style="width:100%;margin-bottom:10px;">${isSignup ? "Konto erstellen" : "Anmelden"}</button>
+        <button type="button" id="authToggle" style="width:100%;">${isSignup ? "Ich habe bereits ein Konto" : "Neu hier? Konto erstellen"}</button>
+      </form>
     </div>
   `;
   document.getElementById("authToggle").addEventListener("click", ()=> renderAuthScreen(isSignup ? "login" : "signup"));
-  document.getElementById("authSubmit").addEventListener("click", async ()=>{
+  document.getElementById("authForm").addEventListener("submit", async (evt)=>{
+    evt.preventDefault();
     const email = document.getElementById("authEmail").value.trim();
     const pw = document.getElementById("authPw").value;
     const errEl = document.getElementById("authError");
@@ -363,7 +368,7 @@ function renderAuthScreen(mode){
       if(isSignup){
         const cred = await window.fb.signup(email, pw);
         await window.fb.setDoc("users", cred.user.uid, {
-          email, role: "mitarbeiter", permissions: { ...DEFAULT_PERMISSIONS }, createdAt: window.fb.serverTimestamp(),
+          email, role: "mitarbeiter", approved: false, permissions: { ...DEFAULT_PERMISSIONS }, createdAt: window.fb.serverTimestamp(),
         });
       } else {
         await window.fb.login(email, pw);
@@ -392,25 +397,60 @@ function initAuth(){
       return;
     }
     currentUser = { uid: user.uid, email: user.email };
-    document.querySelector(".app").style.display = "";
     const authRoot = document.getElementById("authRoot");
     if(authRoot) authRoot.remove();
 
     if(unsubProfile) unsubProfile();
     unsubProfile = window.fb.watchUserDoc(user.uid, (snap)=>{
       currentProfile = snap.exists() ? snap.data() : null;
-      if(!snap.exists()) console.warn("Kein users/"+user.uid+"-Dokument gefunden -- Rolle bleibt 'Mitarbeiter' ohne Extra-Rechte.");
+      if(!snap.exists()) console.warn("Kein users/"+user.uid+"-Dokument gefunden.");
+
+      if(!isApproved()){
+        document.querySelector(".app").style.display = "none";
+        stopDataListeners();
+        renderPendingScreen();
+        return;
+      }
+
+      document.querySelector(".app").style.display = "";
+      const pendingRoot = document.getElementById("pendingRoot");
+      if(pendingRoot) pendingRoot.remove();
       updateSidebarForUser();
       if(isAdmin() && !unsubUsers){
         unsubUsers = window.fb.watchCollection("users", (usnap)=>{
           allUsers = usnap.docs.map(d=>({ id: d.id, ...d.data() }));
+          const pendingBadge = document.getElementById("pendingBadge");
+          const pendingCount = allUsers.filter(u=>u.role!=="admin" && !u.approved).length;
+          if(pendingBadge){
+            pendingBadge.textContent = pendingCount;
+            pendingBadge.style.display = pendingCount > 0 ? "" : "none";
+          }
           if(currentView==="admin") render();
         }, (err)=> showDbError("users", err));
       }
+      startDataListeners();
       render();
     }, (err)=> showDbError("users/"+user.uid, err));
-    startDataListeners();
   });
+}
+
+function renderPendingScreen(){
+  let root = document.getElementById("pendingRoot");
+  if(!root){
+    root = document.createElement("div");
+    root.id = "pendingRoot";
+    document.body.appendChild(root);
+  }
+  root.style.cssText = "max-width:380px;margin:80px auto;padding:0 20px;";
+  root.innerHTML = `
+    <div class="card" style="text-align:center;">
+      <div style="font-size:32px;margin-bottom:10px;">⏳</div>
+      <h1 style="margin-bottom:4px;">Konto wartet auf Freischaltung</h1>
+      <p class="subtitle">Dein Konto (${escapeHtml(currentUser.email)}) wurde erstellt, muss aber zuerst von einem Admin freigeschaltet werden, bevor du Rechnungen sehen oder hochladen kannst.</p>
+      <button id="pendingLogout" style="width:100%;">Abmelden</button>
+    </div>
+  `;
+  document.getElementById("pendingLogout").addEventListener("click", ()=> window.fb.logout());
 }
 
 function updateSidebarForUser(){
@@ -1548,16 +1588,25 @@ function renderAdmin(){
     mainEl.innerHTML = `<h1>Benutzerverwaltung</h1><div class="empty">Nur für Admins zugänglich.</div>`;
     return;
   }
+  const pendingCount = allUsers.filter(u=>u.role!=="admin" && !u.approved).length;
   mainEl.innerHTML = `
     <h1>Benutzerverwaltung</h1>
-    <p class="subtitle">${allUsers.length} Benutzer registriert. Als Admin kannst du Rollen und Einzelrechte vergeben.</p>
+    <p class="subtitle">${allUsers.length} Benutzer registriert${pendingCount>0 ? ` — <b style="color:var(--danger)">${pendingCount} warten auf Freischaltung</b>` : ""}.</p>
     <div class="card">
       <table>
-        <thead><tr><th>E-Mail</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th></tr></thead>
+        <thead><tr><th>E-Mail</th><th>Status</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th></tr></thead>
         <tbody>
           ${allUsers.map(u=>`
-            <tr data-uid="${u.id}">
+            <tr data-uid="${u.id}" class="${u.role!=="admin" && !u.approved ? "needs-review" : ""}">
               <td>${escapeHtml(u.email||u.id)}</td>
+              <td>
+                ${u.role==="admin"
+                  ? `<span class="pill ok">Admin</span>`
+                  : u.approved
+                    ? `<span class="pill ok">✓ freigeschaltet</span> <button class="small danger" data-toggle-approve="${u.id}" data-next="false">Sperren</button>`
+                    : `<span class="pill warn">⚠ wartet</span> <button class="small primary" data-toggle-approve="${u.id}" data-next="true">Freischalten</button>`
+                }
+              </td>
               <td>
                 <select data-role>
                   <option value="mitarbeiter" ${u.role!=="admin"?"selected":""}>Mitarbeiter</option>
@@ -1571,9 +1620,17 @@ function renderAdmin(){
           `).join("")}
         </tbody>
       </table>
-      <p class="subtitle" style="margin-top:14px;">Admins haben automatisch alle Rechte. Mitarbeiter dürfen ohne Häkchen nur ihre eigenen Rechnungen der letzten 5 Stunden löschen.</p>
+      <p class="subtitle" style="margin-top:14px;">Neu registrierte Mitarbeiter sind gesperrt, bis du sie hier freischaltest. Admins haben automatisch alle Rechte. Freigeschaltete Mitarbeiter dürfen ohne zusätzliche Häkchen nur ihre eigenen Rechnungen der letzten 5 Stunden löschen.</p>
     </div>
   `;
+  mainEl.querySelectorAll("[data-toggle-approve]").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const targetUid = btn.dataset.toggleApprove;
+      const next = btn.dataset.next === "true";
+      await window.fb.updateDoc("users", targetUid, { approved: next });
+      toast(next ? "Benutzer freigeschaltet." : "Benutzer gesperrt.");
+    });
+  });
   mainEl.querySelectorAll("tr[data-uid]").forEach(row=>{
     const targetUid = row.dataset.uid;
     row.querySelector("[data-role]").addEventListener("change", async (e)=>{
