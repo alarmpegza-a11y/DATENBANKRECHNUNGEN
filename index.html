@@ -225,9 +225,13 @@ const DEFAULT_CATEGORIES = [
 // Bekannte Subunternehmer -> sauberer Anzeigename (hilft bei Logos/Stilschriften, die OCR schlecht liest)
 const KNOWN_SUPPLIERS = [
   { hint: "froh haustechnik", name: "Froh Haustechnik GmbH" },
+  { hint: "fa bauservice", name: "Froh Haustechnik GmbH" }, // dieselbe Firma wie Froh Haustechnik -- bewusst zusammengefuehrt
   { hint: "fubs", name: "FUBS Brandschutz" },
   { hint: "5b gipser", name: "5B Gipser GmbH" },
   { hint: "gipser", name: "5B Gipser GmbH" },
+  { hint: "nc-haushaltsgeräte", name: "NC-Haushaltsgeräte GmbH" },
+  { hint: "nc-haushaltsgerate", name: "NC-Haushaltsgeräte GmbH" },
+  { hint: "sui innova", name: "SUI INNOVA GmbH" },
 ];
 
 const DEFAULT_PERMISSIONS = { deleteAuftraege: false, deleteSubunternehmer: false, deleteAnyRechnung: false };
@@ -585,6 +589,10 @@ function classifyPage(text){
   if(/abmessung\s*in\s*m/.test(t) && /l[aä]nge/.test(t) && /breite/.test(t)) return "attachment";
   if(/zahlteil|empfangsschein/.test(t)) return "attachment";
   if(text.replace(/\s/g,"").length < 80) return "attachment"; // fast leere Seite / reiner QR-Beleg
+  // Mehrseitige Rechnungen: eine Folgeseite ohne jeden neuen Rechnungs-/Objekt-Hinweis ist
+  // vermutlich die Fortsetzung der Positionstabelle der vorherigen Seite, keine neue Rechnung.
+  const hasInvoiceMarker = /rechnung|auftragsnr|objekt\s*:|\badresse\b|baustelle/i.test(t);
+  if(!hasInvoiceMarker) return "attachment";
   return "invoice_start";
 }
 
@@ -614,9 +622,15 @@ function parseInvoiceText(text){
   const result = { lieferant:"", rechnungsnr:"", datum:"", objekt:"", auftragsnummer:"", total:null, items:[] };
 
   // --- Lieferant ---
+  // Zeilen, die den Empfaenger (uns selbst) beschreiben, duerfen nie als Lieferant durchgehen.
+  const isOwnCompanyLine = l => l.includes("pe fabrikation") || l.includes("fabrikations ag") || l.includes("slijepcevic") || l.includes("feldmoosstrasse");
+  // E-Mail-Kopfzeilen, Adresszeilen o.ae. sehen nie wie ein Firmenname aus -- fuer den
+  // Blindflug-Fallback (letzte Zeile ohne besseren Treffer) explizit ausschliessen.
+  const looksLikeNoise = l => /^(von|from|an|to|betreff|subject|cc|bcc|gesendet|datum|date)\s*:/i.test(l)
+    || l.includes("@") || /<[^>]+>/.test(l) || !/[a-zäöü]{2,}/i.test(l);
   for(const line of rawLines.slice(0,14)){
     const l = line.toLowerCase();
-    if((l.includes("gmbh") || / ag\b/.test(l) || l.endsWith("ag")) && !l.includes("pe fabrikation") && !l.includes("fabrikations ag")){
+    if((l.includes("gmbh") || / ag\b/.test(l) || l.endsWith("ag")) && !isOwnCompanyLine(l)){
       result.lieferant = line.replace(/\s{2,}/g," ").trim();
       break;
     }
@@ -626,7 +640,10 @@ function parseInvoiceText(text){
       if(lower.includes(s.hint)){ result.lieferant = s.name; break; }
     }
   }
-  if(!result.lieferant && rawLines.length) result.lieferant = rawLines[0];
+  if(!result.lieferant){
+    const fallbackLine = rawLines.find(l => l.trim() && !isOwnCompanyLine(l.toLowerCase()) && !looksLikeNoise(l));
+    if(fallbackLine) result.lieferant = fallbackLine;
+  }
 
   // Anzeigename vereinheitlichen, falls ein bekannter Sub erkannt wurde
   for(const s of KNOWN_SUPPLIERS){
@@ -634,7 +651,7 @@ function parseInvoiceText(text){
   }
 
   // --- Rechnungsnummer ---
-  let m = text.match(/Rechnung(?:s-?Nr\.?)?\.?\s*[:\-]?\s*([A-Za-z0-9.\-\/]{3,})/i);
+  let m = text.match(/Rechnung\s*(?:s-?Nr\.?|Nr\.?)?\.?\s*[:\-]?\s*([A-Za-z0-9.\-\/]{3,})/i);
   if(m) result.rechnungsnr = m[1].trim();
   m = text.match(/Rechnung\s+(RE-\d+)/i);
   if(m) result.rechnungsnr = m[1];
@@ -668,6 +685,20 @@ function parseInvoiceText(text){
     m = text.match(/Baustelle\s+[\d\/A-Za-z.\-]+\s*\n?\s*([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:[ \t]+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
     if(!m) m = text.match(/Baustelle\s+[\d\/A-Za-z.\-]+\s*\n?\s*([^\n]+)/i);
     if(m) result.objekt = sanitizeObjekt(m[1]);
+  }
+  if(!result.objekt){
+    // Manche Rechnungen nennen das Objekt ganz ohne Label -- einfach als eigene Zeile direkt
+    // nach der Rechnungsnummer. Als letzten Fallback: die Zeile danach nehmen, wenn sie
+    // plausibel wie ein Ort/Objektname aussieht (nicht selbst eine bekannte Kopfzeile).
+    const rnrLineIdx = rawLines.findIndex(l => /rechnung/i.test(l) && /\d/.test(l));
+    if(rnrLineIdx > -1 && rawLines[rnrLineIdx+1]){
+      const cand = rawLines[rnrLineIdx+1];
+      const cl = cand.toLowerCase();
+      const isLabelLine = /^(datum|zahlbar|ihr ansprechpartner|kundennummer|sehr geehrte|guten tag|mwst|auftragsnr|adresse)/i.test(cand) || isOwnCompanyLine(cl);
+      if(!isLabelLine && /[A-Za-zÄÖÜäöü]{3,}/.test(cand) && cand.length < 60){
+        result.objekt = sanitizeObjekt(cand);
+      }
+    }
   }
 
   // --- Auftragsnummer ---
@@ -1153,6 +1184,7 @@ function renderSuppliers(){
           <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
         </div>
         <div class="pmeta">
+          <button class="small" data-renamesup="${escapeAttr(name)}">Umbenennen</button>
           ${hasPerm('deleteSubunternehmer') ? `<button class="small danger" data-delsup="${escapeAttr(name)}">Löschen</button>` : ""}
         </div>
       </div>
@@ -1160,8 +1192,20 @@ function renderSuppliers(){
   }).join("");
   list.querySelectorAll(".proj-list-item").forEach(el=>{
     el.addEventListener("click", (e)=>{
-      if(e.target.closest("[data-delsup]")) return;
+      if(e.target.closest("[data-delsup]") || e.target.closest("[data-renamesup]")) return;
       navigateTo("supplierDetail", { supplierName: el.dataset.name });
+    });
+  });
+  list.querySelectorAll("[data-renamesup]").forEach(btn=>{
+    btn.addEventListener("click", async (e)=>{
+      e.stopPropagation();
+      const oldName = btn.dataset.renamesup;
+      const newName = prompt(`Neuen Namen für "${oldName}" eingeben (z.B. den korrekten Firmennamen). Stimmt der Name mit einem bereits bestehenden Subunternehmer überein, werden beide zusammengeführt:`, oldName);
+      if(!newName || !newName.trim() || newName.trim() === oldName) return;
+      const toRename = DB.invoices.filter(i=>i.lieferant===oldName);
+      for(const inv of toRename){ inv.lieferant = newName.trim(); await saveInvoice(inv); }
+      toast(`"${oldName}" umbenannt zu "${newName.trim()}".`);
+      renderSuppliers();
     });
   });
   list.querySelectorAll("[data-delsup]").forEach(btn=>{
@@ -1188,7 +1232,10 @@ function renderSupplierDetail(name){
 
   mainEl.innerHTML = `
     <button class="backlink" id="backBtn">← Zurück zu Subunternehmern</button>
-    <h1>🏢 ${escapeHtml(name)}</h1>
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <h1>🏢 ${escapeHtml(name)}</h1>
+      <button class="small" id="renameSupBtn">Umbenennen</button>
+    </div>
     <p class="subtitle">${projects.length} Auftrag/Aufträge mit Rechnungen von diesem Sub. Klicke einen Auftrag für Soll/Ist-Vergleich.</p>
     <div id="searchSlot"></div>
     <div id="supProjList"></div>
@@ -1213,6 +1260,15 @@ function renderSupplierDetail(name){
     </div>
   `;
   document.getElementById("backBtn").addEventListener("click", ()=>{ goBack("suppliers"); });
+  document.getElementById("renameSupBtn").addEventListener("click", async ()=>{
+    const newName = prompt(`Neuen Namen für "${name}" eingeben:`, name);
+    if(!newName || !newName.trim() || newName.trim() === name) return;
+    const toRename = DB.invoices.filter(i=>i.lieferant===name);
+    for(const inv of toRename){ inv.lieferant = newName.trim(); await saveInvoice(inv); }
+    toast(`Umbenannt zu "${newName.trim()}".`);
+    currentSupplierName = newName.trim();
+    render();
+  });
   addSearchBox(document.getElementById("searchSlot"), "Auftrag suchen…", (q)=>{
     document.querySelectorAll("#supProjList .proj-list-item").forEach(el=>{
       el.style.display = el.dataset.search.includes(q) ? "" : "none";
