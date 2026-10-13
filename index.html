@@ -632,14 +632,13 @@ let ocrWorkerPromise = null;
 // Anzahl typischer OCR-Fehler in Zahlen (Buchstaben mitten in Zahlen, "6',53L.20", "0.2s", "2O24")
 function ocrGarbageScore(text){
   let score = 0;
-  const toks = String(text||"").split(/\s+/);
-  for(const t of toks){
-    if(/\d['’`][,.]\d/.test(t)) { score++; continue; }                         // 6',531.20
+  for(let t of String(text||"").split(/\s+/)){
+    t = t.replace(/^[(*"„]+|[)*"“%:;]+$/g, "");
     const digits = (t.match(/\d/g)||[]).length;
     if(digits < 2) continue;
-    if(/^(CH|DE|AT|LI)\d{2}/i.test(t) || /^CHE-?\d/i.test(t)) continue;       // IBAN / MWST
-    if(/\d[x×]\d/i.test(t) || /^\d+(mm|cm|m|m2|m3|kg|h)$/i.test(t)) continue;  // 1x18mm, 30mm
-    if(/\d[LlIOoSsg]|[LlIOoSsg]\d/.test(t.replace(/^(RE|NR|AB|A)[-.]?/i,""))) score++;
+    if(/\d['’`][,.]\d/.test(t) || /\d[,.]{2}\d/.test(t)){ score++; continue; }        // 6',531.20 · 1,.52 · 1..70
+    // Zahl, in der Buchstaben/Zeichen stecken, die OCR mit Ziffern verwechselt (L/l/I/!→1, O/o→0, S/s→5, g→9)
+    if(/^[\d'’.,!|LlIOoSsg-]+$/.test(t) && /[LlIOoSsg!|]/.test(t)) score++;          // 0.2s · L'662.90 · 2025L9240 · 07.!0.2026
   }
   return score;
 }
@@ -1368,7 +1367,7 @@ async function handleFiles(fileList){
         const parsed = parseInvoiceText(g.allText);
         const existing = findExistingInvoice(parsed);
         if(existing){
-          if(!hasOriginal(existing) && !existing.gedrucktAm){
+          if((!hasOriginal(existing) || invoiceUnreliable(existing)) && !existing.gedrucktAm){
             const pid = await getPdfId();
             if(pid) await attachPdfToInvoice(existing, pid, g.pages);
             parsed._rawText = g.allText;
@@ -2401,7 +2400,7 @@ function renderAdmin(){
     <p class="subtitle">${allUsers.length} Benutzer registriert${pendingCount>0 ? ` — <b style="color:var(--danger)">${pendingCount} warten auf Freischaltung</b>` : ""}.</p>
     <div class="card">
       <table>
-        <thead><tr><th>E-Mail</th><th>Status</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th><th>Preise bearbeiten</th></tr></thead>
+        <thead><tr><th>E-Mail</th><th>Status</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th><th>Preise bearbeiten</th><th title="Erscheinen im Stempel bei Mat.preis">Initialen</th></tr></thead>
         <tbody>
           ${allUsers.map(u=>`
             <tr data-uid="${u.id}" class="${u.role!=="admin" && !u.approved ? "needs-review" : ""}">
@@ -2426,13 +2425,23 @@ function renderAdmin(){
               <td><input type="checkbox" data-perm="deleteSubunternehmer" ${u.permissions?.deleteSubunternehmer?"checked":""} ${u.role==="admin"?"disabled":""}></td>
               <td><input type="checkbox" data-perm="deleteAnyRechnung" ${u.permissions?.deleteAnyRechnung?"checked":""} ${u.role==="admin"?"disabled":""}></td>
               <td><input type="checkbox" data-perm="editPreise" ${u.permissions?.editPreise?"checked":""} ${u.role==="admin"?"disabled":""}></td>
+              <td><input type="text" data-initialen="${u.id}" value="${escapeAttr(u.initialen||"")}" placeholder="${escapeAttr(defaultInitials(u.email))}" maxlength="5" style="width:70px;text-transform:uppercase;"></td>
             </tr>
           `).join("")}
         </tbody>
       </table>
-      <p class="subtitle" style="margin-top:14px;">Nur Adressen @pe-fabrikation.ch können freigeschaltet werden, alle anderen sind automatisch gesperrt. Neu registrierte Mitarbeiter sind gesperrt, bis du sie hier freischaltest. Admins haben automatisch alle Rechte. Freigeschaltete Mitarbeiter dürfen ohne zusätzliche Häkchen nur ihre eigenen Rechnungen der letzten 5 Stunden löschen.</p>
+      <p class="subtitle" style="margin-top:14px;"><b>Initialen</b> erscheinen beim Drucken im Stempel in der Zeile „Mat.preis“ (Freigabe-Datum + Initialen der Person, die freigegeben hat). Leer = Vorschlag aus der E-Mail-Adresse (grau).</p>
+      <p class="subtitle" style="margin-top:6px;">Nur Adressen @pe-fabrikation.ch können freigeschaltet werden, alle anderen sind automatisch gesperrt. Neu registrierte Mitarbeiter sind gesperrt, bis du sie hier freischaltest. Admins haben automatisch alle Rechte. Freigeschaltete Mitarbeiter dürfen ohne zusätzliche Häkchen nur ihre eigenen Rechnungen der letzten 5 Stunden löschen.</p>
     </div>
   `;
+  mainEl.querySelectorAll("[data-initialen]").forEach(inp=>{
+    inp.addEventListener("change", async ()=>{
+      const v = inp.value.trim().toUpperCase().slice(0,5);
+      inp.value = v;
+      try{ await window.fb.updateDoc("users", inp.dataset.initialen, { initialen: v }); toast(v ? `Initialen „${v}“ gespeichert.` : "Initialen entfernt."); }
+      catch(err){ showDbError("users", err); }
+    });
+  });
   mainEl.querySelectorAll("[data-toggle-approve]").forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       const targetUid = btn.dataset.toggleApprove;
@@ -3121,7 +3130,7 @@ function renderPruefPanel(el, getInv){
         const d = checkInvoice(i).filter(x=>x.level==="danger").length;
         if(d && !confirm(`Die Prüfung hat ${d} Fehler gefunden. Rechnung trotzdem freigeben?`)) return;
       }
-      i.pruefung = { status: next, kommentar: kom.value, by: currentUser ? currentUser.email : "", at: new Date().toLocaleString("de-CH") };
+      i.pruefung = { status: next, kommentar: kom.value, by: currentUser ? currentUser.email : "", at: new Date().toLocaleString("de-CH"), ...(next==="ok" ? freigabeVermerk() : {}) };
       saveInvoice(i);
       renderPruefPanel(el, getInv);
       toast(next==="ok" ? "Rechnung freigegeben." : next==="beanstandet" ? "Rechnung beanstandet – zählt nicht mehr ins Ist." : "Status zurückgesetzt.");
@@ -4015,7 +4024,31 @@ function stampScaleX(d){
   const w = [...t].reduce((s,ch)=> s + (/[0-9]/.test(ch) ? 0.556 : ch===" " ? 0.278 : ch==="." ? 0.278 : /[MÄ]/.test(ch) ? 0.833 : /[IJ]/.test(ch) ? 0.3 : 0.667), 0) * 28;
   return Math.min(1, +(103 / w).toFixed(3));
 }
-function stampSvg(d){
+function defaultInitials(email){
+  const parts = String(email||"").split("@")[0].split(/[._-]+/).filter(Boolean);
+  if(parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return (parts[0]||"").slice(0,2).toUpperCase();
+}
+function initialsFor(email){
+  const u = (allUsers||[]).find(x => String(x.email||"").toLowerCase() === String(email||"").toLowerCase());
+  if(u && u.initialen) return u.initialen;
+  if(currentUser && String(currentUser.email).toLowerCase() === String(email||"").toLowerCase() && currentProfile && currentProfile.initialen) return currentProfile.initialen;
+  return defaultInitials(email);
+}
+function shortDate(d){ return `${String(d.getDate()).padStart(2,"0")}.${String(d.getMonth()+1).padStart(2,"0")}.${String(d.getFullYear()).slice(-2)}`; }
+function freigabeVermerk(){
+  return { initialen: initialsFor(currentUser && currentUser.email), freigabeDatum: shortDate(new Date()) };
+}
+// Text fuer die Zeile "Mat.preis": Freigabe-Datum + Initialen der Person, die freigegeben hat
+function matPreisVermerk(inv){
+  const p = inv.pruefung || {};
+  let datum = p.freigabeDatum;
+  if(!datum && p.at){ const m = String(p.at).match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})/); if(m) datum = `${m[1].padStart(2,"0")}.${m[2].padStart(2,"0")}.${m[3].slice(-2)}`; }
+  if(!datum) datum = shortDate(new Date());
+  const ini = p.initialen || initialsFor(p.by || (currentUser && currentUser.email));
+  return `${datum} ${ini}`.trim();
+}
+function stampSvg(d, matText){
   const ink = "#1f1f22";
   return `<svg viewBox="0 0 292 120" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;overflow:visible;">
     <g fill="${ink}">
@@ -4033,6 +4066,7 @@ function stampSvg(d){
       <text x="4" y="88.2">Mat.preis</text>
       <text x="4" y="112.8">Fibu</text>
     </g>
+    ${matText ? `<text x="110" y="89" transform="rotate(-1.5 110 89)" fill="#1f2f8f" font-family="'Segoe Print','Bradley Hand','Ink Free','Comic Sans MS','Chalkboard SE',cursive" font-size="18.5">${escapeHtml(matText)}</text>` : ""}
   </svg>`;
 }
 
@@ -4160,12 +4194,16 @@ function sameSupplier(a, b){
   const nb = String(b).toLowerCase().replace(/\b(gmbh|ag|sa|sàrl)\b/g,"").trim();
   return na === nb || (na.split(/\s+/)[0] && na.split(/\s+/)[0] === nb.split(/\s+/)[0]);
 }
+// Wurde eine gespeicherte Rechnung frueher aus einer fehlerhaften Scanner-Textebene gelesen? Dann sind Nr./Betrag/Datum unzuverlaessig.
+function invoiceUnreliable(i){
+  return ocrGarbageScore(i.rawText||"") >= 3 || !i.datum || !(i.items||[]).length;
+}
 function findExistingInvoice(parsed){
   const nr = cleanRnr(parsed.rechnungsnr).toLowerCase();
   const sameSup = DB.invoices.filter(i => sameSupplier(i.lieferant, parsed.lieferant));
   // Widerspruch = sicher eine ANDERE Rechnung (anderer Betrag oder anderes Objekt)
   const contradicts = i => {
-    if(num(i.total)!=null && parsed.total!=null && Math.abs(+i.total - +parsed.total) > 0.01) return true;
+    if(!invoiceUnreliable(i) && num(i.total)!=null && parsed.total!=null && Math.abs(+i.total - +parsed.total) > 0.01) return true;
     const oi = i.objekt || (DB.projects.find(p=>p.id===i.projectId)||{}).address || "";
     if(oi && parsed.objekt && scoreAddress(stripHaus(oi), stripHaus(parsed.objekt)) === 0) return true;
     return false;
@@ -4184,11 +4222,28 @@ function findExistingInvoice(parsed){
       && scoreAddress(stripHaus(i.objekt || (DB.projects.find(p=>p.id===i.projectId)||{}).address || ""), stripHaus(parsed.objekt)) >= 2);
     if(byObj.length === 1) return byObj[0];
   }
+  // alte, unzuverlaessig gelesene Rechnung ohne Original am gleichen Objekt (Nummer/Betrag/Datum damals falsch gelesen)
+  if(parsed.objekt){
+    const byBad = sameSup.filter(i => !i.gedrucktAm && invoiceUnreliable(i)
+      && scoreAddress(stripHaus(i.objekt || (DB.projects.find(p=>p.id===i.projectId)||{}).address || ""), stripHaus(parsed.objekt)) >= 2);
+    if(byBad.length === 1) return byBad[0];
+  }
   return null;
 }
 // Beim Ergaenzen des Originals frueher falsch gelesene Werte korrigieren
 async function refreshFromParsed(inv, parsed){
   const upd = {};
+  if(invoiceUnreliable(inv)){
+    // frueher falsch gelesen -> mit der neuen, sauberen Lesung ueberschreiben
+    if(parsed.rechnungsnr) upd.rechnungsnr = parsed.rechnungsnr;
+    if(parsed.datum) upd.datum = parsed.datum;
+    if(parsed.total!=null) upd.total = parsed.total;
+    if(parsed.auftragsnummer) upd.auftragsnummer = parsed.auftragsnummer;
+    if(parsed.items && parsed.items.length && !(inv.items||[]).length) upd.items = parsed.items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: it.ep!==undefined ? it.ep : null }));
+    if(parsed._rawText) upd.rawText = String(parsed._rawText).slice(0, 30000);
+    if(Object.keys(upd).length){ Object.assign(inv, upd); await window.fb.setDocMerge("invoices", inv.id, upd); }
+    return Object.keys(upd);
+  }
   if(parsed.lieferant && compactName(parsed.lieferant)!==compactName(inv.lieferant) && getSubFor(parsed.lieferant) && !getSubFor(inv.lieferant)) upd.lieferant = parsed.lieferant;
   if(num(inv.total)==null && parsed.total!=null) upd.total = parsed.total;
   if(parsed.rechnungsnr && cleanRnr(parsed.rechnungsnr)!==cleanRnr(inv.rechnungsnr)){
@@ -4384,7 +4439,7 @@ function renderPrintCenter(){
     if(!ok.length){ toast("Alle markierten Rechnungen haben Fehler – bitte einzeln prüfen."); return; }
     if(!confirm(`${ok.length} Rechnung(en) freigeben?${bad?`\n${bad} Rechnung(en) mit Fehlern werden übersprungen.`:""}`)) return;
     for(const inv of ok){
-      inv.pruefung = { status:"ok", kommentar:(inv.pruefung&&inv.pruefung.kommentar)||"", by: currentUser.email, at: new Date().toLocaleString("de-CH") };
+      inv.pruefung = { status:"ok", kommentar:(inv.pruefung&&inv.pruefung.kommentar)||"", by: currentUser.email, at: new Date().toLocaleString("de-CH"), ...freigabeVermerk() };
       await saveInvoice(inv);
     }
     printSel.clear();
@@ -4465,7 +4520,7 @@ async function openPrintPreview(invs){
       body.innerHTML = imgs.map((src, n)=>`
         <div class="ppage" data-inv="${inv.id}">
           <img src="${src}" alt="">
-          ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv))}</div>` : ""}
+          ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}</div>` : ""}
         </div>`).join("");
       body.querySelectorAll(".pstamp").forEach(wireStamp);
       msg.textContent = `– ${imgs.length} Seite(n), Stempel verschiebbar`;
