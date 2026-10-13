@@ -281,7 +281,7 @@ const DEFAULT_CATEGORIES = [
   { key: "SilentPanel", label: "Geberit SilentPanel", unit: "Stk", keywords: ["silentpanel","silent panel","silent-panel"] },
   { key: "Verbinden", label: "Leitungen verbinden", unit: "Stk", keywords: ["verbinden","verschweissen"] },
   { key: "Regie", label: "Regie (Stunden)", unit: "h", keywords: ["regie"] },
-  { key: "Anfahrt", label: "Anfahrt / Parking", unit: "Stk", keywords: ["anfahrt","parking","fahrtspesen"] },
+  { key: "Anfahrt", label: "Anfahrt / Installation", unit: "Stk", keywords: ["anfahrt","parking","fahrtspesen","installationspauschale","einrichtungspauschale","baustelleneinrichtung","installation pauschal"] },
   { key: "Entsorgung", label: "Entsorgung", unit: "Stk", keywords: ["entsorgung","abfall"] },
   { key: "Elemente", label: "Elemente (allg.)", unit: "Stk", keywords: ["element"] },
   { key: "Sonstiges", label: "⚠ Nicht zugeordnet", unit: "Stk", keywords: [] },
@@ -695,6 +695,7 @@ function classifyPage(text){
   if(/ausmassblatt\s*nr/.test(t)) return "attachment";
   if(/abmessung\s*in\s*m/.test(t) && /l[aä]nge/.test(t) && /breite/.test(t)) return "attachment";
   if(/zahlteil|empfangsschein/.test(t)) return "attachment";
+  if(/kunde\s*:\s*bauvorhaben\s*:/.test(t) || /total\s+ausflockungen?/.test(t) && !/rechnung/.test(t)) return "attachment"; // Ausmass-Formular
   if(text.replace(/\s/g,"").length < 80) return "attachment"; // fast leere Seite / reiner QR-Beleg
   // Mehrseitige Rechnungen: eine Folgeseite ohne jeden neuen Rechnungs-/Objekt-Hinweis ist
   // vermutlich die Fortsetzung der Positionstabelle der vorherigen Seite, keine neue Rechnung.
@@ -708,8 +709,14 @@ function splitPagesIntoInvoices(pages){
   let current = null;
   pages.forEach(p => {
     const type = classifyPage(p.text);
-    if(type === "invoice_start" || !current){
-      current = { pages: [p.pageNum], allText: p.text, sources: [p.source] };
+    if(type === "invoice_start" && current && current.onlyAttach){
+      // fuehrende Beilage-Seiten (z.B. Ausmass vor der Rechnung) gehoeren zur folgenden Rechnung
+      current.pages.push(p.pageNum);
+      current.allText = p.text + "\n" + current.allText;
+      current.sources.push(p.source);
+      current.onlyAttach = false;
+    } else if(type === "invoice_start" || !current){
+      current = { pages: [p.pageNum], allText: p.text, sources: [p.source], onlyAttach: type !== "invoice_start" };
       groups.push(current);
     } else {
       current.pages.push(p.pageNum);
@@ -735,11 +742,13 @@ function parseInvoiceText(text){
   // Blindflug-Fallback (letzte Zeile ohne besseren Treffer) explizit ausschliessen.
   const looksLikeNoise = l => /^(von|from|an|to|betreff|subject|cc|bcc|gesendet|datum|date)\s*:/i.test(l)
     || l.includes("@") || /<[^>]+>/.test(l) || !/[a-zäöü]{2,}/i.test(l);
-  for(const line of rawLines.slice(0,14)){
-    const l = line.toLowerCase();
-    if((l.includes("gmbh") || / ag\b/.test(l) || l.endsWith("ag")) && !isOwnCompanyLine(l)){
-      result.lieferant = line.replace(/\s{2,}/g," ").trim();
-      break;
+  // 1) Schweizer QR-Rechnung: "Konto / Zahlbar an" nennt den Rechnungssteller eindeutig
+  result.lieferant = creditorFromQR(rawLines, isOwnCompanyLine);
+  // 2) Firmenname mit Rechtsform (GmbH, AG, SA …) im Kopf der Rechnung
+  if(!result.lieferant){
+    for(const line of rawLines.slice(0,20)){
+      const n = companyNameIn(line, isOwnCompanyLine);
+      if(n){ result.lieferant = n; break; }
     }
   }
   if(!result.lieferant){
@@ -747,8 +756,13 @@ function parseInvoiceText(text){
       if(lower.includes(s.hint)){ result.lieferant = s.name; break; }
     }
   }
+  // 3) Webseite / E-Mail-Domain des Absenders (www.trendisol.ch -> Trendisol)
   if(!result.lieferant){
-    const fallbackLine = rawLines.find(l => l.trim() && !isOwnCompanyLine(l.toLowerCase()) && !looksLikeNoise(l));
+    const dm = text.match(/(?:www\.|@)([a-z0-9äöü\-]{3,})\.(?:ch|com|de|li|at|swiss)\b/i);
+    if(dm && !/pe-fabrikation/i.test(dm[1])) result.lieferant = dm[1].charAt(0).toUpperCase() + dm[1].slice(1);
+  }
+  if(!result.lieferant){
+    const fallbackLine = rawLines.find(l => l.trim() && !isOwnCompanyLine(l.toLowerCase()) && !looksLikeNoise(l) && !/^(\w+\s*:\s*)+$/.test(l));
     if(fallbackLine) result.lieferant = fallbackLine;
   }
 
@@ -794,6 +808,7 @@ function parseInvoiceText(text){
     if(!m) m = text.match(/Baustelle\s+[\d\/A-Za-z.\-]+\s*\n?\s*([^\n]+)/i);
     if(m) result.objekt = sanitizeObjekt(m[1]);
   }
+  if(!result.objekt) result.objekt = objektFromLabels(rawLines, isOwnCompanyLine, result.lieferant);
   if(!result.objekt){
     // Manche Rechnungen nennen das Objekt ganz ohne Label -- einfach als eigene Zeile direkt
     // nach der Rechnungsnummer. Als letzten Fallback: die Zeile danach nehmen, wenn sie
@@ -820,11 +835,7 @@ function parseInvoiceText(text){
   }
 
   // --- Gesamtbetrag ---
-  const totalMatches = [...text.matchAll(/(?:Rechnungsbetrag|Betrag inkl\.?\s*MWST|Total)\s*[:\-]?\s*([\d'.,]+)\s*(?:CHF)?/gi)];
-  if(totalMatches.length){
-    const last = totalMatches[totalMatches.length-1][1];
-    result.total = parseSwissNumber(last);
-  }
+  result.total = findTotal(rawLines);
 
   // --- Positionen ---
   const categories = DB.categories && DB.categories.length ? DB.categories : DEFAULT_CATEGORIES;
@@ -840,7 +851,7 @@ function parseInvoiceText(text){
     // den "Total m3"-Wert des Ausmassblatts erfasst, sonst wuerde doppelt gezaehlt.
     if(l.includes("ausmassblatt")) return;
 
-    const unitMatch = line.match(/(\d+(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|std\.?|stunden|h|app\.?|apparate?)(?=\s|$|[,;:)])/i);
+    const unitMatch = line.match(/(\d+(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|st\.?|std\.?|stunden|h|app\.?|apparate?|le|psch\.?|pauschal|pau\.?|gl)(?=\s|$|[,;:)])/i);
     let cat = null, menge = null, einheit = null, preis = null, ep = null;
 
     if(unitMatch){
@@ -849,7 +860,7 @@ function parseInvoiceText(text){
       // Preise nur RECHTS der Mengenangabe suchen (sonst wird z.B. "107.00 m2" als Preis gelesen)
       const after = line.slice(unitMatch.index + unitMatch[0].length);
       const prices = [...after.matchAll(/(-?[\d']+[.,]\d{2})(?!\d)/g)].map(m=>parseSwissNumber(m[1])).filter(v=>v!==null);
-      if((einheit==="h" || einheit==="App.") && !prices.length) return; // "48 h Lieferfrist" o.ae. ist keine Position
+      if((einheit==="h" || einheit==="App." || einheit==="Psch") && !prices.length) return; // "48 h Lieferfrist" o.ae. ist keine Position
       if(prices.length) preis = prices[prices.length-1];
       if(prices.length >= 2 && menge){
         const cand = prices[prices.length-2];
@@ -902,6 +913,7 @@ function parseInvoiceText(text){
     if(t){ it.category = t.category; it.tarifId = t.id; }
   });
   result.items = result.items.filter(it => !(it.category==="Sonstiges" && (it.preis===null || it.preis===undefined)));
+  result.items = result.items.filter(it => !(Number(it.menge)===0 && !it.preis)); // "Total 0.00 m3" o.ae.
 
   // Rechnung besteht nur aus der Ausmassblatt-Menge ohne Betrag: Betrag aus dem Rechnungstotal (inkl. 8.1% MwSt) ableiten
   if(result.items.length===1 && result.items[0].preis==null && result.total){
@@ -911,6 +923,88 @@ function parseInvoiceText(text){
   }
 
   return result;
+}
+
+const LEGAL_FORM_RE = /\b(GmbH|AG|SA|Sàrl|S\.à\.r\.l\.|KLG|KG|Genossenschaft|Holding)\b/;
+const COMPANY_LABEL_WORDS = new Set(["baustellen","baustellen-","lieferanschrift","/lieferanschrift","absender","rechnungsadresse","von","an","firma","konto","zahlbar","rechnung","kunde","kunden"]);
+// Firmennamen aus einer Zeile herausloesen ("Baustellen- /Lieferanschrift Trendisol GmbH - Herbergstrasse 29" -> "Trendisol GmbH")
+function companyNameIn(line, isOwn){
+  if(!LEGAL_FORM_RE.test(line)) return "";
+  const parts = String(line).split(/\s+[-–|•]\s+|\s{2,}/);
+  for(const part of parts){
+    const m = part.match(/((?:[A-ZÄÖÜ0-9][\wÄÖÜäöüß&.'\-]*\s+){0,3})(GmbH|AG|SA|Sàrl|S\.à\.r\.l\.|KLG|KG|Genossenschaft|Holding)\b/);
+    if(!m) continue;
+    let words = (m[1] || "").trim().split(/\s+/).filter(Boolean);
+    while(words.length && COMPANY_LABEL_WORDS.has(words[0].toLowerCase().replace(/[:]/g,""))) words.shift();
+    if(!words.length) continue;
+    const name = (words.join(" ") + " " + m[2]).trim();
+    if(isOwn(name.toLowerCase())) continue;
+    return name;
+  }
+  return "";
+}
+function creditorFromQR(rawLines, isOwn){
+  for(let i=0;i<rawLines.length;i++){
+    const l = rawLines[i];
+    const mm = l.match(/zahlbar\s+an\s*:?\s*(.*)$/i);
+    if(!mm || /zahlbar\s+durch/i.test(l)) continue;
+    const cands = [mm[1], ...rawLines.slice(i+1, i+5)];
+    for(let c of cands){
+      c = String(c||"").replace(/\bCH\d{2}(?:\s?\d{4}){4}\s?\d\b/g, "").replace(/zahlbar\s+an/ig,"").trim();
+      if(!c || /^(CH\d|\d|referenz|konto)/i.test(c)) continue;
+      if(/^(empfangsschein|zahlteil|annahmestelle|w[äa]hrung|betrag|zus[äa]tzliche|zahlbar)/i.test(c)) continue;
+      if(isOwn(c.toLowerCase())) continue;
+      const n = companyNameIn(c, isOwn);
+      if(n) return n;
+      if(/[A-Za-zÄÖÜäöü]{3,}/.test(c) && !/strasse|weg|gasse|\d{4}\s/i.test(c)) return c;
+    }
+  }
+  return "";
+}
+// Objekt ueber typische Beschriftungen; Wert steht in derselben Zeile oder direkt darunter
+function objektFromLabels(rawLines, isOwn, lieferant){
+  const labelRe = /(Baustellen-?\s*\/?\s*Lieferanschrift|Baustellenadresse|Lieferanschrift|Lieferadresse|Bauvorhaben|Bauobjekt|Objektadresse|Ausführungsort|Arbeitsort|Projekt|Baustelle)\s*:?\s*(.*)$/i;
+  const cleanVal = v => {
+    let t = String(v||"");
+    t = t.split(/\bPE\s*Fabrikation|\bFabrikations\s*AG|\bFeldmoosstrasse|\bSlijepcevic|\bDel\s+Cotto/i)[0];
+    if(lieferant) t = t.split(new RegExp(lieferant.split(/\s+/)[0].replace(/[.*+?^${}()|[\]\\]/g,"\\$&"), "i"))[0];
+    t = t.replace(/\s[-–]\s.*$/, "").trim();
+    if(/^(\w+\s*:\s*)+$/.test(t) || /^(datum|kunde|material|nr)\b/i.test(t)) return "";
+    if(LEGAL_FORM_RE.test(t) || isOwn(t.toLowerCase())) return "";
+    return sanitizeObjekt(t);
+  };
+  for(let i=0;i<rawLines.length;i++){
+    const m = rawLines[i].match(labelRe);
+    if(!m) continue;
+    const same = cleanVal(m[2]);
+    if(same) return same;
+    if(rawLines[i+1]){ const nx = cleanVal(rawLines[i+1]); if(nx) return nx; }
+  }
+  return "";
+}
+// Rechnungstotal: beschriftete Endbetraege (auch "Rechnungsbetrag Brutto 6'590.50"), sonst QR-Zahlteil
+function findTotal(rawLines){
+  const amt = /(-?\d{1,3}(?:['’ ]\d{3})*(?:[.,]\d{2})|-?\d+[.,]\d{2})(?!\d)/;
+  const strong = /(rechnungsbetrag|gesamtbetrag|endbetrag|zu\s+bezahlen|zahlbetrag|total\s+(?:inkl|brutto|chf|rechnung)|betrag\s+inkl|total\s+zu\s+zahlen|brutto)/i;
+  let best = null;
+  rawLines.forEach((l, i)=>{
+    if(!strong.test(l)) return;
+    const after = l.slice(l.search(strong));
+    const m = after.match(new RegExp("^[^\\d\\n]{0,40}" + amt.source));
+    if(m){ const v = parseSwissNumber(m[1]); if(v!=null && (best==null || v > best)) best = v; }
+  });
+  if(best!=null) return best;
+  // QR-Zahlteil: "Währung Betrag" + "CHF 6590.50"
+  for(let i=0;i<rawLines.length;i++){
+    if(/w[äa]hrung\s+betrag/i.test(rawLines[i])){
+      const m = (rawLines[i] + " " + (rawLines[i+1]||"")).match(/CHF\s+(\d[\d' ]*[.,]\d{2})/);
+      if(m) return parseSwissNumber(m[1]);
+    }
+  }
+  // Schwache Variante: "Total 1'234.50" (Betrag mit 2 Dezimalen auf derselben Zeile)
+  let last = null;
+  rawLines.forEach(l=>{ const m = l.match(new RegExp("\\bTotal\\b[^\\d\\n]{0,20}" + amt.source, "i")); if(m) last = parseSwissNumber(m[1]); });
+  return last;
 }
 
 function sanitizeObjekt(s){
@@ -936,6 +1030,8 @@ function normalizeUnit(u){
   if(u==="stk") return "Stk";
   if(u==="h"||u==="std"||u==="stunden") return "h";
   if(u==="app"||u==="apparat"||u==="apparate") return "App.";
+  if(u==="st") return "Stk";
+  if(u==="le"||u==="psch"||u==="pauschal"||u==="pau"||u==="gl") return "Psch";
   return u;
 }
 function parseSwissNumber(s){
@@ -1191,8 +1287,15 @@ async function handleFiles(fileList){
         continue;
       }
 
-      const groups = splitPagesIntoInvoices(pages);
-      statusEl.innerHTML = `<div class="muted">"${escapeHtml(file.name)}": <b>${groups.length}</b> Rechnung(en) erkannt, getrennt und automatisch gespeichert.</div>`;
+      const allGroups = splitPagesIntoInvoices(pages);
+      // Dokumente ohne Rechnung (leeres Ausmass-Formular, reine Beilage ohne Betraege) nicht als Rechnung speichern
+      const groups = allGroups.filter(g => {
+        if(!g.onlyAttach) return true;
+        const pr = parseInvoiceText(g.allText);
+        return /rechnung|faktura|invoice/i.test(g.allText) && (pr.total || pr.items.some(i=>i.preis));
+      });
+      const skipped = allGroups.length - groups.length;
+      statusEl.innerHTML = `<div class="muted">"${escapeHtml(file.name)}": <b>${groups.length}</b> Rechnung(en) erkannt, getrennt und automatisch gespeichert.${skipped ? ` <span class="flag">${skipped} Dokument(e) ohne Rechnung (z.B. Ausmass-Formular ohne Beträge) wurden nicht als Rechnung gespeichert.</span>` : ""}</div>`;
 
       groups.forEach(g => {
         const parsed = parseInvoiceText(g.allText);
@@ -2295,7 +2398,7 @@ function unitKey(u){
   const t = String(u||"").toLowerCase().replace(/[.\s]/g,"");
   if(t==="m2"||t==="m²") return "m2";
   if(t==="m3"||t==="m³") return "m3";
-  if(t==="st"||t==="stk"||t==="stück"||t==="stuck") return "stk";
+  if(t==="st"||t==="stk"||t==="stück"||t==="stuck"||t==="psch"||t==="le"||t==="pauschal") return "stk";
   if(t==="h"||t==="std"||t==="stunden") return "h";
   if(t==="app"||t==="apparat"||t==="apparate") return "app";
   return t;
