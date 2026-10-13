@@ -1841,11 +1841,16 @@ function renderProjects(){
   });
 }
 
+function itemAssigned(inv, it){
+  if(it.category !== "Sonstiges") return true;
+  const sub = getSubFor(inv.lieferant);
+  return !!(sub && findTarif(sub, inv, it).tarif);
+}
 function invoiceNeedsReview(inv){
   if(!inv.lieferant) return true;
   if(!inv.items || inv.items.length===0) return true;
   if(inv.items.some(it=>it.menge===null || it.menge===undefined)) return true;
-  if(inv.items.some(it=>it.category==="Sonstiges")) return true;
+  if(inv.items.some(it=>!itemAssigned(inv, it))) return true;
   return false;
 }
 
@@ -1887,13 +1892,14 @@ function projectControlRows(p, haus){
   if(haus===undefined) Object.keys(p.soll||{}).forEach(k=>{ if(p.soll[k] && num(p.soll[k].menge)!=null) cats.add(k); });
   const ist = {};
   invs.forEach(inv=>(inv.items||[]).forEach(it=>{
+    if(it.category==="Sonstiges" && !itemAssigned(inv, it)) return;
     const o = ist[it.category] || (ist[it.category] = { menge:0, chf:0, subs:{} });
     if(num(it.menge)!=null) o.menge += +it.menge;
     if(num(it.preis)!=null) o.chf += +it.preis;
     const s = inv.lieferant || "?"; o.subs[s] = (o.subs[s]||0) + 1;
   }));
   Object.keys(ist).forEach(k=>cats.add(k));
-  cats.delete("Sonstiges");
+  if(!ist.Sonstiges) cats.delete("Sonstiges");
   const order = (DB.categories||DEFAULT_CATEGORIES).map(c=>c.key);
   return Array.from(cats).sort((a,b)=>order.indexOf(a)-order.indexOf(b)).map(cat=>{
     const soll = getSoll(p, cat, haus);
@@ -2034,7 +2040,7 @@ function renderProjectDetail(projectId){
       <h2>Kontrolle pro Leistung${selH ? ` – ${escapeHtml(selH)}` : ""}</h2>
       ${houses.length ? `<div class="tabs" style="margin-top:-4px;"><button class="tab ${!selH?"active":""}" data-htab="">Ganzes Objekt</button>${houses.map(h=>`<button class="tab ${selH===h?"active":""}" data-htab="${escapeAttr(h)}">${escapeHtml(h)}${houseNeedsAB(p,h)?` <span class="tdot" style="margin:0 0 0 6px;"></span>`:""}</button>`).join("")}</div>
         ${selH && !abs.some(a=>a.haus===selH) ? `<div class="fd warn" style="margin-bottom:12px;"><span class="fdi">⚠</span><span>Für ${escapeHtml(selH)} ist keine eigene AB hinterlegt – Soll-Mengen gibt es hier nur, wenn eine AB diesem Haus zugeordnet ist.</span></div>` : ""}` : ""}
-      ${(()=>{ const un = invs.filter(i=>(i.items||[]).some(it=>it.category==="Sonstiges")); return un.length ? `<div class="fd warn" style="margin-bottom:12px;"><span class="fdi">⚠</span><span>${un.reduce((s,i)=>s+(i.items||[]).filter(it=>it.category==="Sonstiges").length,0)} Position(en) in ${un.length} Rechnung(en) sind keiner Leistung zugeordnet und fehlen in dieser Kontrolle: ${un.map(i=>`<a href="#" data-openunassigned="${escapeAttr(i.id)}">${escapeHtml(i.rechnungsnr||i.lieferant||"Rechnung")}</a>`).join(", ")} – bitte Kategorie wählen.</span></div>` : ""; })()}
+      ${(()=>{ const un = invs.filter(i=>(i.items||[]).some(it=>!itemAssigned(i, it))); return un.length ? `<div class="fd warn" style="margin-bottom:12px;"><span class="fdi">⚠</span><span>${un.reduce((s,i)=>s+(i.items||[]).filter(it=>!itemAssigned(i, it)).length,0)} Position(en) in ${un.length} Rechnung(en) sind keiner Leistung zugeordnet und fehlen in dieser Kontrolle: ${un.map(i=>`<a href="#" data-openunassigned="${escapeAttr(i.id)}">${escapeHtml(i.rechnungsnr||i.lieferant||"Rechnung")}</a>`).join(", ")} – bitte Kategorie wählen.</span></div>` : ""; })()}
       ${rows.length ? `
       <div class="tablewrap"><table class="ctltable">
         <thead><tr><th>Leistung</th><th>Soll</th><th>Ist (verrechnet)</th><th>Rest / Über</th><th style="width:110px;"></th><th>Budget Sub</th><th>Verrechnet Sub</th><th>Erlös AB</th><th>Marge</th><th></th></tr></thead>
@@ -2047,7 +2053,7 @@ function renderProjectDetail(projectId){
           const overBudget = r.budget!=null && r.ist.chf > r.budget + 0.5;
           const marge = r.erloes!=null ? r.erloes - r.ist.chf : null;
           return `<tr class="${over||overBudget?"overrow":""}">
-            <td><b>${escapeHtml(catLabel(r.cat))}</b>${r.materials.length?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.materials.join(", "))}</div>`:""}${r.mainSubName?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.mainSubName)}</div>`:""}</td>
+            <td><b>${escapeHtml(r.cat==="Sonstiges" ? "Weitere vereinbarte Leistungen" : catLabel(r.cat))}</b>${r.materials.length?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.materials.join(", "))}</div>`:""}${r.mainSubName?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.mainSubName)}</div>`:""}</td>
             <td class="num" style="white-space:nowrap;">${r.soll ? `${fmtQty(r.soll.menge)} ${escapeHtml(u)} <span class="srcbadge ${r.soll.quelle==="AB"?"text":"ocr"}">${r.soll.quelle}</span>` : `<span class="muted">kein Soll</span>`}</td>
             <td class="num" style="white-space:nowrap;">${fmtQty(r.ist.menge)} ${escapeHtml(u)}</td>
             <td class="num" style="white-space:nowrap;">${rest==null ? "—" : over ? `<span class="flag">+${fmtQty(-rest)} ${escapeHtml(u)} über</span>` : `${fmtQty(rest)} ${escapeHtml(u)}`}</td>
@@ -2480,9 +2486,11 @@ function shortText(s, n){ s = String(s||"").trim(); return s.length>(n||45) ? s.
 // Positionstext ohne angehaengte Mengen/Preise (fuer Meldungen)
 function displayLabel(s){
   let t = String(s||"").trim();
-  t = t.replace(/\s+-?[\d']+(?:[.,]\d+)?\s*(?:m2|m²|m3|m³|stk\.?|std\.?|stunden|h|app\.?|pauschal|psch)(?=\s|$).*$/i, "");
-  t = t.replace(/(\s+-?[\d']+[.,]\d{2})+\s*(chf)?\s*$/i, "");
-  return shortText(t.trim() || s, 55);
+  t = t.replace(/^\s*\d{1,3}[.)]?\s+(\d{4,}\s+)?/, "");                         // Pos.-Nr. / Artikel-Nr. vorne
+  t = t.replace(/\s*-?[\d']+(?:[.,]\d+)?\s*(?:m2|m²|m3|m³|stk\.?|st\.?|std\.?|stunden|h|app\.?|le|psch\.?|pauschal)(?=\s|$)/i, " "); // Menge + Einheit
+  t = t.replace(/(\s+-?[\d']+[.,]\d{2})+\s*(chf)?\s*$/i, "");                  // Preise am Ende
+  t = t.replace(/\s{2,}/g, " ").trim();
+  return shortText(t || String(s||"").trim(), 55);
 }
 
 function getSubFor(name){
@@ -2542,17 +2550,22 @@ function parseDateCH(s){
 }
 
 // Unbekannte Rechnungszeile ueber Bezeichnung/Suchbegriffe der Preisliste einer Leistung zuordnen
-function classifyBySubTarif(sub, label){
+function classifyBySubTarif(sub, label, onlyPriced){
   const lab = String(label||"").toLowerCase();
   const lt = labelTokens(label);
   let best = null, bestScore = 0, tie = false;
   (sub.tarife||[]).forEach(t=>{
-    if(!t.category || t.category==="Sonstiges") return;
+    if(!t.category) return;
+    if(onlyPriced && num(t.preis)==null) return;
     let s = 0;
     String(t.keywords||"").split(",").map(k=>k.trim().toLowerCase()).filter(k=>k.length>=3).forEach(k=>{ if(lab.includes(k)) s += 2; });
-    s += labelTokens(t.bezeichnung).filter(x=>lt.includes(x)).length;
+    // Bezeichnung: gleiches Wort oder Wortanfang ("installation" passt zu "installationspauschale")
+    labelTokens(t.bezeichnung).forEach(x=>{
+      if(lt.includes(x)) s += x.length >= 6 ? 2 : 1;
+      else if(x.length >= 6 && lt.some(y => y.startsWith(x) || (y.length >= 6 && x.startsWith(y)))) s += 2;
+    });
     if(s > bestScore){ best = t; bestScore = s; tie = false; }
-    else if(s === bestScore && s > 0 && best && best.category !== t.category) tie = true;
+    else if(s === bestScore && s > 0 && best && best.id !== t.id && (best.category !== t.category || +best.preis !== +t.preis)) tie = true;
   });
   return bestScore >= 2 && !tie ? best : null;
 }
@@ -2567,7 +2580,12 @@ function findTarif(sub, inv, it){
   }
   const d = parseDateCH(inv && inv.datum) || new Date();
   let cands = all.filter(t => t.category===it.category);
-  if(!cands.length) return { tarif:null, reason:`kein Preis für „${catLabel(it.category)}“ hinterlegt` };
+  if(!cands.length || it.category==="Sonstiges"){
+    const byLabel = classifyBySubTarif(sub, it.label, true);
+    if(byLabel) return { tarif: byLabel, viaLabel: true };
+    if(it.category==="Sonstiges") return { tarif:null, reason:"keine passende Zeile in der Preisliste" };
+    return { tarif:null, reason:`kein Preis für „${catLabel(it.category)}“ hinterlegt` };
+  }
   // nur zum Rechnungsdatum gueltige Preise; je Bezeichnung die neuste gueltige Version
   const valid = cands.filter(t => !t.gueltigAb || new Date(t.gueltigAb) <= d);
   if(valid.length) cands = valid;
@@ -2915,8 +2933,8 @@ function checkInvoice(inv){
   items.forEach(it=>{
     const name = `„${displayLabel(it.label) || catLabel(it.category)}“`;
     const ep = itemEP(it);
-    if(it.category==="Sonstiges"){
-      f.push({ level:"warn", itemId:it.id, text:`${name}: keiner Leistung zugeordnet – bitte Kategorie wählen oder Position löschen (zählt sonst in keine Kontrolle).` });
+    if(!itemAssigned(inv, it)){
+      f.push({ level:"warn", itemId:it.id, text:`${name}: keiner Leistung zugeordnet – Kategorie wählen, eine Zeile unter „Vereinbarter Preis“ wählen oder Position löschen.` });
     }
 
     // --- Preis gegen vereinbarten Tarif ---
@@ -3092,7 +3110,7 @@ function renderItemsTable(container, getInv, onChange){
         <thead><tr><th>Kategorie</th><th>Beschreibung (Original)</th><th>Menge</th><th>Einh.</th><th title="Einheitspreis – leer = Betrag ÷ Menge">EP CHF</th><th>Betrag CHF</th><th>Vereinbarter Preis (Sub)</th><th></th></tr></thead>
         <tbody>${inv.items.map(it=>{
           const r = sub ? findTarif(sub, inv, it) : { tarif:null };
-          const autoLabel = r.tarif && !r.manual ? `auto: ${r.tarif.bezeichnung} · ${fmt(r.tarif.preis)}` : (tarife.length ? "auto: kein Treffer" : "keine Preise hinterlegt");
+          const autoLabel = r.tarif && !r.manual ? `auto: ${r.tarif.bezeichnung} · ${fmt(r.tarif.preis)}` : (tarife.length ? "– bitte wählen –" : "keine Preise hinterlegt");
           const epCalc = (num(it.preis)!=null && num(it.menge)) ? roundNum(it.preis/it.menge) : "";
           return `<tr data-id="${escapeAttr(it.id)}">
             <td style="min-width:140px;"><select data-if="category">${catOptions}</select></td>
@@ -3421,7 +3439,7 @@ function renderSubPrices(name){
         <thead><tr><th>Kategorie</th><th>Bezeichnung</th><th>Material / Variante</th><th>Einheit</th><th>Preis CHF</th><th>Gültig ab</th><th title="Wörter, an denen die Position auf der Rechnung erkannt wird">Suchbegriffe</th><th></th></tr></thead>
         <tbody>${rows.map(t=>`
           <tr data-tid="${escapeAttr(t.id)}" class="${num(t.preis)==null?"noprice":""}">
-            <td style="min-width:150px;"><select data-tf="category" ${dis}>${cats.map(c=>`<option value="${escapeAttr(c.key)}" ${c.key===t.category?"selected":""}>${escapeHtml(c.label)}</option>`).join("")}</select></td>
+            <td style="min-width:150px;"><select data-tf="category" ${dis}>${cats.map(c=>`<option value="${escapeAttr(c.key)}" ${c.key===t.category?"selected":""}>${escapeHtml(c.key==="Sonstiges" ? "Eigene Leistung (ohne AB-Kontrolle)" : c.label)}</option>`).join("")}</select></td>
             <td style="min-width:170px;"><input type="text" data-tf="bezeichnung" value="${escapeAttr(t.bezeichnung||"")}" ${dis}></td>
             <td style="width:110px;"><input type="text" data-tf="material" value="${escapeAttr(t.material||"")}" placeholder="z.B. 1x18mm" ${dis}></td>
             <td style="width:70px;"><input type="text" data-tf="einheit" value="${escapeAttr(t.einheit||"")}" ${dis}></td>
@@ -3431,7 +3449,7 @@ function renderSubPrices(name){
             <td style="white-space:nowrap;">${canEdit?`<button class="close-x" data-duptf="${escapeAttr(t.id)}" title="Duplizieren (z.B. für neuen Preis ab Datum)">⧉</button><button class="close-x" data-deltf="${escapeAttr(t.id)}" title="Zeile löschen">✕</button>`:""}</td>
           </tr>`).join("")}</tbody>
       </table></div>
-      <p class="muted" style="font-size:12px;margin:10px 0 0 0;">Tipps: Zeilen ohne Preis werden ignoriert. Für eine Preiserhöhung die Zeile duplizieren (⧉) und „Gültig ab“ setzen – alte Rechnungen werden dann weiterhin mit dem alten Preis geprüft. Bei der Beplankung entscheidet das Material (1x18mm, 2x12.5mm, Aquapanel …), welcher Preis gilt.</p>
+      <p class="muted" style="font-size:12px;margin:10px 0 0 0;">Tipps: Die <b>Bezeichnung</b> und die <b>Suchbegriffe</b> werden mit dem Text auf der Rechnung verglichen – „Installation“ erkennt z.B. auch „Installationspauschale“. Zeilen ohne Preis werden ignoriert. Für eine Preiserhöhung die Zeile duplizieren (⧉) und „Gültig ab“ setzen – alte Rechnungen werden dann weiterhin mit dem alten Preis geprüft. Bei der Beplankung entscheidet das Material (1x18mm, 2x12.5mm, Aquapanel …), welcher Preis gilt.</p>
     </div>`;
 
   document.getElementById("backBtn").addEventListener("click", ()=>{ editingSub = null; goBack("settings"); });
