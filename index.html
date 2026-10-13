@@ -338,6 +338,7 @@ const DEFAULT_CATEGORIES = [
   { key: "Regie", label: "Regie (Stunden)", unit: "h", keywords: ["regie"] },
   { key: "Anfahrt", label: "Anfahrt / Installation", unit: "Stk", keywords: ["anfahrt","parking","fahrtspesen","installationspauschale","einrichtungspauschale","baustelleneinrichtung","installation pauschal"] },
   { key: "Entsorgung", label: "Entsorgung", unit: "Stk", keywords: ["entsorgung","abfall"] },
+  { key: "Material", label: "Material (kg / l)", unit: "kg", keywords: ["material","flocken","steinwolle sack"] },
   { key: "Elemente", label: "Elemente (allg.)", unit: "Stk", keywords: ["element"] },
   { key: "Sonstiges", label: "⚠ Nicht zugeordnet", unit: "Stk", keywords: [] },
 ];
@@ -653,7 +654,7 @@ function updateSidebarForUser(){
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
-const OCR_SCALE = 4.0; // ~288dpi Rendering -> deutlich bessere OCR-Genauigkeit als Standardaufloesung
+const OCR_SCALE = 2.8; // ~200 dpi: genauso zuverlaessig fuer Rechnungen, aber ca. 2x schneller als 288 dpi
 let ocrWorkerPromise = null;
 // Anzahl typischer OCR-Fehler in Zahlen (Buchstaben mitten in Zahlen, "6',53L.20", "0.2s", "2O24")
 function ocrGarbageScore(text){
@@ -667,6 +668,51 @@ function ocrGarbageScore(text){
     if(/^[\d'’.,!|LlIOoSsg-]+$/.test(t) && /[LlIOoSsg!|]/.test(t)) score++;          // 0.2s · L'662.90 · 2025L9240 · 07.!0.2026
   }
   return score;
+}
+// Mehrere OCR-"Arbeiter" parallel (je nach Prozessor 2-3) -> mehrere Seiten/Rechnungen gleichzeitig
+let ocrSchedulerPromise = null;
+function getOcrScheduler(){
+  if(!ocrSchedulerPromise){
+    ocrSchedulerPromise = (async ()=>{
+      const n = Math.max(1, Math.min(3, ((typeof navigator!=="undefined" && navigator.hardwareConcurrency) || 4) - 1));
+      const sch = Tesseract.createScheduler();
+      const workers = await Promise.all(Array.from({ length: n }, ()=> Tesseract.createWorker("deu", 1, { logger: () => {} })));
+      workers.forEach(w => sch.addWorker(w));
+      return sch;
+    })();
+  }
+  return ocrSchedulerPromise;
+}
+async function renderPageCanvas(page, scale, crop){
+  const vp = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  if(!crop) return canvas;
+  const y0 = Math.floor(canvas.height * crop[0]), h = Math.ceil(canvas.height * (crop[1] - crop[0]));
+  const c2 = document.createElement("canvas");
+  c2.width = canvas.width; c2.height = h;
+  c2.getContext("2d").drawImage(canvas, 0, y0, canvas.width, h, 0, 0, canvas.width, h);
+  return c2;
+}
+async function ocrCanvasLines(canvas){
+  const sch = await getOcrScheduler();
+  const { data } = await sch.addJob("recognize", canvas, {}, { tsv: true });
+  const tol = 3.6 * OCR_SCALE;
+  const tsvWords = data.tsv ? parseTsvWords(data.tsv) : [];
+  if(tsvWords.length) return reconstructLines(tsvWords, tol);
+  if(data.words && data.words.length) return reconstructLines(data.words.map(w => ({ str: w.text, x: w.bbox.x0, y: (w.bbox.y0 + w.bbox.y1)/2, width: w.bbox.x1 - w.bbox.x0 })), tol);
+  return (data.text || "").split("\n").map(l=>l.trim()).filter(Boolean);
+}
+// Gescannte Seite? (ganzseitiges Bild, z.B. 2480x3508 = A4 mit 300 dpi)
+async function isScannedPage(page){
+  try{
+    const ops = await page.getOperatorList();
+    const IMG = new Set([pdfjsLib.OPS.paintImageXObject, pdfjsLib.OPS.paintJpegXObject, pdfjsLib.OPS.paintInlineImageXObject].filter(x=>x!==undefined));
+    return ops.fnArray.some((fn, k) => IMG.has(fn) && (+((ops.argsArray[k]||[])[1])||0) >= 1200 && (+((ops.argsArray[k]||[])[2])||0) >= 1200);
+  }catch(e){ return false; }
 }
 function getOcrWorker(){
   if(!ocrWorkerPromise){
@@ -715,53 +761,47 @@ async function extractPagesFromPDF(file, onProgress){
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   const pages = [];
+  const jobs = [];
   for(let i = 1; i <= pdf.numPages; i++){
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     const totalChars = content.items.reduce((s,it) => s + (it.str||"").length, 0);
-
     let textLines = null;
     if(totalChars > 15){
       const pts = content.items.map(it => ({ str: it.str, x: it.transform[4], y: -it.transform[5], width: it.width || 0 }));
       textLines = reconstructLines(pts, 3);
     }
-    // Viele Scanner legen eine eigene, oft fehlerhafte Texterkennung ins PDF ("6',53L.20", "2O24L76I2").
-    // Ist diese unzuverlaessig, liest die App die Seite selbst neu (OCR).
-    const garbage = textLines ? ocrGarbageScore(textLines.join("\n")) : 0;
-    if(textLines && garbage < 3){
-      // Fall A: PDF hat eine echte, saubere Textebene -> schnell & praezise
-      pages.push({ pageNum: i, text: textLines.join("\n"), source: "text" });
-      if(onProgress) onProgress(i, pdf.numPages, "text");
-    } else {
-      // Fall B: gescanntes Dokument, keine Textebene -> OCR noetig
-      if(onProgress) onProgress(i, pdf.numPages, "ocr-start");
-      const viewport = page.getViewport({ scale: OCR_SCALE });
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.ceil(viewport.width);
-      canvas.height = Math.ceil(viewport.height);
-      const ctx = canvas.getContext("2d");
-      await page.render({ canvasContext: ctx, viewport }).promise;
+    const entry = { pageNum: i, text: textLines ? textLines.join("\n") : "", source: "text" };
+    pages.push(entry);
 
-      const worker = await getOcrWorker();
-      const { data } = await worker.recognize(canvas, {}, { tsv: true });
-      let lines;
-      const tsvWords = data.tsv ? parseTsvWords(data.tsv) : [];
-      if(tsvWords.length){
-        lines = reconstructLines(tsvWords, 14);
-      } else if(data.words && data.words.length){
-        const pts = data.words.map(w => ({
-          str: w.text,
-          x: w.bbox.x0,
-          y: (w.bbox.y0 + w.bbox.y1) / 2,
-          width: w.bbox.x1 - w.bbox.x0,
-        }));
-        lines = reconstructLines(pts, 14);
-      } else {
-        lines = (data.text || "").split("\n").map(l=>l.trim()).filter(Boolean);
-      }
-      pages.push({ pageNum: i, text: lines.join("\n"), source: "ocr" });
-      if(onProgress) onProgress(i, pdf.numPages, "ocr-done");
+    if(!textLines){
+      // reiner Scan ohne Textebene -> ganze Seite lesen
+      jobs.push(async ()=>{ entry.text = (await ocrCanvasLines(await renderPageCanvas(page, OCR_SCALE))).join("\n"); entry.source = "ocr"; });
+      continue;
     }
+    // Scan mit Scanner-Textebene (oft fehlerhaft: 6 statt 5, "L'797.60") oder sichtbar verstuemmelter Text
+    const scanned = await isScannedPage(page);
+    const garbage = ocrGarbageScore(entry.text);
+    if(!scanned && garbage < 3){ if(onProgress) onProgress(i, pdf.numPages, "text"); continue; }
+    const kind = classifyPage(entry.text);
+    if(kind === "invoice_start" || i === 1){
+      // Rechnungsseite (Nummer, Datum, Objekt, Betraege) -> selbst neu lesen
+      jobs.push(async ()=>{ entry.text = (await ocrCanvasLines(await renderPageCanvas(page, OCR_SCALE))).join("\n"); entry.source = "ocr"; });
+    } else if(/total\s*m\s*[3³]|total\s*fr|summe|total/i.test(entry.text) && !/zahlteil|empfangsschein/i.test(entry.text)){
+      // Beilage (Ausmassblatt): nur den unteren Teil mit den Totalen neu lesen -> sehr schnell
+      jobs.push(async ()=>{
+        const strip = await ocrCanvasLines(await renderPageCanvas(page, OCR_SCALE, [0.72, 1.0]));
+        const keep = entry.text.split("\n").filter(l => !/total\s*m\s*[3³]|total\s*fr|totalm/i.test(l));
+        entry.text = keep.concat(strip).join("\n");
+        entry.source = "ocr";
+      });
+    }
+    // Zahlteil / leere Seiten: Textebene genuegt
+  }
+  if(jobs.length){
+    if(onProgress) onProgress(0, jobs.length, "ocr-start");
+    let done = 0;
+    await Promise.all(jobs.map(j => j().then(()=>{ done++; if(onProgress) onProgress(done, jobs.length, "ocr-done"); })));
   }
   return pages;
 }
@@ -873,6 +913,10 @@ function parseInvoiceText(text){
   m = text.match(/Objekt:?\s*[\"']?\s*([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:[ \t]+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
   if(!m) m = text.match(/Objekt:?\s*[\"']?\s*([^\n]+)/i);
   if(m) result.objekt = sanitizeObjekt(m[1]);
+  // Haus-Angabe am Zeilenende ("… Reinach Haus W7") nicht verlieren
+  { const objLine = (text.match(/Objekt:?\s*([^\n]+)/i)||[])[1] || "";
+    const hl = hausFromText(objLine);
+    if(result.objekt && hl && !hausFromText(result.objekt)) result.objekt = stripHaus(result.objekt) + " " + hl; }
 
   if(!result.objekt){
     m = text.match(/\d{5,}\s*\/\s*([A-ZÄÖÜ][^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:[ \t]+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/);
@@ -932,7 +976,7 @@ function parseInvoiceText(text){
     // den "Total m3"-Wert des Ausmassblatts erfasst, sonst wuerde doppelt gezaehlt.
     if(l.includes("ausmassblatt")) return;
 
-    const unitMatch = line.match(/(\d+(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|st\.?|std\.?|stunden|h|app\.?|apparate?|le|psch\.?|pauschal|pau\.?|gl)(?=\s|$|[,;:)])/i);
+    const unitMatch = line.match(/(\d+(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|st\.?|std\.?|stunden|h|app\.?|apparate?|le|psch\.?|pauschal|pau\.?|gl|kg\.?|lt\.?|l)(?=\s|$|[,;:)])/i);
     let cat = null, menge = null, einheit = null, preis = null, ep = null;
 
     if(unitMatch){
@@ -941,7 +985,7 @@ function parseInvoiceText(text){
       // Preise nur RECHTS der Mengenangabe suchen (sonst wird z.B. "107.00 m2" als Preis gelesen)
       const after = line.slice(unitMatch.index + unitMatch[0].length);
       const prices = [...after.matchAll(/(-?[\d']+[.,]\d{2})(?!\d)/g)].map(m=>parseSwissNumber(m[1])).filter(v=>v!==null);
-      if((einheit==="h" || einheit==="App." || einheit==="Psch") && !prices.length) return; // "48 h Lieferfrist" o.ae. ist keine Position
+      if((einheit==="h" || einheit==="App." || einheit==="Psch" || einheit==="kg" || einheit==="l") && !prices.length) return; // "48 h Lieferfrist" o.ae. ist keine Position
       if(prices.length) preis = prices[prices.length-1];
       if(prices.length >= 2 && menge){
         const cand = prices[prices.length-2];
@@ -951,6 +995,7 @@ function parseInvoiceText(text){
       if(einheit === "m²") cat = catBeplankung;
       else if(einheit === "m³") cat = catAusflockung;
       else if(einheit === "h") cat = categories.find(c=>c.key==="Regie") || catSonstiges;
+      else if(einheit === "kg" || einheit === "l") cat = categories.find(c=>c.key==="Material") || catSonstiges;
       else if(einheit === "App.") cat = categories.find(c => !["Beplankung","Ausflockung","Sonstiges","Regie","Elemente"].includes(c.key) && c.keywords.some(kw=>l.includes(kw))) || categories.find(c=>c.key==="Duofix") || catSonstiges;
       else cat = categories.find(c => !["Beplankung","Ausflockung","Sonstiges","Regie"].includes(c.key) && c.keywords.some(kw=>l.includes(kw))) || catSonstiges;
     } else {
@@ -1114,6 +1159,8 @@ function normalizeUnit(u){
   if(u==="h"||u==="std"||u==="stunden") return "h";
   if(u==="app"||u==="apparat"||u==="apparate") return "App.";
   if(u==="st") return "Stk";
+  if(u==="kg") return "kg";
+  if(u==="lt"||u==="l") return "l";
   if(u==="le"||u==="psch"||u==="pauschal"||u==="pau"||u==="gl") return "Psch";
   return u;
 }
@@ -1327,7 +1374,8 @@ function renderUpload(){
         <div style="font-size:12px;margin-top:6px;">Mehrere Dateien und mehrere Rechnungen pro Datei möglich</div>
         <input type="file" id="fileInput" accept="application/pdf" multiple>
       </div>
-      <div id="uploadStatus" style="margin-top:12px;"></div>
+      <div id="uploadProgress" style="margin-top:12px;"></div>
+      <div id="uploadStatus" style="margin-top:8px;"></div>
     </div>
     <div id="reviewArea"></div>
   `;
@@ -1343,6 +1391,39 @@ function renderUpload(){
   fi.addEventListener("change", e=>handleFiles(e.target.files));
 }
 
+let uploadCompact = false;
+function limitConcurrency(n){
+  let active = 0; const q = [];
+  const next = ()=>{
+    if(active >= n || !q.length) return;
+    active++;
+    const { fn, res, rej } = q.shift();
+    Promise.resolve().then(fn).then(res, rej).finally(()=>{ active--; next(); });
+  };
+  return fn => new Promise((res, rej)=>{ q.push({ fn, res, rej }); next(); });
+}
+function ensureUploadResultTable(){
+  if(document.getElementById("uploadResults")) return;
+  const area = document.getElementById("reviewArea"); if(!area) return;
+  area.insertAdjacentHTML("afterbegin", `<div class="card" id="uploadResultsCard"><h2>Ergebnis</h2>
+    <div class="tablewrap"><table><thead><tr><th>Lieferant</th><th>Rechnungsnr.</th><th>Objekt</th><th>Betrag CHF</th><th>Prüfung</th><th>Hinweis</th><th></th></tr></thead><tbody id="uploadResults"></tbody></table></div></div>`);
+}
+function addUploadResultRow(invId, cardEl){
+  const tb = document.getElementById("uploadResults"); if(!tb) return;
+  const draw = ()=>{
+    const inv = DB.invoices.find(i=>i.id===invId); if(!inv) return "";
+    const p = DB.projects.find(x=>x.id===inv.projectId);
+    const f = checkInvoice(inv).filter(x=>x.level==="danger"||x.level==="warn");
+    return `<td>${escapeHtml(inv.lieferant||"—")}</td><td>${escapeHtml(inv.rechnungsnr||"—")}</td><td>${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
+      <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td><td>${findingsPill(inv)}</td>
+      <td style="font-size:12px;max-width:380px;" class="${f.some(x=>x.level==="danger")?"flag":"muted"}">${f.length ? escapeHtml(shortText(f[0].text, 110)) : "–"}</td>
+      <td><button class="small" data-togglecard>Details</button></td>`;
+  };
+  const tr = document.createElement("tr");
+  tr.innerHTML = draw();
+  tb.appendChild(tr);
+  tr.querySelector("[data-togglecard]").addEventListener("click", ()=>{ cardEl.style.display = cardEl.style.display==="none" ? "" : "none"; if(cardEl.style.display!=="none") cardEl.scrollIntoView({ behavior:"smooth", block:"start" }); });
+}
 async function handleFiles(fileList){
   const files = Array.from(fileList).filter(f=>f.type==="application/pdf" || f.name.endsWith(".pdf"));
   if(!files.length) return;
@@ -1352,30 +1433,39 @@ async function handleFiles(fileList){
     try{ await Notification.requestPermission(); }catch(e){}
   }
 
-  for(const file of files){
-    try{
-      statusEl.innerHTML = `<div class="muted">"${escapeHtml(file.name)}" — lese Seiten…</div><div class="progresswrap"><div class="progressbar" id="pbar" style="width:0%"></div></div>`;
-      const pbar = document.getElementById("pbar");
+  // Bei vielen Dateien: kompakte Ergebnisliste statt grosser Karten
+  uploadCompact = files.length > 2;
+  const startedAt = Date.now();
+  const progEl = document.getElementById("uploadProgress");
+  let filesDone = 0;
+  const showProg = (cur)=>{
+    if(!progEl) return;
+    const pct = Math.round(filesDone / files.length * 100);
+    progEl.innerHTML = `<div style="display:flex;justify-content:space-between;font-size:13px;"><b>${filesDone} von ${files.length} Datei(en) fertig</b><span class="muted">${cur ? escapeHtml(cur) : ""}</span></div><div class="progresswrap"><div class="progressbar" style="width:${pct}%"></div></div>`;
+  };
+  showProg("Lese Dateien…");
+  if(uploadCompact) ensureUploadResultTable();
+  // Lesen (inkl. Texterkennung) laeuft fuer bis zu 3 Dateien gleichzeitig; gespeichert wird danach der Reihe nach
+  const limit = limitConcurrency(3);
+  const extractions = files.map(file => limit(()=> extractPagesFromPDF(file)));
+  extractions.forEach(p => p.catch(()=>{}));
 
-      const pages = await extractPagesFromPDF(file, (i, total, phase) => {
-        const pct = Math.round((i/total)*100);
-        if(pbar) pbar.style.width = pct + "%";
-        const label = phase === "ocr-start" ? `Seite ${i}/${total} wird per OCR gelesen (Scan erkannt)…`
-                    : phase === "ocr-done" ? `Seite ${i}/${total} gelesen (OCR).`
-                    : `Seite ${i}/${total} gelesen (Textebene).`;
-        statusEl.querySelector("div").textContent = `"${file.name}" — ${label}`;
-      });
+  for(let fi = 0; fi < files.length; fi++){
+    const file = files[fi];
+    try{
+      showProg(`„${file.name}“ wird gelesen…`);
+      const pages = await extractions[fi];
 
       // PE-Auftragsbestaetigung? -> als AB einlesen und dem Auftrag zuordnen
       const fullText = pages.map(p=>p.text).join("\n");
       if(isABText(fullText)){
         const ab = abFromPages(pages, file.name);
         if(!ab.positionen.length){
-          statusEl.innerHTML = `<span class="flag">"${escapeHtml(file.name)}": Auftragsbestätigung erkannt, aber keine Positionen lesbar.</span>`;
+          statusEl.insertAdjacentHTML("beforeend", `<span class="flag">"${escapeHtml(file.name)}": Auftragsbestätigung erkannt, aber keine Positionen lesbar.</span>`);
           continue;
         }
         const res = await autoAssignAB(ab);
-        statusEl.innerHTML = `<div class="muted">"${escapeHtml(file.name)}": Auftragsbestätigung <b>${escapeHtml(ab.nr)}</b> erkannt (${ab.positionen.length} Positionen) und gespeichert.</div>`;
+        statusEl.insertAdjacentHTML("beforeend", `<div class="muted">"${escapeHtml(file.name)}": Auftragsbestätigung <b>${escapeHtml(ab.nr)}</b> erkannt (${ab.positionen.length} Positionen) und gespeichert.</div>`);
         appendABCard(ab, res);
         continue;
       }
@@ -1388,7 +1478,7 @@ async function handleFiles(fileList){
         return /rechnung|faktura|invoice/i.test(g.allText) && (pr.total || pr.items.some(i=>i.preis));
       });
       const skipped = allGroups.length - groups.length;
-      statusEl.innerHTML = `<div class="muted">"${escapeHtml(file.name)}": <b>${groups.length}</b> Rechnung(en) erkannt, getrennt und automatisch gespeichert.${skipped ? ` <span class="flag">${skipped} Dokument(e) ohne Rechnung (z.B. Ausmass-Formular ohne Beträge) wurden nicht als Rechnung gespeichert.</span>` : ""}</div>`;
+      if(!uploadCompact || skipped) statusEl.insertAdjacentHTML("beforeend", `<div class="muted">"${escapeHtml(file.name)}": <b>${groups.length}</b> Rechnung(en) erkannt, getrennt und automatisch gespeichert.${skipped ? ` <span class="flag">${skipped} Dokument(e) ohne Rechnung (z.B. Ausmass-Formular ohne Beträge) wurden nicht als Rechnung gespeichert.</span>` : ""}</div>`);
 
       let pdfPromise = null;
       const getPdfId = () => pdfPromise || (pdfPromise = storePdfFile(file));
@@ -1418,9 +1508,17 @@ async function handleFiles(fileList){
       if(dupInfo.length) statusEl.insertAdjacentHTML("beforeend", `<div class="flag" style="margin-top:4px;">${dupInfo.map(escapeHtml).join("<br>")}</div>`);
     }catch(err){
       console.error(err);
-      statusEl.innerHTML = `<span class="flag">Fehler beim Lesen von "${escapeHtml(file.name)}": ${escapeHtml(err.message||"unbekannt")}</span>`;
+      statusEl.insertAdjacentHTML("beforeend", `<div class="flag">Fehler beim Lesen von "${escapeHtml(file.name)}": ${escapeHtml(err.message||"unbekannt")}</div>`);
+    }finally{
+      filesDone++;
+      showProg(filesDone < files.length ? `„${(files[filesDone]||{}).name||""}“ wird gelesen…` : "");
     }
   }
+  const secs = Math.round((Date.now() - startedAt) / 1000);
+  if(progEl) progEl.innerHTML = `<div class="fd ok" style="font-size:13px;">✓ ${files.length} Datei(en) in ${secs} s verarbeitet. Weiter mit <a href="#" id="goCheck"><b>② Prüfen</b></a>.</div>`;
+  const gc = document.getElementById("goCheck");
+  if(gc) gc.addEventListener("click", e=>{ e.preventDefault(); navStack = []; currentView = "check"; render(); });
+  updateBadges();
 }
 
 async function appendReviewCard(parsed){
@@ -1521,6 +1619,7 @@ async function appendReviewCard(parsed){
       </div>
   `;
   area.appendChild(wrap);
+  if(uploadCompact){ wrap.style.display = "none"; setTimeout(()=> addUploadResultRow(invoice.id, wrap), 50); }
 
   function findInvoice(){ return DB.invoices.find(i=>i.id===invoice.id) || invoice; }
 
@@ -2974,7 +3073,7 @@ function outlierFor(inv, it){
   const lief = String(inv.lieferant||"").toLowerCase();
   const refs = [];
   DB.invoices.forEach(o=>{
-    if(o.id===inv.id || o.projectId===inv.projectId || !isActiveInvoice(o)) return;
+    if(o.id===inv.id || o.projectId===inv.projectId || !(o.pruefung && o.pruefung.status==="ok")) return;
     if(String(o.lieferant||"").toLowerCase()!==lief) return;
     (o.items||[]).forEach(x=>{
       if(x.category!==it.category || num(x.preis)==null || +x.preis<=0) return;
@@ -2983,7 +3082,7 @@ function outlierFor(inv, it){
       refs.push({ inv:o, it:x, val: itemEP(x) ?? +x.preis });
     });
   });
-  if(!refs.length) return null;
+  if(refs.length < 2) return null;
   const med = median(refs.map(r=>r.val));
   const diffTotal = (myVal - med) * (num(it.menge) && itemEP(it)!=null ? +it.menge : 1);
   if(myVal > med * S.ausreisserFaktor && diffTotal >= S.ausreisserMinCHF){
@@ -3093,6 +3192,15 @@ function checkInvoice(inv){
     if(o) f.push({ level:"warn", itemId:it.id, text:`${name}: auffällig teuer – CHF ${fmt(ep ?? it.preis)}, auf ${o.n} anderen Objekt(en) im Mittel CHF ${fmt(o.med)} (z.B. ${projName(o.ex.inv.projectId)}: CHF ${fmt(o.ex.val)}).` });
   });
 
+  // --- Vollstaendigkeit: Summe der Positionen = Rechnungsbetrag ohne MwSt? ---
+  const posSum = items.reduce((s,x)=>s+(num(x.preis)||0), 0);
+  if(num(inv.total)!=null && posSum > 0){
+    const netto = +inv.total / 1.081;
+    if(Math.abs(posSum - netto) > Math.max(2, netto * 0.01) && Math.abs(posSum - +inv.total) > Math.max(2, +inv.total * 0.01)){
+      f.push({ level:"warn", text:`Positionen ergeben CHF ${fmt(posSum)}, die Rechnung aber ca. CHF ${fmt(netto)} netto – vermutlich wurde eine Position nicht erkannt. Bitte „+ Position hinzufügen“.` });
+    }
+  }
+
   // --- Mengen kumuliert gegen Soll (AB) ---
   if(p){
     const projInvs = DB.invoices.filter(o => o.projectId===p.id && (o.id===inv.id || isActiveInvoice(o)) && (!scopeHaus || o.haus===scopeHaus));
@@ -3111,7 +3219,10 @@ function checkInvoice(inv){
           else f.push({ level:"warn", text:`${catLabel(cat)}${hTxt}: in der AB nicht enthalten (kein Soll) – Nachtrag oder falsche Zuordnung?` });
         }
       } else if(ist > 0 && ist > Math.max(0, soll.menge) * (1 + S.mengenTolProzent/100) + 1e-9){
-        f.push({ level:"danger", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} ${u} verrechnet, Soll (${soll.quelle}) ${fmtQty(soll.menge)} ${u} → ${fmtQty(ist - soll.menge)} ${u} zu viel.` });
+        const unsicher = !scopeHaus && houses.length > 1 && !allAbs.some(a=>a.haus);
+        if(unsicher){
+          f.push({ level:"warn", text:`${catLabel(cat)}: alle Häuser zusammen ${fmtQty(ist)} ${u} verrechnet, AB ${fmtQty(soll.menge)} ${u}. Gilt die AB nur für ein Haus? → im Auftrag unter „AB & Häuser“ bei der AB „Gilt für“ das Haus wählen.` });
+        } else f.push({ level:"danger", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} ${u} verrechnet, Soll (${soll.quelle}) ${fmtQty(soll.menge)} ${u} → ${fmtQty(ist - soll.menge)} ${u} zu viel.` });
       } else {
         f.push({ level:"ok", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} von ${fmtQty(soll.menge)} ${u} (${soll.quelle}).` });
       }
@@ -3683,11 +3794,11 @@ function normHaus(s){
   return s;
 }
 function hausFromText(s){
-  const m = String(s||"").match(/\b(Haus|Gebäude|Geb\.|Block|Trakt)\s*([0-9]{1,3}[a-z]?|[a-z])\b/i);
+  const m = String(s||"").match(/\b(Haus|Gebäude|Geb\.|Block|Trakt)\s*([a-z]?[0-9]{1,3}[a-z]?|[a-z])\b/i);
   return m ? normHaus(m[1] + " " + m[2]) : "";
 }
 function stripHaus(s){
-  const t = String(s||"").replace(/[,\s]*\b(Haus|Gebäude|Geb\.|Block|Trakt)(\s*([0-9]{1,3}[a-z]?|[a-z]))?\s*$/i, "").replace(/[,\s]+$/,"").trim();
+  const t = String(s||"").replace(/[,\s]*\b(Haus|Gebäude|Geb\.|Block|Trakt)(\s*([a-z]?[0-9]{1,3}[a-z]?|[a-z]))?(\s+(Süd|Nord|Ost|West|Mitte))?\s*$/i, "").replace(/[,\s]+$/,"").trim();
   return t || String(s||"").trim();
 }
 function hausSort(a, b){ return String(a).localeCompare(String(b), "de", { numeric:true }); }
@@ -4420,7 +4531,13 @@ function renderPrintCenter(){
   const groups = { neu:[], bereit:[], gedruckt:[], beanstandet:[] };
   DB.invoices.forEach(inv=> groups[invPrintState(inv)].push(inv));
   Object.values(groups).forEach(g=>g.sort((a,b)=>(toDateSafe(b.createdAt)||0)-(toDateSafe(a.createdAt)||0)));
-  const list = (groups[printTab] || []).filter(inv => matchesQuery(invSearchText(inv), printQuery));
+  let list = (groups[printTab] || []).filter(inv => matchesQuery(invSearchText(inv), printQuery));
+  const probs = {};
+  if(printTab==="neu"){
+    list.forEach(inv => { const f = checkInvoice(inv); probs[inv.id] = { d: f.filter(x=>x.level==="danger"), w: f.filter(x=>x.level==="warn") }; });
+    list = list.slice().sort((a,b)=> (probs[b.id].d.length*10 + probs[b.id].w.length) - (probs[a.id].d.length*10 + probs[a.id].w.length));
+  }
+  const cleanNeu = printTab==="neu" ? list.filter(i => !probs[i.id].d.length && !probs[i.id].w.length) : [];
   // Freigegebene Rechnungen sind beim Öffnen automatisch alle markiert
   if(printTab==="bereit") list.filter(i=>hasOriginal(i) && !printDeselected.has(i.id)).forEach(i=>printSel.add(i.id));
   Array.from(printSel).forEach(id=>{ if(!list.some(i=>i.id===id)) printSel.delete(id); });
@@ -4453,12 +4570,12 @@ function renderPrintCenter(){
         <label style="display:flex;gap:6px;align-items:center;font-size:13px;"><input type="checkbox" id="pSelAll" style="width:auto;"> Alle markieren</label>
         <span class="muted" style="font-size:13px;">${printSel.size} markiert</span>
         <span style="flex:1;"></span>
-        ${printTab==="neu" ? `<button class="primary" id="pApprove" ${printSel.size?"":"disabled"}>✓ Markierte freigeben</button>` : ""}
+        ${printTab==="neu" ? `<button id="pApprove" ${printSel.size?"":"disabled"}>✓ Markierte freigeben</button><button class="primary" id="pApproveClean" ${cleanNeu.length?"":"disabled"} style="font-size:14px;">✓ Alle ${cleanNeu.length} ohne Auffälligkeiten freigeben</button>` : ""}
         ${printTab==="bereit" ? `<button class="primary" id="pPrint" ${printSel.size?"":"disabled"} style="font-size:15px;padding:10px 18px;">🖨️ ${printSel.size===printable.length && printable.length ? "Alle" : printSel.size} mit Stempel drucken</button>` : ""}
         ${printTab==="gedruckt" ? `<button id="pPrint" ${printSel.size?"":"disabled"}>🖨️ Nochmals drucken (${printSel.size})</button>` : ""}
       </div>
       <div class="card" style="padding:0;"><div class="tablewrap"><table>
-        <thead><tr><th style="width:30px;"></th><th>Eingegangen</th><th>Lieferant</th><th>Objekt</th><th>Rechnungsnr.</th><th>Betrag CHF</th><th>Prüfung</th><th>Original</th>${printTab==="gedruckt"?"<th>Gedruckt</th>":"<th>Stempeldatum</th>"}</tr></thead>
+        <thead><tr><th style="width:30px;"></th><th>Eingegangen</th><th>Lieferant</th><th>Objekt</th><th>Rechnungsnr.</th><th>Betrag CHF</th><th>Prüfung</th>${printTab==="neu"?"<th>Was ist auffällig?</th>":""}<th>Original</th>${printTab==="gedruckt"?"<th>Gedruckt</th>":"<th>Stempeldatum</th>"}</tr></thead>
         <tbody>${list.map(inv=>{
           const p = proj(inv.projectId);
           const orig = hasOriginal(inv);
@@ -4471,6 +4588,7 @@ function renderPrintCenter(){
             <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
             <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
             <td style="cursor:pointer;" data-popen="${inv.id}">${findingsPill(inv)}</td>
+            ${printTab==="neu" ? `<td style="cursor:pointer;font-size:12.5px;max-width:420px;" data-popen="${inv.id}" class="${probs[inv.id].d.length?"flag":"muted"}">${probs[inv.id].d.length||probs[inv.id].w.length ? escapeHtml(shortText((probs[inv.id].d[0]||probs[inv.id].w[0]).text, 120)) + ((probs[inv.id].d.length+probs[inv.id].w.length)>1 ? ` <b>(+${probs[inv.id].d.length+probs[inv.id].w.length-1})</b>` : "") : "✓ alles in Ordnung"}</td>` : ""}
             <td>${orig ? `<span class="hchip ok">✓ gespeichert</span>` : printTab==="gedruckt" ? `<span class="muted" style="font-size:12px;">gelöscht</span>` : `<button class="small" data-pattach="${inv.id}">PDF anhängen</button>`}</td>
             ${printTab==="gedruckt"
               ? `<td class="muted" style="font-size:12px;">${escapeHtml(inv.gedrucktAm||"")}</td>`
@@ -4521,6 +4639,17 @@ function renderPrintCenter(){
     bd.addEventListener("dragleave", ()=> bd.classList.remove("hover"));
     bd.addEventListener("drop", e=>{ e.preventDefault(); bd.classList.remove("hover"); run(e.dataTransfer.files); });
   }
+  const apc = document.getElementById("pApproveClean");
+  if(apc) apc.addEventListener("click", async ()=>{
+    if(!confirm(`${cleanNeu.length} Rechnung(en) ohne Fehler und ohne Hinweise freigeben?`)) return;
+    for(const inv of cleanNeu){
+      inv.pruefung = { status:"ok", kommentar:(inv.pruefung&&inv.pruefung.kommentar)||"", by: currentUser.email, at: new Date().toLocaleString("de-CH"), ...freigabeVermerk() };
+      await saveInvoice(inv);
+    }
+    printSel.clear();
+    toast(`${cleanNeu.length} Rechnung(en) freigegeben – jetzt unter ③ Drucken.`);
+    renderPrintCenter();
+  });
   const ap = document.getElementById("pApprove");
   if(ap) ap.addEventListener("click", async ()=>{
     const sel = list.filter(i=>printSel.has(i.id));
