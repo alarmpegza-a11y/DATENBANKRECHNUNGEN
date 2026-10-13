@@ -190,6 +190,35 @@
   .srcbadge.text{background:#e6f2ea;color:#1e824c;}
   .progresswrap{background:var(--surface-2);border-radius:5px;height:6px;overflow:hidden;margin-top:8px;}
   .progressbar{height:100%;background:var(--accent);transition:width .15s;}
+  .tablewrap{overflow-x:auto;max-width:100%;}
+  table.itemtable td, table.ctltable td{padding:6px 6px;}
+  table.itemtable input, table.itemtable select{padding:5px 6px;font-size:12.5px;}
+  table.ctltable th, table.ctltable td{white-space:nowrap;}
+  table.ctltable td:first-child{white-space:normal;min-width:150px;}
+  tr.overrow td{background:var(--danger-bg);}
+  tr.sumrow td{border-top:2px solid var(--border);background:var(--surface);}
+  tr.dimrow td{opacity:.6;}
+  tr.noprice td{background:#fffaf0;}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:18px;}
+  .kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;}
+  .kpi .kl{font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-dim);font-weight:600;}
+  .kpi .kv{font-size:18px;font-weight:700;margin-top:4px;}
+  .abbox{border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-top:12px;background:#fff;}
+  .abhead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;}
+  ul.abl{margin:0;padding-left:18px;font-size:12.5px;line-height:1.55;}
+  .pruefbox{background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;}
+  .pruefhead{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;}
+  ul.findings{list-style:none;margin:0;padding:0;}
+  .fd{display:flex;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;line-height:1.4;margin-bottom:4px;}
+  .fd .fdi{font-weight:700;flex:0 0 14px;text-align:center;}
+  .fd.danger{background:var(--danger-bg);color:var(--danger);}
+  .fd.warn{background:var(--warn-bg);color:var(--warn);}
+  .fd.info{background:var(--accent-light);color:var(--accent);}
+  .fd.ok{color:var(--ok);}
+  details.okdetails summary{cursor:pointer;font-size:12.5px;color:var(--ok);margin-top:6px;}
+  button.st-ok{background:var(--ok);border-color:var(--ok);color:#fff;}
+  button.st-bad{background:var(--danger);border-color:var(--danger);color:#fff;}
+  @media (max-width:800px){ .app{flex-direction:column;} .sidebar{width:100%;} .main{padding:18px;} .row{flex-wrap:wrap;} }
 </style>
 </head>
 <body>
@@ -200,6 +229,7 @@
     <button class="navbtn" data-view="suppliers">🏢 Subunternehmer <span class="badge" id="supCount">0</span></button>
     <button class="navbtn" data-view="projects">🏗️ Aufträge <span class="badge" id="projCount">0</span></button>
     <button class="navbtn" data-view="invoices">🧾 Alle Rechnungen <span class="badge" id="invCount">0</span><span class="badge" id="reviewBadge" style="background:var(--danger);display:none;">0</span></button>
+    <button class="navbtn" data-view="settings">⚙️ Einstellungen &amp; Preise</button>
     <button class="navbtn" id="navAdmin" data-view="admin" style="display:none;">👤 Benutzerverwaltung <span class="badge" id="pendingBadge" style="background:var(--danger);display:none;">0</span></button>
     <div style="margin-top:auto;padding:14px 20px 0 20px;">
       <div id="currentUserBox" style="color:#fff;margin-bottom:10px;"></div>
@@ -216,8 +246,14 @@
 const DEFAULT_CATEGORIES = [
   { key: "VW", label: "Vorwand-Element (VW)", unit: "Stk", keywords: ["vorwand","vw-element","vw "] },
   { key: "TW", label: "Trennwand (TW)", unit: "Stk", keywords: ["trennwand","tw-element","tw ","trw"] },
+  { key: "Duofix", label: "Duofix (pro Apparat)", unit: "App.", keywords: ["duofix"] },
   { key: "Beplankung", label: "Beplankung", unit: "m²", keywords: ["beplank"] },
   { key: "Ausflockung", label: "Ausflockung", unit: "m³", keywords: ["ausflock","ausgeflockt"] },
+  { key: "SilentPanel", label: "Geberit SilentPanel", unit: "Stk", keywords: ["silentpanel","silent panel","silent-panel"] },
+  { key: "Verbinden", label: "Leitungen verbinden", unit: "Stk", keywords: ["verbinden","verschweissen"] },
+  { key: "Regie", label: "Regie (Stunden)", unit: "h", keywords: ["regie"] },
+  { key: "Anfahrt", label: "Anfahrt / Parking", unit: "Stk", keywords: ["anfahrt","parking","fahrtspesen"] },
+  { key: "Entsorgung", label: "Entsorgung", unit: "Stk", keywords: ["entsorgung","abfall"] },
   { key: "Elemente", label: "Elemente (allg.)", unit: "Stk", keywords: ["element"] },
   { key: "Sonstiges", label: "Sonstiges", unit: "Stk", keywords: [] },
 ];
@@ -234,13 +270,13 @@ const KNOWN_SUPPLIERS = [
   { hint: "sui innova", name: "SUI INNOVA GmbH" },
 ];
 
-const DEFAULT_PERMISSIONS = { deleteAuftraege: false, deleteSubunternehmer: false, deleteAnyRechnung: false };
+const DEFAULT_PERMISSIONS = { deleteAuftraege: false, deleteSubunternehmer: false, deleteAnyRechnung: false, editPreise: false };
 
-let DB = { projects: [], invoices: [], categories: DEFAULT_CATEGORIES.slice() };
+let DB = { projects: [], invoices: [], subs: [], settings: {}, categories: DEFAULT_CATEGORIES.slice() };
 let allUsers = []; // fuer die Benutzerverwaltung (Admin)
 let currentUser = null;     // { uid, email } von Firebase Auth
 let currentProfile = null;  // { email, role, permissions } aus Firestore users/{uid}
-let unsubProjects = null, unsubInvoices = null, unsubProfile = null, unsubUsers = null;
+let unsubProjects = null, unsubInvoices = null, unsubProfile = null, unsubUsers = null, unsubSubs = null, unsubSettings = null;
 
 let currentView = "upload";
 let currentProjectId = null;
@@ -303,21 +339,34 @@ function showDbError(context, err){
 function startDataListeners(){
   if(unsubProjects) unsubProjects();
   if(unsubInvoices) unsubInvoices();
+  if(unsubSubs) unsubSubs();
+  if(unsubSettings) unsubSettings();
   unsubProjects = window.fb.watchCollection("projects", (snap)=>{
     DB.projects = snap.docs.map(d=>({ id: d.id, ...d.data() }));
-    render();
+    renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
     DB.invoices = snap.docs.map(d=>({ id: d.id, ...d.data() }));
-    render();
+    renderFromSnapshot();
   }, (err)=> showDbError("invoices", err));
+  unsubSubs = window.fb.watchCollection("subunternehmer", (snap)=>{
+    DB.subs = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+    renderFromSnapshot();
+  }, (err)=> showDbError("subunternehmer", err));
+  unsubSettings = window.fb.watchCollection("einstellungen", (snap)=>{
+    const g = snap.docs.find(d=>d.id==="global");
+    DB.settings = g ? g.data() : {};
+    renderFromSnapshot();
+  }, (err)=> showDbError("einstellungen", err));
 }
 function stopDataListeners(){
   if(unsubProjects){ unsubProjects(); unsubProjects=null; }
   if(unsubInvoices){ unsubInvoices(); unsubInvoices=null; }
+  if(unsubSubs){ unsubSubs(); unsubSubs=null; }
+  if(unsubSettings){ unsubSettings(); unsubSettings=null; }
   if(unsubProfile){ unsubProfile(); unsubProfile=null; }
   if(unsubUsers){ unsubUsers(); unsubUsers=null; }
-  DB.projects = []; DB.invoices = []; allUsers = [];
+  DB.projects = []; DB.invoices = []; DB.subs = []; DB.settings = {}; allUsers = [];
 }
 
 async function saveProject(p){
@@ -649,6 +698,9 @@ function parseInvoiceText(text){
   for(const s of KNOWN_SUPPLIERS){
     if(result.lieferant.toLowerCase().includes(s.hint)){ result.lieferant = s.name; break; }
   }
+  // In den Einstellungen gepflegte Subunternehmer + Aliase haben Vorrang
+  const userSub = matchSubInText(text, result.lieferant);
+  if(userSub) result.lieferant = userSub.name;
 
   // --- Rechnungsnummer ---
   let m = text.match(/Rechnung\s*(?:s-?Nr\.?|Nr\.?)?\.?\s*[:\-]?\s*([A-Za-z0-9.\-\/]{3,})/i);
@@ -724,55 +776,65 @@ function parseInvoiceText(text){
   const catAusflockung = categories.find(c=>c.key==="Ausflockung");
   const catSonstiges = categories.find(c=>c.key==="Sonstiges");
 
+  const sameish = (a,b) => Math.abs(a-b) <= Math.max(1, Math.abs(b)*0.01);
   rawLines.forEach(line => {
     const l = line.toLowerCase();
-    if(/^(bezeichnung|pos\.|menge|einheit|preis|total$|zzgl|zwischensumme|mwst-?nr|iban|bic|telefon|rechnungsbetrag)/i.test(l)) return;
+    if(/^(bezeichnung|pos\.|menge|einheit|preis|total$|zzgl|zwischensumme|zwischentotal|summe|mwst-?nr|iban|bic|telefon|rechnungsbetrag)/i.test(l)) return;
     // Verweis auf das Ausmassblatt selbst ueberspringen -- die Menge wird separat ueber
     // den "Total m3"-Wert des Ausmassblatts erfasst, sonst wuerde doppelt gezaehlt.
     if(l.includes("ausmassblatt")) return;
 
-    const priceMatches = [...line.matchAll(/([\d']+[.,]\d{2})/g)];
-    const lastPrice = priceMatches.length ? parseSwissNumber(priceMatches[priceMatches.length-1][1]) : null;
-
-    const unitMatch = line.match(/(\d+(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?)\b/i);
-
-    let cat = null, menge = null, einheit = null, preis = lastPrice;
+    const unitMatch = line.match(/(\d+(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|std\.?|stunden|h|app\.?|apparate?)(?=\s|$|[,;:)])/i);
+    let cat = null, menge = null, einheit = null, preis = null, ep = null;
 
     if(unitMatch){
       einheit = normalizeUnit(unitMatch[2]);
       menge = parseSwissNumber(unitMatch[1]);
-      // Faustregel aus dem Betrieb: m² ist immer Beplankung, m³ ist immer Ausflockung --
-      // unabhaengig davon, ob das Schlagwort auf derselben Zeile steht (OCR trennt Tabellenspalten oft).
+      // Preise nur RECHTS der Mengenangabe suchen (sonst wird z.B. "107.00 m2" als Preis gelesen)
+      const after = line.slice(unitMatch.index + unitMatch[0].length);
+      const prices = [...after.matchAll(/(-?[\d']+[.,]\d{2})(?!\d)/g)].map(m=>parseSwissNumber(m[1])).filter(v=>v!==null);
+      if((einheit==="h" || einheit==="App.") && !prices.length) return; // "48 h Lieferfrist" o.ae. ist keine Position
+      if(prices.length) preis = prices[prices.length-1];
+      if(prices.length >= 2 && menge){
+        const cand = prices[prices.length-2];
+        if(sameish(menge*cand, preis)) ep = cand;
+      }
+      // Faustregel aus dem Betrieb: m² ist immer Beplankung, m³ ist immer Ausflockung
       if(einheit === "m²") cat = catBeplankung;
       else if(einheit === "m³") cat = catAusflockung;
-      else {
-        // Stk-Einheit: ueber Schluesselwoerter der spezifischeren Kategorien (VW/TW/Elemente) entscheiden
-        cat = categories.find(c => c.key!=="Beplankung" && c.key!=="Ausflockung" && c.key!=="Sonstiges" && c.keywords.some(kw=>l.includes(kw))) || catSonstiges;
-      }
+      else if(einheit === "h") cat = categories.find(c=>c.key==="Regie") || catSonstiges;
+      else if(einheit === "App.") cat = categories.find(c => !["Beplankung","Ausflockung","Sonstiges","Regie","Elemente"].includes(c.key) && c.keywords.some(kw=>l.includes(kw))) || categories.find(c=>c.key==="Duofix") || catSonstiges;
+      else cat = categories.find(c => !["Beplankung","Ausflockung","Sonstiges","Regie"].includes(c.key) && c.keywords.some(kw=>l.includes(kw))) || catSonstiges;
     } else {
-      // Keine explizite Einheit im Text: nur bei einer dezimal formatierten Zahl (z.B. "4.00")
-      // als Stk-Menge werten -- vermeidet Verwechslung mit Positionsnummern oder Adressziffern.
       for(const c of categories){
         if(c.key==="Beplankung" || c.key==="Ausflockung" || c.key==="Sonstiges") continue;
         if(c.keywords.some(kw => l.includes(kw))){ cat = c; break; }
       }
       if(!cat) return;
-      const decMatch = line.match(/(\d+[.,]\d{1,2})\b/);
-      if(decMatch) menge = parseSwissNumber(decMatch[1]);
+      const nums = [...line.matchAll(/(-?[\d']+[.,]\d{1,2})(?!\d)/g)].map(m=>parseSwissNumber(m[1])).filter(v=>v!==null);
+      if(!nums.length) return;
       einheit = cat.unit;
+      if(nums.length === 1){
+        // Nur eine Zahl: bei Pauschalen (Anfahrt/Entsorgung) ist das der Betrag, sonst die Menge
+        if(cat.key==="Anfahrt" || cat.key==="Entsorgung"){ menge = 1; preis = nums[0]; }
+        else menge = nums[0];
+      } else {
+        menge = nums[0];
+        preis = nums[nums.length-1];
+        if(nums.length >= 3 && sameish(menge*nums[nums.length-2], preis)) ep = nums[nums.length-2];
+      }
     }
 
     if(menge === null || !cat) return;
-    // Nullzeilen (z.B. unbenutzte Tarifzeilen "m2 36.00 CHF 0.00 CHF") interessieren nicht --
-    // nur Positionen mit tatsaechlich verrechnetem Betrag zaehlen als echte Menge.
+    // Nullzeilen (z.B. unbenutzte Tarifzeilen "m2 36.00 CHF 0.00 CHF") interessieren nicht
     if(preis !== null && preis === 0) return;
 
-    result.items.push({ id: uid("it"), category: cat.key, label: line.slice(0,70), menge, einheit, preis });
+    result.items.push({ id: uid("it"), category: cat.key, label: line.slice(0,90), menge, einheit, preis, ep });
   });
 
   const totalM3 = text.match(/Total\s*m3\s*([\d'.,]+)/i);
   if(totalM3 && !result.items.some(it=>it.category==="Ausflockung")){
-    result.items.push({ id: uid("it"), category: "Ausflockung", label: "Total m³ (Ausmassblatt)", menge: parseSwissNumber(totalM3[1]), einheit: "m³", preis: null });
+    result.items.push({ id: uid("it"), category: "Ausflockung", label: "Total m³ (Ausmassblatt)", menge: parseSwissNumber(totalM3[1]), einheit: "m³", preis: null, ep: null });
   }
 
   return result;
@@ -799,6 +861,8 @@ function normalizeUnit(u){
   if(u==="m2"||u==="m²") return "m²";
   if(u==="m3"||u==="m³") return "m³";
   if(u==="stk") return "Stk";
+  if(u==="h"||u==="std"||u==="stunden") return "h";
+  if(u==="app"||u==="apparat"||u==="apparate") return "App.";
   return u;
 }
 function parseSwissNumber(s){
@@ -829,13 +893,12 @@ function findMatchingProject(parsed){
     if(byNum) return byNum;
   }
   if(objLower){
-    const tokenize = s => s.replace(/[,\d]/g," ").split(/\s+/).filter(w=>w.length>3);
-    const parsedTokens = tokenize(objLower);
+    let best = null, bestScore = 0;
     for(const p of DB.projects){
-      const pTokens = tokenize((p.address||"").toLowerCase());
-      const overlap = parsedTokens.filter(t => pTokens.includes(t));
-      if(overlap.length >= 1) return p;
+      const s = projectAddrScore(parsed.objekt, p);
+      if(s > bestScore){ best = p; bestScore = s; }
     }
+    if(best && bestScore >= 1) return best;
   }
   return null;
 }
@@ -844,8 +907,11 @@ function findMatchingProject(parsed){
 
 const mainEl = document.getElementById("main");
 
-function render(){
-  document.querySelectorAll(".navbtn").forEach(b=>b.classList.toggle("active", b.dataset.view===currentView));
+let lastRenderedView = null;
+let pendingSnapshotRender = false;
+
+function updateBadges(){
+  document.querySelectorAll(".navbtn").forEach(b=>b.classList.toggle("active", b.dataset.view===currentView || (currentView==="subPrices" && b.dataset.view==="settings")));
   document.getElementById("projCount").textContent = DB.projects.length;
   document.getElementById("invCount").textContent = DB.invoices.length;
   document.getElementById("supCount").textContent = getSuppliers().length;
@@ -853,26 +919,52 @@ function render(){
   const reviewBadge = document.getElementById("reviewBadge");
   reviewBadge.textContent = reviewCount;
   reviewBadge.style.display = reviewCount > 0 ? "" : "none";
+}
 
-  if(currentView==="upload") renderUpload();
+function render(){
+  pendingSnapshotRender = false;
+  updateBadges();
+  if(currentView==="upload"){
+    // Upload-Seite nicht neu aufbauen, solange sie offen ist -- sonst verschwinden die eben erfassten Karten
+    if(!(lastRenderedView==="upload" && document.getElementById("reviewArea"))) renderUpload();
+  }
   else if(currentView==="projects") renderProjects();
   else if(currentView==="projectDetail") renderProjectDetail(currentProjectId);
   else if(currentView==="invoices") renderInvoices();
   else if(currentView==="suppliers") renderSuppliers();
   else if(currentView==="supplierDetail") renderSupplierDetail(currentSupplierName);
+  else if(currentView==="settings") renderSettings();
+  else if(currentView==="subPrices") renderSubPrices(currentSupplierName);
   else if(currentView==="admin") renderAdmin();
+  lastRenderedView = currentView;
 }
+
+// Datenbank-Updates nicht mitten in eine Eingabe hinein rendern (Fokus/Cursor ginge verloren)
+function renderFromSnapshot(){
+  const ae = document.activeElement;
+  if(ae && mainEl.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)){
+    pendingSnapshotRender = true;
+    updateBadges();
+    return;
+  }
+  render();
+}
+document.addEventListener("focusout", ()=>{
+  if(!pendingSnapshotRender) return;
+  setTimeout(()=>{ if(pendingSnapshotRender) renderFromSnapshot(); }, 200);
+});
 
 function getSuppliers(){
   const names = new Set();
   DB.invoices.forEach(inv => { if(inv.lieferant) names.add(inv.lieferant); });
+  (DB.subs||[]).forEach(s => { if(s.name && !Array.from(names).some(n=>getSubFor(n)===s)) names.add(s.name); });
   return Array.from(names).sort();
 }
 
 function renderUpload(){
   mainEl.innerHTML = `
-    <h1>Neue Rechnung erfassen</h1>
-    <p class="subtitle">PDF hochladen — auch mehrere Rechnungen verschiedener Subunternehmer in einer Datei werden automatisch erkannt und getrennt. Gescannte PDFs werden per OCR gelesen, das kann je nach Seitenzahl etwas dauern.</p>
+    <h1>Rechnungen &amp; Auftragsbestätigungen erfassen</h1>
+    <p class="subtitle">PDF hochladen — Rechnungen der Subunternehmer <b>und</b> PE-Auftragsbestätigungen (AB) werden automatisch erkannt. Mehrere Rechnungen pro Datei werden getrennt, ABs dem passenden Auftrag (Baustelle) zugeordnet. Gescannte PDFs werden per OCR gelesen.</p>
     <div class="card">
       <div class="drop" id="dropzone">
         <div style="font-size:28px;margin-bottom:8px;">📄</div>
@@ -919,6 +1011,20 @@ async function handleFiles(fileList){
         statusEl.querySelector("div").textContent = `"${file.name}" — ${label}`;
       });
 
+      // PE-Auftragsbestaetigung? -> als AB einlesen und dem Auftrag zuordnen
+      const fullText = pages.map(p=>p.text).join("\n");
+      if(isABText(fullText)){
+        const ab = abFromPages(pages, file.name);
+        if(!ab.positionen.length){
+          statusEl.innerHTML = `<span class="flag">"${escapeHtml(file.name)}": Auftragsbestätigung erkannt, aber keine Positionen lesbar.</span>`;
+          continue;
+        }
+        const res = await autoAssignAB(ab);
+        statusEl.innerHTML = `<div class="muted">"${escapeHtml(file.name)}": Auftragsbestätigung <b>${escapeHtml(ab.nr)}</b> erkannt (${ab.positionen.length} Positionen) und gespeichert.</div>`;
+        appendABCard(ab, res);
+        continue;
+      }
+
       const groups = splitPagesIntoInvoices(pages);
       statusEl.innerHTML = `<div class="muted">"${escapeHtml(file.name)}": <b>${groups.length}</b> Rechnung(en) erkannt, getrennt und automatisch gespeichert.</div>`;
 
@@ -958,7 +1064,7 @@ async function appendReviewCard(parsed){
     datum: parsed.datum || "",
     total: parsed.total,
     filename: parsed._filename || "",
-    items: items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis })),
+    items: items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: (it.ep!==undefined ? it.ep : null) })),
   };
   const invoiceId = await createInvoice(invoiceData);
   const invoice = { id: invoiceId, ...invoiceData, createdBy: currentUser.uid, createdByEmail: currentUser.email, createdAt: new Date() };
@@ -1012,11 +1118,8 @@ async function appendReviewCard(parsed){
       </label>
 
       <div class="section-title">Erkannte Positionen — bitte prüfen &amp; korrigieren</div>
-      <table>
-        <thead><tr><th>Kategorie</th><th>Beschreibung (Original)</th><th>Menge</th><th>Einheit</th><th>Preis CHF</th><th></th></tr></thead>
-        <tbody class="itemsBody"></tbody>
-      </table>
-      <button class="small addItemBtn" style="margin-top:8px;">+ Position hinzufügen</button>
+      <div class="itemsSlot"></div>
+      <div class="pruefSlot" style="margin-top:14px;"></div>
 
       <div style="margin-top:8px;">
         <button class="close-x showRaw" style="font-size:12px;color:var(--text-dim);">Rohtext anzeigen ▾</button>
@@ -1044,50 +1147,16 @@ async function appendReviewCard(parsed){
     inp.addEventListener("change", ()=>{ const inv = findInvoice(); if(inv) saveInvoice(inv); });
   });
 
-  const itemsBody = wrap.querySelector(".itemsBody");
-  function renderItems(){
-    const inv = findInvoice(); if(!inv) return;
-    itemsBody.innerHTML = inv.items.map(it=>`
-      <tr class="itemrow" data-id="${it.id}">
-        <td><select data-f="category">${catOptions}</select></td>
-        <td><input type="text" data-f="label" value="${escapeAttr(it.label||"")}"></td>
-        <td style="width:90px;"><input type="number" step="any" data-f="menge" value="${it.menge!==null&&it.menge!==undefined?it.menge:""}"></td>
-        <td style="width:80px;"><input type="text" data-f="einheit" value="${escapeAttr(it.einheit||"")}"></td>
-        <td style="width:100px;"><input type="number" step="any" data-f="preis" value="${it.preis!==null&&it.preis!==undefined?it.preis:""}"></td>
-        <td><button class="close-x" data-remove="${it.id}">✕</button></td>
-      </tr>
-    `).join("");
-    itemsBody.querySelectorAll("select[data-f=category]").forEach(sel=>{
-      const row = sel.closest("tr");
-      const it = inv.items.find(i=>i.id===row.dataset.id);
-      sel.value = it.category;
-      sel.addEventListener("change", ()=>{ it.category = sel.value; saveInvoice(inv); });
-    });
-    itemsBody.querySelectorAll("input").forEach(inp=>{
-      const row = inp.closest("tr");
-      const it = inv.items.find(i=>i.id===row.dataset.id);
-      inp.addEventListener("input", ()=>{
-        const f = inp.dataset.f;
-        it[f] = (f==="menge"||f==="preis") ? (inp.value===""?null:parseFloat(inp.value)) : inp.value;
-      });
-      inp.addEventListener("change", ()=> saveInvoice(inv));
-    });
-    itemsBody.querySelectorAll("[data-remove]").forEach(btn=>{
-      btn.addEventListener("click", ()=>{
-        const i = findInvoice(); if(!i) return;
-        i.items = i.items.filter(x=>x.id!==btn.dataset.remove);
-        saveInvoice(i);
-        renderItems();
-      });
-    });
-  }
-  renderItems();
-
-  wrap.querySelector(".addItemBtn").addEventListener("click", ()=>{
-    const inv = findInvoice(); if(!inv) return;
-    inv.items.push({id:uid("it"),category:"Sonstiges",label:"",menge:null,einheit:"Stk",preis:null});
-    saveInvoice(inv);
-    renderItems();
+  const pruefSlot = wrap.querySelector(".pruefSlot");
+  const refreshPruef = ()=> renderPruefPanel(pruefSlot, findInvoice);
+  renderItemsTable(wrap.querySelector(".itemsSlot"), findInvoice, refreshPruef);
+  refreshPruef();
+  wrap.querySelectorAll("[data-f]").forEach(inp=>{
+    if(inp.tagName==="SELECT") return;
+    inp.addEventListener("change", ()=> setTimeout(()=>{
+      if(inp.dataset.f==="lieferant") renderItemsTable(wrap.querySelector(".itemsSlot"), findInvoice, refreshPruef);
+      refreshPruef();
+    }, 0));
   });
 
   wrap.querySelector(".showRaw").addEventListener("click", (e)=>{
@@ -1107,6 +1176,7 @@ async function appendReviewCard(parsed){
     }
     inv.projectId = newProjectId;
     saveInvoice(inv);
+    refreshPruef();
     toast("Auftrag geändert.");
   });
 
@@ -1204,6 +1274,7 @@ function renderSuppliers(){
       if(!newName || !newName.trim() || newName.trim() === oldName) return;
       const toRename = DB.invoices.filter(i=>i.lieferant===oldName);
       for(const inv of toRename){ inv.lieferant = newName.trim(); await saveInvoice(inv); }
+      await renameSubMaster(oldName, newName.trim());
       toast(`"${oldName}" umbenannt zu "${newName.trim()}".`);
       renderSuppliers();
     });
@@ -1215,9 +1286,10 @@ function renderSuppliers(){
       const name = btn.dataset.delsup;
       if(!confirm(`Alle Rechnungen von "${name}" wirklich löschen?`)) return;
       const toDelete = DB.invoices.filter(i=>i.lieferant===name);
+      const touched = new Set(toDelete.map(i=>i.projectId));
       for(const inv of toDelete) await deleteInvoiceDoc(inv.id);
       const remainingInvoices = DB.invoices.filter(i=>i.lieferant!==name);
-      const orphanProjects = DB.projects.filter(p => !remainingInvoices.some(i=>i.projectId===p.id));
+      const orphanProjects = DB.projects.filter(p => touched.has(p.id) && !(p.abs||[]).length && !remainingInvoices.some(i=>i.projectId===p.id));
       for(const p of orphanProjects) await deleteProjectDoc(p.id);
       toast(`Subunternehmer "${name}" gelöscht.`);
     });
@@ -1234,7 +1306,7 @@ function renderSupplierDetail(name){
     <button class="backlink" id="backBtn">← Zurück zu Subunternehmern</button>
     <div style="display:flex;justify-content:space-between;align-items:center;">
       <h1>🏢 ${escapeHtml(name)}</h1>
-      <button class="small" id="renameSupBtn">Umbenennen</button>
+      <div style="display:flex;gap:6px;"><button class="small primary" id="pricesSupBtn">💰 Preise &amp; Stundenansätze</button><button class="small" id="renameSupBtn">Umbenennen</button></div>
     </div>
     <p class="subtitle">${projects.length} Auftrag/Aufträge mit Rechnungen von diesem Sub. Klicke einen Auftrag für Soll/Ist-Vergleich.</p>
     <div id="searchSlot"></div>
@@ -1243,7 +1315,7 @@ function renderSupplierDetail(name){
     <div class="section-title" style="margin-top:24px;">Alle Rechnungen von ${escapeHtml(name)} (${invs.length})</div>
     <div class="card">
       <table>
-        <thead><tr><th>Datum</th><th>Auftrag</th><th>Rechnungsnr.</th><th>Mengen</th><th></th></tr></thead>
+        <thead><tr><th>Datum</th><th>Auftrag</th><th>Rechnungsnr.</th><th>Mengen</th><th>Prüfung</th><th></th></tr></thead>
         <tbody>
           ${invs.length ? invs.map(inv=>{
             const p = DB.projects.find(x=>x.id===inv.projectId);
@@ -1252,19 +1324,22 @@ function renderSupplierDetail(name){
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
+              <td>${findingsPill(inv)}</td>
               <td><button class="small danger" data-delinv2="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
             </tr>`;
-          }).join("") : `<tr><td colspan="5" class="muted">Keine Rechnungen.</td></tr>`}
+          }).join("") : `<tr><td colspan="6" class="muted">Keine Rechnungen.</td></tr>`}
         </tbody>
       </table>
     </div>
   `;
   document.getElementById("backBtn").addEventListener("click", ()=>{ goBack("suppliers"); });
+  document.getElementById("pricesSupBtn").addEventListener("click", ()=>{ editingSub = null; navigateTo("subPrices", { supplierName: name }); });
   document.getElementById("renameSupBtn").addEventListener("click", async ()=>{
     const newName = prompt(`Neuen Namen für "${name}" eingeben:`, name);
     if(!newName || !newName.trim() || newName.trim() === name) return;
     const toRename = DB.invoices.filter(i=>i.lieferant===name);
     for(const inv of toRename){ inv.lieferant = newName.trim(); await saveInvoice(inv); }
+    await renameSubMaster(name, newName.trim());
     toast(`Umbenannt zu "${newName.trim()}".`);
     currentSupplierName = newName.trim();
     render();
@@ -1319,13 +1394,16 @@ function renderProjects(){
     mainEl.innerHTML = `
       <h1>Aufträge</h1>
       <p class="subtitle">Übersicht über alle Aufträge mit Soll/Ist-Vergleich.</p>
-      <div class="empty">Noch keine Aufträge. Lade zuerst eine Rechnung hoch — der Auftrag wird dabei automatisch angelegt.</div>
+      <div class="empty">Noch keine Aufträge. Lade eine Rechnung oder eine AB hoch (📄 Neue Rechnung) — der Auftrag wird dabei automatisch angelegt.</div>
     `;
     return;
   }
   mainEl.innerHTML = `
-    <h1>Aufträge</h1>
-    <p class="subtitle">${DB.projects.length} Auftrag/Aufträge — klicke für Details und Soll/Ist-Vergleich.</p>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+      <h1>Aufträge</h1>
+      <button class="primary" id="abUploadListBtn">📑 AB hochladen</button>
+    </div>
+    <p class="subtitle">${DB.projects.length} Auftrag/Aufträge — klicke für Details und Soll/Ist-Vergleich. ABs werden automatisch über die Baustelle zugeordnet.</p>
     <div id="searchSlot"></div>
     <div id="projList"></div>
   `;
@@ -1335,6 +1413,16 @@ function renderProjects(){
     });
   });
 
+  document.getElementById("abUploadListBtn").addEventListener("click", ()=> pickABFile(async (file)=>{
+    try{
+      const ab = await readABFile(file);
+      if(!ab) return;
+      const res = await autoAssignAB(ab);
+      const msg = { revision:"als neue Version ersetzt", auto:"automatisch zugeordnet", unsicher:"zugeordnet – bitte prüfen (unsichere Adressübereinstimmung)", neu:"neuer Auftrag angelegt" }[res.how];
+      toast(`AB ${ab.nr}: ${msg}.`);
+      navigateTo("projectDetail", { projectId: res.projectId });
+    }catch(err){ console.error(err); toast("Fehler beim Lesen der AB: " + (err.message||err)); }
+  }));
   const list = document.getElementById("projList");
   list.innerHTML = DB.projects.map(p=>{
     const invs = DB.invoices.filter(i=>i.projectId===p.id);
@@ -1350,6 +1438,8 @@ function renderProjects(){
         <div class="pmeta">
           <div class="muted" style="font-size:12px;">${invs.length} Rechnung(en)</div>
         </div>
+        ${(p.abs||[]).length ? `<span class="pill neutral" title="Auftragsbestätigung hinterlegt">📑 AB</span>` : `<span class="pill warn" title="Ohne AB keine Mengenkontrolle">keine AB</span>`}
+        ${(()=>{ const bad = invs.filter(i=>!(i.pruefung && i.pruefung.status) || i.pruefung.status==="offen").filter(i=>checkInvoice(i).some(x=>x.level==="danger")).length; return bad ? `<span class="pill danger">✗ ${bad} Rechn. mit Fehlern</span>` : ""; })()}
         ${needsReview ? `<span class="pill warn">⚠ Prüfen nötig</span>` : (overCount>0 ? `<span class="pill danger">⚠ ${overCount} über Soll</span>` : `<span class="pill ok">im Soll</span>`)}
         ${hasPerm('deleteAuftraege') ? `<button class="small danger" data-delproj="${p.id}" style="margin-left:10px;">Löschen</button>` : ""}
       </div>
@@ -1396,20 +1486,13 @@ function notifyIfNeedsReview(inv){
 }
 
 function countOverBudget(p){
-  const invs = DB.invoices.filter(i=>i.projectId===p.id);
-  const ist = aggregateByCategory(invs);
-  let over = 0;
-  Object.keys(p.soll||{}).forEach(cat=>{
-    const soll = p.soll[cat];
-    if(soll && soll.menge!=null && (ist[cat]?.menge||0) > soll.menge) over++;
-  });
-  return over;
+  return projectControlRows(p).filter(r => r.soll && r.ist.menge > r.soll.menge * (1 + getSettings().mengenTolProzent/100) + 1e-9).length;
 }
 
 function aggregateByCategory(invoices){
   const agg = {};
   invoices.forEach(inv=>{
-    inv.items.forEach(it=>{
+    (inv.items||[]).forEach(it=>{
       if(!agg[it.category]) agg[it.category] = { menge:0, einheit: it.einheit, chf:0 };
       if(it.menge) agg[it.category].menge += it.menge;
       if(it.einheit) agg[it.category].einheit = it.einheit;
@@ -1419,24 +1502,72 @@ function aggregateByCategory(invoices){
   return agg;
 }
 
+const expandedABs = new Set();
+
+function projectControlRows(p){
+  const invs = DB.invoices.filter(i=>i.projectId===p.id && isActiveInvoice(i));
+  const ab = abSoll(p);
+  const cats = new Set(Object.keys(ab));
+  Object.keys(p.soll||{}).forEach(k=>{ if(p.soll[k] && num(p.soll[k].menge)!=null) cats.add(k); });
+  const ist = {};
+  invs.forEach(inv=>(inv.items||[]).forEach(it=>{
+    const o = ist[it.category] || (ist[it.category] = { menge:0, chf:0, subs:{} });
+    if(num(it.menge)!=null) o.menge += +it.menge;
+    if(num(it.preis)!=null) o.chf += +it.preis;
+    const s = inv.lieferant || "?"; o.subs[s] = (o.subs[s]||0) + 1;
+  }));
+  Object.keys(ist).forEach(k=>cats.add(k));
+  const order = (DB.categories||DEFAULT_CATEGORIES).map(c=>c.key);
+  return Array.from(cats).sort((a,b)=>order.indexOf(a)-order.indexOf(b)).map(cat=>{
+    const soll = getSoll(p, cat);
+    const i = ist[cat] || { menge:0, chf:0, subs:{} };
+    const mainSubName = (Object.entries(i.subs).sort((a,b)=>b[1]-a[1])[0]||[])[0] || null;
+    const sub = mainSubName ? getSubFor(mainSubName) : null;
+    let budget = null;
+    if(soll && sub){
+      const today = { datum: "" };
+      if(soll.quelle==="AB"){
+        let sum = 0, ok = true;
+        (ab[cat] ? ab[cat].positionen : []).forEach(pos=>{
+          const r = findTarif(sub, today, { category:cat, label: pos.material || pos.beschreibung || pos.artikel, einheit: pos.einheit });
+          if(r.tarif) sum += (+pos.menge||0) * +r.tarif.preis; else ok = false;
+        });
+        budget = ok ? sum : null;
+      } else {
+        const r = findTarif(sub, today, { category:cat, label:"", einheit:catUnit(cat) });
+        if(r.tarif) budget = soll.menge * +r.tarif.preis;
+      }
+    }
+    return { cat, soll, ist:i, erloes: ab[cat] ? ab[cat].erloes : null, materials: ab[cat] ? ab[cat].materials : [], budget, mainSubName };
+  });
+}
+
 function renderProjectDetail(projectId){
   const p = DB.projects.find(x=>x.id===projectId);
   if(!p){ currentView="projects"; render(); return; }
-  const invs = DB.invoices.filter(i=>i.projectId===p.id).sort((a,b)=> (a.datum||"").localeCompare(b.datum||""));
-  const ist = aggregateByCategory(invs);
-  const categories = DB.categories || DEFAULT_CATEGORIES;
-  const totalCHF = invs.reduce((s,i)=>s+(i.total||0),0);
+  const invs = DB.invoices.filter(i=>i.projectId===p.id).sort((a,b)=> (parseDateCH(a.datum)||0) - (parseDateCH(b.datum)||0));
+  const totalCHF = invs.reduce((s,i)=>s+(num(i.total)||0),0);
   const otherProjects = DB.projects.filter(x=>x.id!==p.id);
+  const rows = projectControlRows(p);
+  const abs = p.abs || [];
+  const auftragswert = abs.reduce((s,a)=>s+(num(a.auftragswert)||0),0);
+  const subNetto = invs.filter(isActiveInvoice).reduce((s,i)=>s+(i.items||[]).reduce((a,it)=>a+(num(it.preis)||0),0),0);
+  const offen = invs.filter(i=>!(i.pruefung && i.pruefung.status && i.pruefung.status!=="offen")).length;
+  const leitfaden = abs.flatMap(a=>a.positionen||[]).filter(x=>x.leitfadenzeitH);
+  const catOpts = (DB.categories||DEFAULT_CATEGORIES).map(c=>`<option value="${escapeAttr(c.key)}">${escapeHtml(c.label)}</option>`).join("");
+
+  let sumBudget = 0, sumIst = 0, sumErloes = 0, anyBudget = false, anyErloes = false;
+  rows.forEach(r=>{ if(r.budget!=null){ sumBudget += r.budget; anyBudget = true; } sumIst += r.ist.chf; if(r.erloes!=null){ sumErloes += r.erloes; anyErloes = true; } });
 
   mainEl.innerHTML = `
-    <button class="backlink" id="backBtn">← Zurück zu Aufträgen</button>
+    <button class="backlink" id="backBtn">← Zurück</button>
 
     <div class="card">
-      <div class="section-title">Auftrag — Name &amp; Adresse (bei Bedarf korrigieren)</div>
+      <div class="section-title" style="margin-top:0;">Auftrag — Name &amp; Adresse (bei Bedarf korrigieren)</div>
       <div class="row">
         <label class="field"><span>Name des Auftrags</span><input type="text" id="editProjName" value="${escapeAttr(p.name)}"></label>
         <label class="field"><span>Adresse / Objekt</span><input type="text" id="editProjAddress" value="${escapeAttr(p.address||"")}"></label>
-        <label class="field"><span>Deine Auftragsnummer</span><input type="text" id="editProjAuftragsnr" value="${escapeAttr(p.auftragsnummer||"")}"></label>
+        <label class="field"><span>Auftragsnummer</span><input type="text" id="editProjAuftragsnr" value="${escapeAttr(p.auftragsnummer||"")}"></label>
       </div>
       <div class="row" style="align-items:flex-end;">
         <label class="field"><span>Mit anderem Auftrag zusammenführen (falls doppelt angelegt)</span>
@@ -1445,46 +1576,125 @@ function renderProjectDetail(projectId){
             ${otherProjects.map(op=>`<option value="${op.id}">${escapeHtml(op.name)}</option>`).join("")}
           </select>
         </label>
-        <button class="danger" id="mergeBtn" style="flex:0 0 auto;" ${hasPerm('deleteAuftraege')?"":"disabled title=\"Nur Admin/berechtigte Nutzer können Aufträge zusammenführen bzw. löschen\""}>Zusammenführen</button>
-        <button class="danger" id="deleteProjBtn" style="flex:0 0 auto;" ${hasPerm('deleteAuftraege')?"":"disabled title=\"Nur Admin/berechtigte Nutzer können Aufträge löschen\""}>Auftrag löschen</button>
+        <button class="danger" id="mergeBtn" style="flex:0 0 auto;" ${hasPerm('deleteAuftraege')?"":"disabled title=\"Nur Admin/berechtigte Nutzer\""}>Zusammenführen</button>
+        <button class="danger" id="deleteProjBtn" style="flex:0 0 auto;" ${hasPerm('deleteAuftraege')?"":"disabled title=\"Nur Admin/berechtigte Nutzer\""}>Auftrag löschen</button>
       </div>
     </div>
 
+    <div class="kpis">
+      <div class="kpi"><div class="kl">Auftragswert AB (exkl. MwSt)</div><div class="kv num">${abs.length ? "CHF "+fmt(auftragswert) : "—"}</div></div>
+      <div class="kpi"><div class="kl">Sub verrechnet (Positionen netto)</div><div class="kv num">CHF ${fmt(subNetto)}</div></div>
+      <div class="kpi"><div class="kl">Budget Sub (Soll × Preise)</div><div class="kv num">${anyBudget ? "CHF "+fmt(sumBudget) : "—"}</div></div>
+      <div class="kpi"><div class="kl">Prüfung offen</div><div class="kv">${offen} / ${invs.length}</div></div>
+    </div>
+
     <div class="card">
-      <h2>Soll / Ist pro Kategorie</h2>
-      <div class="catgrid" id="catGrid"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <h2 style="margin:0;">📑 Auftragsbestätigung${abs.length>1?"en":""}</h2>
+        <button class="small primary" id="abUploadBtn">${abs.length ? "+ Weitere AB / Revision hochladen" : "AB hochladen"}</button>
+      </div>
+      ${abs.length ? abs.map(ab=>{
+        const open = expandedABs.has(p.id+"|"+ab.nr);
+        return `<div class="abbox">
+          <div class="abhead">
+            <div><b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}
+              <div class="muted" style="font-size:12px;">Kunde: ${escapeHtml(ab.kunde||"—")}${ab.kontakt?" ("+escapeHtml(ab.kontakt)+")":""} · Offerte ${escapeHtml(ab.offertdatum||"—")} · ${ab.einheiten!=null?ab.einheiten+" Einheiten · ":""}CHF ${fmt(ab.auftragswert)} exkl. MwSt · eingelesen ${escapeHtml(ab.importedAt||"")}</div>
+            </div>
+            <div style="display:flex;gap:6px;flex-shrink:0;">
+              <button class="small" data-abtoggle="${escapeAttr(ab.nr)}">${open?"Positionen ▴":"Positionen ▾"}</button>
+              <button class="small danger" data-abdel="${escapeAttr(ab.nr)}">Entfernen</button>
+            </div>
+          </div>
+          <div style="margin-top:8px;">${abSummaryHtml(ab)}</div>
+          ${open ? `
+            <div class="tablewrap" style="margin-top:12px;"><table class="itemtable">
+              <thead><tr><th>Pos</th><th>Artikel / Beschreibung</th><th>Menge</th><th>EP</th><th>Betrag CHF</th><th>Zählt als (Sub-Leistung)</th></tr></thead>
+              <tbody>${(ab.positionen||[]).map(pos=>`
+                <tr class="${pos.category?"":"dimrow"}">
+                  <td class="num">${escapeHtml(pos.pos)}</td>
+                  <td><b>${escapeHtml(pos.artikel)}</b> <span class="muted">${escapeHtml(pos.gruppe||"")}</span><div class="muted" style="font-size:12px;white-space:pre-line;">${escapeHtml(shortText(pos.beschreibung, 160))}</div></td>
+                  <td class="num" style="white-space:nowrap;">${fmtQty(pos.menge)} ${escapeHtml(pos.einheit)}</td>
+                  <td class="num">${fmt(pos.ep)}</td>
+                  <td class="num">${fmt(pos.betrag)}${pos.rabatt?`<div class="muted" style="font-size:11px;">−${pos.rabatt}%</div>`:""}</td>
+                  <td style="min-width:170px;"><select data-abpos="${escapeAttr(ab.nr)}|${escapeAttr(pos.pos)}"><option value="">— nicht Sub-relevant —</option>${catOpts}</select>
+                    ${pos.material?`<div class="muted" style="font-size:11px;margin-top:2px;">Material: ${escapeHtml(pos.material)}</div>`:""}</td>
+                </tr>`).join("")}</tbody>
+            </table></div>
+            <div class="row" style="margin-top:14px;">
+              <div><div class="section-title" style="margin-top:0;">Inklusive</div><ul class="abl">${(ab.inkl||[]).map(x=>`<li>${escapeHtml(x)}</li>`).join("") || "<li class='muted'>—</li>"}</ul></div>
+              <div><div class="section-title" style="margin-top:0;color:var(--danger);">Exklusive / nicht enthalten</div><ul class="abl">${(ab.exkl||[]).map(x=>`<li>${escapeHtml(x)}</li>`).join("") || "<li class='muted'>—</li>"}</ul></div>
+            </div>` : ""}
+        </div>`;
+      }).join("") : `<div class="drop" id="abDrop" style="margin-top:12px;padding:22px;"><b>Noch keine AB hinterlegt.</b><div style="font-size:12px;margin-top:4px;">PDF hierher ziehen oder klicken. Ohne AB können Mengen und Leistungsumfang nicht geprüft werden.</div></div>`}
+      ${leitfaden.length ? `<div class="muted" style="font-size:12px;margin-top:10px;">⏱ Leitfadenzeit laut AB: ${leitfaden.map(x=>`${escapeHtml(x.artikel)} ${fmtQty(x.leitfadenzeitH)} h`).join(" · ")}</div>` : ""}
+    </div>
+
+    <div class="card">
+      <h2>Kontrolle pro Leistung</h2>
+      ${rows.length ? `
+      <div class="tablewrap"><table class="ctltable">
+        <thead><tr><th>Leistung</th><th>Soll</th><th>Ist (verrechnet)</th><th>Rest / Über</th><th style="width:110px;"></th><th>Budget Sub</th><th>Verrechnet Sub</th><th>Erlös AB</th><th>Marge</th><th></th></tr></thead>
+        <tbody>${rows.map(r=>{
+          const u = catUnit(r.cat);
+          const S = getSettings();
+          const over = r.soll && r.ist.menge > r.soll.menge * (1 + S.mengenTolProzent/100) + 1e-9;
+          const pct = r.soll && r.soll.menge>0 ? Math.min(100, r.ist.menge / r.soll.menge * 100) : (r.ist.menge>0 ? 100 : 0);
+          const rest = r.soll ? r.soll.menge - r.ist.menge : null;
+          const overBudget = r.budget!=null && r.ist.chf > r.budget + 0.5;
+          const marge = r.erloes!=null ? r.erloes - r.ist.chf : null;
+          return `<tr class="${over||overBudget?"overrow":""}">
+            <td><b>${escapeHtml(catLabel(r.cat))}</b>${r.materials.length?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.materials.join(", "))}</div>`:""}${r.mainSubName?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.mainSubName)}</div>`:""}</td>
+            <td class="num" style="white-space:nowrap;">${r.soll ? `${fmtQty(r.soll.menge)} ${escapeHtml(u)} <span class="srcbadge ${r.soll.quelle==="AB"?"text":"ocr"}">${r.soll.quelle}</span>` : `<span class="muted">kein Soll</span>`}</td>
+            <td class="num" style="white-space:nowrap;">${fmtQty(r.ist.menge)} ${escapeHtml(u)}</td>
+            <td class="num" style="white-space:nowrap;">${rest==null ? "—" : over ? `<span class="flag">+${fmtQty(-rest)} ${escapeHtml(u)} über</span>` : `${fmtQty(rest)} ${escapeHtml(u)}`}</td>
+            <td><div class="barwrap" style="margin:0;"><div class="bar ${over?"over":""}" style="width:${pct}%"></div></div></td>
+            <td class="num">${r.budget!=null ? fmt(r.budget) : `<span class="muted" title="Kein Soll oder kein Preis beim Sub hinterlegt">—</span>`}</td>
+            <td class="num ${overBudget?"flag":""}">${fmt(r.ist.chf)}</td>
+            <td class="num">${r.erloes!=null ? fmt(r.erloes) : "—"}</td>
+            <td class="num ${marge!=null && marge<0?"flag":""}">${marge!=null ? fmt(marge) : "—"}</td>
+            <td><button class="close-x" data-sollset="${escapeAttr(r.cat)}" title="Soll manuell setzen / zurücksetzen">✎</button></td>
+          </tr>`;
+        }).join("")}
+          <tr class="sumrow"><td colspan="5"><b>Total</b></td><td class="num"><b>${anyBudget?fmt(sumBudget):"—"}</b></td><td class="num"><b>${fmt(sumIst)}</b></td><td class="num"><b>${anyErloes?fmt(sumErloes):"—"}</b></td><td class="num"><b>${anyErloes?fmt(sumErloes-sumIst):"—"}</b></td><td></td></tr>
+        </tbody>
+      </table></div>
+      <p class="muted" style="font-size:12px;margin:10px 0 0 0;">Ist = alle Rechnungen dieses Auftrags ausser beanstandete. Budget = Soll-Menge × vereinbarter Preis des Subs. Erlös = Nettobetrag der zugeordneten AB-Positionen. ✎ = Soll manuell überschreiben.</p>`
+      : `<div class="empty" style="padding:24px;">Noch keine Soll- oder Ist-Werte. AB hochladen oder Rechnungen erfassen.</div>`}
+      <div style="margin-top:10px;display:flex;gap:6px;align-items:center;">
+        <select id="addSollCat" style="width:auto;font-size:12px;"><option value="">Soll für weitere Leistung setzen…</option>${catOpts}</select>
+      </div>
     </div>
 
     <div class="card">
       <h2>Rechnungen zu diesem Auftrag (${invs.length}) — Total CHF ${formatCHF(totalCHF)}</h2>
       ${invs.length ? `
-      <table>
-        <thead><tr><th>Datum</th><th>Lieferant</th><th>Rechnungsnr.</th><th>Positionen</th><th>Betrag CHF</th><th></th></tr></thead>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Datum</th><th>Lieferant</th><th>Rechnungsnr.</th><th>Positionen</th><th>Betrag CHF</th><th>Prüfung</th><th></th></tr></thead>
         <tbody>
           ${invs.map(inv=>`
             <tr class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td>${escapeHtml(inv.datum||"—")}</td>
               <td>${escapeHtml(inv.lieferant||"—")}</td>
               <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
-              <td>${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen nötig</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
-              <td class="num">${inv.total!=null?formatCHF(inv.total):"—"}</td>
+              <td>${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Scan prüfen</span> ` : ""}${(inv.items||[]).map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
+              <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
+              <td>${findingsPill(inv)}</td>
               <td style="white-space:nowrap;">
-                <button class="small" data-edit="${inv.id}">Bearbeiten</button>
+                <button class="small" data-edit="${inv.id}">${expandedInvoiceId===inv.id?"Schliessen":"Prüfen / Bearbeiten"}</button>
                 <button class="small danger" data-del="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin' "}>Löschen</button>
               </td>
             </tr>
             <tr class="editRow" data-editrow="${inv.id}" style="display:${expandedInvoiceId===inv.id?'table-row':'none'};">
-              <td colspan="6"><div id="editPanel-${inv.id}"></div></td>
+              <td colspan="7"><div id="editPanel-${inv.id}"></div></td>
             </tr>
           `).join("")}
         </tbody>
-      </table>
+      </table></div>
       ` : `<div class="empty">Noch keine Rechnungen für diesen Auftrag.</div>`}
     </div>
   `;
 
   document.getElementById("backBtn").addEventListener("click", ()=>{ goBack("projects"); });
-
   document.getElementById("editProjName").addEventListener("change", (e)=>{ p.name = e.target.value; saveProject(p); });
   document.getElementById("editProjAddress").addEventListener("change", (e)=>{ p.address = e.target.value; saveProject(p); });
   document.getElementById("editProjAuftragsnr").addEventListener("change", (e)=>{ p.auftragsnummer = e.target.value; saveProject(p); });
@@ -1495,10 +1705,12 @@ function renderProjectDetail(projectId){
     if(!targetId){ toast("Bitte zuerst einen Auftrag zum Zusammenführen wählen."); return; }
     const target = DB.projects.find(x=>x.id===targetId);
     if(!target) return;
-    if(!confirm(`Alle Rechnungen von "${p.name}" zu "${target.name}" verschieben und "${p.name}" löschen?`)) return;
-    for(const inv of DB.invoices.filter(i=>i.projectId===p.id)){
-      inv.projectId = target.id;
-      await saveInvoice(inv);
+    if(!confirm(`Alle Rechnungen${abs.length?" und ABs":""} von "${p.name}" zu "${target.name}" verschieben und "${p.name}" löschen?`)) return;
+    for(const inv of DB.invoices.filter(i=>i.projectId===p.id)){ inv.projectId = target.id; await saveInvoice(inv); }
+    if(abs.length){
+      const nrs = new Set(abs.map(a=>a.nr));
+      target.abs = (target.abs||[]).filter(a=>!nrs.has(a.nr)).concat(abs);
+      await saveProject(target);
     }
     await deleteProjectDoc(p.id);
     toast("Aufträge zusammengeführt.");
@@ -1515,40 +1727,77 @@ function renderProjectDetail(projectId){
     goBack("projects");
   });
 
-  const grid = document.getElementById("catGrid");
-  grid.innerHTML = categories.map(c=>{
-    const istVal = ist[c.key]?.menge || 0;
-    const sollVal = p.soll?.[c.key]?.menge;
-    const hasSoll = sollVal !== undefined && sollVal !== null && sollVal !== "";
-    const pct = hasSoll && sollVal>0 ? Math.min(100,(istVal/sollVal)*100) : (istVal>0?100:0);
-    const over = hasSoll && istVal > sollVal;
-    if(!ist[c.key] && !hasSoll) return "";
-    return `
-      <div class="catbox">
-        <div class="ck"><span>${c.label}</span>${over?`<span class="flag">⚠</span>`:""}</div>
-        <div class="cv num">
-          Ist: <b>${istVal}</b> ${c.unit}
-          ${hasSoll ? ` / Soll: <b>${sollVal}</b> ${c.unit}` : ` <span class="muted">(kein Soll gesetzt)</span>`}
-        </div>
-        <div class="barwrap"><div class="bar ${over?"over":""}" style="width:${pct}%"></div></div>
-        <div style="margin-top:8px;">
-          <input type="number" step="any" placeholder="Soll-Menge setzen" data-soll-cat="${c.key}" value="${hasSoll?sollVal:""}" style="font-size:12px;padding:5px 7px;">
-        </div>
-      </div>
-    `;
-  }).join("");
-  grid.querySelectorAll("[data-soll-cat]").forEach(inp=>{
-    inp.addEventListener("change", ()=>{
-      const cat = inp.dataset.sollCat;
-      if(!p.soll) p.soll = {};
-      const val = inp.value===""? null : parseFloat(inp.value);
-      const catDef = categories.find(c=>c.key===cat);
-      p.soll[cat] = { menge: val, einheit: catDef?catDef.unit:"" };
-      saveProject(p);
+  // --- AB hochladen / verwalten ---
+  const doABUpload = async (file)=>{
+    try{
+      const ab = await readABFile(file);
+      if(!ab) return;
+      const score = projectAddrScore(ab.baustelle, p);
+      if(ab.baustelle && score < 1 && !confirm(`Die AB-Baustelle „${ab.baustelle}“ passt nicht zu diesem Auftrag („${p.name}“). Trotzdem hier zuordnen?`)) return;
+      const elsewhere = DB.projects.find(x=>x.id!==p.id && (x.abs||[]).some(a=>a.nr===ab.nr));
+      if(elsewhere){
+        if(!confirm(`Diese AB (${ab.nr}) ist bereits beim Auftrag „${elsewhere.name}“ hinterlegt. Dorthin verschieben?`)) return;
+        await detachAB(elsewhere.id, ab.nr);
+      }
+      await attachAB(p.id, ab);
+      toast(`AB ${ab.nr} eingelesen: ${ab.positionen.length} Positionen.`);
+      renderProjectDetail(projectId);
+    }catch(err){ console.error(err); toast("Fehler beim Lesen der AB: " + (err.message||err)); }
+  };
+  document.getElementById("abUploadBtn").addEventListener("click", ()=> pickABFile(doABUpload));
+  const abDrop = document.getElementById("abDrop");
+  if(abDrop){
+    abDrop.addEventListener("click", ()=> pickABFile(doABUpload));
+    abDrop.addEventListener("dragover", e=>{ e.preventDefault(); abDrop.classList.add("hover"); });
+    abDrop.addEventListener("dragleave", ()=> abDrop.classList.remove("hover"));
+    abDrop.addEventListener("drop", e=>{ e.preventDefault(); abDrop.classList.remove("hover"); const f = e.dataTransfer.files[0]; if(f) doABUpload(f); });
+  }
+  mainEl.querySelectorAll("[data-abtoggle]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const k = p.id + "|" + btn.dataset.abtoggle;
+      if(expandedABs.has(k)) expandedABs.delete(k); else expandedABs.add(k);
+      renderProjectDetail(projectId);
+    });
+  });
+  mainEl.querySelectorAll("[data-abdel]").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      if(!confirm(`AB ${btn.dataset.abdel} von diesem Auftrag entfernen?`)) return;
+      await detachAB(p.id, btn.dataset.abdel);
+      renderProjectDetail(projectId);
+    });
+  });
+  mainEl.querySelectorAll("[data-abpos]").forEach(sel=>{
+    const [nr, posNr] = sel.dataset.abpos.split("|");
+    const ab = (p.abs||[]).find(a=>a.nr===nr);
+    const pos = ab && (ab.positionen||[]).find(x=>x.pos===posNr);
+    if(!pos) return;
+    sel.value = pos.category || "";
+    sel.addEventListener("change", async ()=>{
+      pos.category = sel.value;
+      pos.categoryManual = true;
+      pos.material = pos.category==="Beplankung" ? (normMaterial(pos.artikel+" "+pos.beschreibung) || null) : null;
+      await saveProject(p);
       renderProjectDetail(projectId);
     });
   });
 
+  // --- Soll manuell ---
+  const setManualSoll = (cat)=>{
+    const cur = p.soll && p.soll[cat] && num(p.soll[cat].menge)!=null ? p.soll[cat].menge : "";
+    const a = abSoll(p)[cat];
+    const v = prompt(`Soll für „${catLabel(cat)}“ in ${catUnit(cat)} manuell setzen.${a?`\nLaut AB: ${fmtQty(a.menge)} ${catUnit(cat)}.`:""}\nLeer lassen = ${a?"AB-Wert verwenden":"kein Soll"}.`, cur);
+    if(v===null) return;
+    if(!p.soll) p.soll = {};
+    const val = v.trim()==="" ? null : parseSwissNumber(v);
+    p.soll[cat] = { menge: val, einheit: catUnit(cat) };
+    saveProject(p);
+    renderProjectDetail(projectId);
+  };
+  mainEl.querySelectorAll("[data-sollset]").forEach(btn=> btn.addEventListener("click", ()=> setManualSoll(btn.dataset.sollset)));
+  const addSoll = document.getElementById("addSollCat");
+  addSoll.addEventListener("change", ()=>{ if(addSoll.value) setManualSoll(addSoll.value); addSoll.value = ""; });
+
+  // --- Rechnungen ---
   mainEl.querySelectorAll("[data-del]").forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       const inv = DB.invoices.find(i=>i.id===btn.dataset.del);
@@ -1558,7 +1807,6 @@ function renderProjectDetail(projectId){
       renderProjectDetail(projectId);
     });
   });
-
   mainEl.querySelectorAll("[data-edit]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       expandedInvoiceId = (expandedInvoiceId === btn.dataset.edit) ? null : btn.dataset.edit;
@@ -1567,80 +1815,45 @@ function renderProjectDetail(projectId){
   });
   if(expandedInvoiceId){
     const panel = document.getElementById(`editPanel-${expandedInvoiceId}`);
-    if(panel) renderInvoiceEditPanel(panel, expandedInvoiceId, ()=>renderProjectDetail(projectId));
+    if(panel) renderInvoiceEditPanel(panel, expandedInvoiceId);
   }
 }
 
-function renderInvoiceEditPanel(panel, invoiceId, onChange){
-  const inv = DB.invoices.find(i=>i.id===invoiceId);
+function renderInvoiceEditPanel(panel, invoiceId){
+  const getInv = ()=> DB.invoices.find(i=>i.id===invoiceId);
+  const inv = getInv();
   if(!inv) return;
-  const catOptions = (DB.categories||DEFAULT_CATEGORIES).map(c=>`<option value="${c.key}">${c.label}</option>`).join("");
   panel.innerHTML = `
     <div style="background:var(--surface);border-radius:8px;padding:16px;margin:6px 0;">
       <div class="row">
         <label class="field"><span>Lieferant</span><input type="text" data-ef="lieferant" value="${escapeAttr(inv.lieferant||"")}"></label>
         <label class="field"><span>Rechnungsnr.</span><input type="text" data-ef="rechnungsnr" value="${escapeAttr(inv.rechnungsnr||"")}"></label>
         <label class="field"><span>Datum</span><input type="text" data-ef="datum" value="${escapeAttr(inv.datum||"")}"></label>
-        <label class="field"><span>Betrag CHF</span><input type="number" step="any" data-ef="total" value="${inv.total!=null?inv.total:""}"></label>
+        <label class="field"><span>Betrag CHF (Rechnungstotal)</span><input type="number" step="any" data-ef="total" value="${inv.total!=null?inv.total:""}"></label>
       </div>
       <div class="section-title">Positionen</div>
-      <table>
-        <thead><tr><th>Kategorie</th><th>Beschreibung</th><th>Menge</th><th>Einheit</th><th>Preis CHF</th><th></th></tr></thead>
-        <tbody class="editItemsBody"></tbody>
-      </table>
-      <button class="small addEditItemBtn" style="margin-top:8px;">+ Position hinzufügen</button>
+      <div class="itemsSlot"></div>
+      <div class="pruefSlot" style="margin-top:14px;"></div>
     </div>
   `;
+  const pruefSlot = panel.querySelector(".pruefSlot");
+  const itemsSlot = panel.querySelector(".itemsSlot");
+  const refresh = ()=> renderPruefPanel(pruefSlot, getInv);
   panel.querySelectorAll("[data-ef]").forEach(inp=>{
     inp.addEventListener("input", ()=>{
+      const i = getInv(); if(!i) return;
       const f = inp.dataset.ef;
-      inv[f] = (f==="total") ? (inp.value===""?null:parseFloat(inp.value)) : inp.value;
+      i[f] = (f==="total") ? (inp.value===""?null:parseFloat(inp.value)) : inp.value;
     });
-    inp.addEventListener("change", ()=> saveInvoice(inv));
+    inp.addEventListener("change", ()=>{
+      const i = getInv(); if(!i) return;
+      saveInvoice(i);
+      if(inp.dataset.ef==="lieferant") renderItemsTable(itemsSlot, getInv, refresh);
+      refresh();
+    });
   });
-  const body = panel.querySelector(".editItemsBody");
-  function renderRows(){
-    body.innerHTML = inv.items.map(it=>`
-      <tr data-id="${it.id}">
-        <td><select data-if="category">${catOptions}</select></td>
-        <td><input type="text" data-if="label" value="${escapeAttr(it.label||"")}"></td>
-        <td style="width:90px;"><input type="number" step="any" data-if="menge" value="${it.menge!=null?it.menge:""}"></td>
-        <td style="width:80px;"><input type="text" data-if="einheit" value="${escapeAttr(it.einheit||"")}"></td>
-        <td style="width:100px;"><input type="number" step="any" data-if="preis" value="${it.preis!=null?it.preis:""}"></td>
-        <td><button class="close-x" data-removeitem="${it.id}">✕</button></td>
-      </tr>
-    `).join("");
-    body.querySelectorAll("select[data-if=category]").forEach(sel=>{
-      const row = sel.closest("tr");
-      const it = inv.items.find(i=>i.id===row.dataset.id);
-      sel.value = it.category;
-      sel.addEventListener("change", ()=>{ it.category = sel.value; saveInvoice(inv); onChange(); });
-    });
-    body.querySelectorAll("input").forEach(inp=>{
-      const row = inp.closest("tr");
-      const it = inv.items.find(i=>i.id===row.dataset.id);
-      inp.addEventListener("input", ()=>{
-        const f = inp.dataset.if;
-        it[f] = (f==="menge"||f==="preis") ? (inp.value===""?null:parseFloat(inp.value)) : inp.value;
-      });
-      inp.addEventListener("change", ()=>{ saveInvoice(inv); onChange(); });
-    });
-    body.querySelectorAll("[data-removeitem]").forEach(btn=>{
-      btn.addEventListener("click", ()=>{
-        inv.items = inv.items.filter(i=>i.id!==btn.dataset.removeitem);
-        saveInvoice(inv);
-        renderRows();
-        onChange();
-      });
-    });
-  }
-  renderRows();
-  panel.querySelector(".addEditItemBtn").addEventListener("click", ()=>{
-    inv.items.push({id:uid("it"),category:"Sonstiges",label:"",menge:null,einheit:"Stk",preis:null});
-    saveInvoice(inv);
-    renderRows();
-    onChange();
-  });
+  renderItemsTable(itemsSlot, getInv, refresh);
+  refresh();
 }
 
 function renderInvoices(){
@@ -1655,7 +1868,7 @@ function renderInvoices(){
     <div id="searchSlot"></div>
     <div class="card">
       <table>
-        <thead><tr><th>Datum</th><th>Lieferant</th><th>Auftrag</th><th>Rechnungsnr.</th><th>Mengen</th><th></th></tr></thead>
+        <thead><tr><th>Datum</th><th>Lieferant</th><th>Auftrag</th><th>Rechnungsnr.</th><th>Mengen</th><th>Prüfung</th><th></th></tr></thead>
         <tbody id="invTableBody">
           ${sorted.map(inv=>{
             const p = DB.projects.find(x=>x.id===inv.projectId);
@@ -1666,6 +1879,7 @@ function renderInvoices(){
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}" data-openinv="${inv.id}">${findingsPill(inv)}</td>
               <td><button class="small danger" data-delinv="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
             </tr>`;
           }).join("")}
@@ -1680,6 +1894,7 @@ function renderInvoices(){
   });
   mainEl.querySelectorAll("[data-goto]").forEach(cell=>{
     cell.addEventListener("click", ()=>{
+      if(cell.dataset.openinv) expandedInvoiceId = cell.dataset.openinv;
       navigateTo("projectDetail", { projectId: cell.dataset.goto });
     });
   });
@@ -1707,7 +1922,7 @@ function renderAdmin(){
     <p class="subtitle">${allUsers.length} Benutzer registriert${pendingCount>0 ? ` — <b style="color:var(--danger)">${pendingCount} warten auf Freischaltung</b>` : ""}.</p>
     <div class="card">
       <table>
-        <thead><tr><th>E-Mail</th><th>Status</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th></tr></thead>
+        <thead><tr><th>E-Mail</th><th>Status</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th><th>Preise bearbeiten</th></tr></thead>
         <tbody>
           ${allUsers.map(u=>`
             <tr data-uid="${u.id}" class="${u.role!=="admin" && !u.approved ? "needs-review" : ""}">
@@ -1729,6 +1944,7 @@ function renderAdmin(){
               <td><input type="checkbox" data-perm="deleteAuftraege" ${u.permissions?.deleteAuftraege?"checked":""} ${u.role==="admin"?"disabled":""}></td>
               <td><input type="checkbox" data-perm="deleteSubunternehmer" ${u.permissions?.deleteSubunternehmer?"checked":""} ${u.role==="admin"?"disabled":""}></td>
               <td><input type="checkbox" data-perm="deleteAnyRechnung" ${u.permissions?.deleteAnyRechnung?"checked":""} ${u.role==="admin"?"disabled":""}></td>
+              <td><input type="checkbox" data-perm="editPreise" ${u.permissions?.editPreise?"checked":""} ${u.role==="admin"?"disabled":""}></td>
             </tr>
           `).join("")}
         </tbody>
@@ -1763,6 +1979,947 @@ function renderAdmin(){
   });
 }
 
+/* ============================= STAMMDATEN: SUBUNTERNEHMER-PREISE & EINSTELLUNGEN ============================= */
+
+const DEFAULT_SETTINGS = { tolPreisProzent: 2, tolPreisCHF: 0.5, mengenTolProzent: 0, ausreisserFaktor: 1.5, ausreisserMinCHF: 100 };
+function getSettings(){
+  const s = { ...DEFAULT_SETTINGS };
+  const d = DB.settings || {};
+  Object.keys(DEFAULT_SETTINGS).forEach(k=>{ if(d[k]!==undefined && d[k]!==null && d[k]!=="" && !isNaN(+d[k])) s[k] = +d[k]; });
+  return s;
+}
+
+// Standardzeilen, die pro Subunternehmer mit einem Klick eingefuegt werden koennen (Preise leer -> selbst eintragen)
+const TARIF_VORLAGE = [
+  { category:"Regie", bezeichnung:"Regie Monteur", einheit:"h", keywords:"monteur" },
+  { category:"Regie", bezeichnung:"Regie Hilfsmonteur", einheit:"h", keywords:"hilfsmonteur, hilfsarbeiter" },
+  { category:"Regie", bezeichnung:"Regie Vorarbeiter / Chefmonteur", einheit:"h", keywords:"vorarbeiter, chefmonteur" },
+  { category:"VW", bezeichnung:"Montage Vorwand-Element", einheit:"Stk", keywords:"vorwand" },
+  { category:"TW", bezeichnung:"Montage Trennwand-Element", einheit:"Stk", keywords:"trennwand" },
+  { category:"Duofix", bezeichnung:"Montage Duofix pro Apparat", einheit:"App.", keywords:"duofix" },
+  { category:"Beplankung", bezeichnung:"Beplankung 1x18mm", material:"1x18mm", einheit:"m²", keywords:"1x18" },
+  { category:"Beplankung", bezeichnung:"Beplankung 2x12.5mm", material:"2x12.5mm", einheit:"m²", keywords:"2x12.5, 2x12,5" },
+  { category:"Beplankung", bezeichnung:"Beplankung 1x12.5mm", material:"1x12.5mm", einheit:"m²", keywords:"1x12.5, 1x12,5" },
+  { category:"Beplankung", bezeichnung:"Beplankung Aquapanel", material:"Aquapanel", einheit:"m²", keywords:"aquapan" },
+  { category:"Ausflockung", bezeichnung:"Ausflockung Steinwolle", einheit:"m³", keywords:"ausflock, steinwolle" },
+  { category:"SilentPanel", bezeichnung:"Montage Geberit SilentPanel", einheit:"Stk", keywords:"silentpanel, silent panel" },
+  { category:"Verbinden", bezeichnung:"Steig-/Fallleitung verbinden", einheit:"Stk", keywords:"verbinden, schweissen, pressen" },
+  { category:"Anfahrt", bezeichnung:"Anfahrtspauschale / Parking", einheit:"Stk", keywords:"anfahrt, parking" },
+  { category:"Entsorgung", bezeichnung:"Abholung & Entsorgung", einheit:"Stk", keywords:"entsorgung, abfall" },
+];
+
+const STOPWORDS = new Set(["und","der","die","das","von","für","fur","mit","inkl","exkl","gem","gemäss","gemass","pro","per","auf","bei","nach","total","chf","stk","std","bau","zum","zur","des","dem","den","ein","eine","als","wie","sowie","oder","bis","aus","dto","pos","menge","preis"]);
+const EXKL_GENERIC = new Set(["montage","einbau","geberit","lieferung","material","arbeiten","inklusive","exklusive","pauschal","offerte","dieser","sind","nicht","enthalten","lieferumfang","werden","können","konnen"]);
+
+function slugify(s){
+  return String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,80) || ("sub-" + Date.now().toString(36));
+}
+function catDef(key){ return (DB.categories||DEFAULT_CATEGORIES).find(c=>c.key===key) || null; }
+function catLabel(key){ const c = catDef(key); return c ? c.label : (key||"—"); }
+function catUnit(key){ const c = catDef(key); return c ? c.unit : ""; }
+function unitKey(u){
+  const t = String(u||"").toLowerCase().replace(/[.\s]/g,"");
+  if(t==="m2"||t==="m²") return "m2";
+  if(t==="m3"||t==="m³") return "m3";
+  if(t==="st"||t==="stk"||t==="stück"||t==="stuck") return "stk";
+  if(t==="h"||t==="std"||t==="stunden") return "h";
+  if(t==="app"||t==="apparat"||t==="apparate") return "app";
+  return t;
+}
+function num(v){ if(v===null||v===undefined||v==="") return null; const n = +v; return isNaN(n) ? null : n; }
+function fmt(n){ return n==null || isNaN(n) ? "—" : formatCHF(+n); }
+function fmtQty(n){ return n==null || isNaN(n) ? "—" : (Math.round(n*100)/100).toLocaleString("de-CH"); }
+function shortText(s, n){ s = String(s||"").trim(); return s.length>(n||45) ? s.slice(0,(n||45)-1)+"…" : s; }
+// Positionstext ohne angehaengte Mengen/Preise (fuer Meldungen)
+function displayLabel(s){
+  let t = String(s||"").trim();
+  t = t.replace(/\s+-?[\d']+(?:[.,]\d+)?\s*(?:m2|m²|m3|m³|stk\.?|std\.?|stunden|h|app\.?|pauschal|psch)(?=\s|$).*$/i, "");
+  t = t.replace(/(\s+-?[\d']+[.,]\d{2})+\s*(chf)?\s*$/i, "");
+  return shortText(t.trim() || s, 55);
+}
+
+function getSubFor(name){
+  if(!name) return null;
+  const n = String(name).toLowerCase().trim();
+  return (DB.subs||[]).find(s => (s.name||"").toLowerCase().trim()===n || (s.aliases||[]).some(a=>String(a).toLowerCase().trim()===n)) || null;
+}
+
+// Vom Benutzer gepflegte Firmennamen/Aliase im Rechnungskopf suchen (hat Vorrang vor der automatischen Erkennung)
+function matchSubInText(text, currentName){
+  const cur = String(currentName||"").toLowerCase();
+  const head = String(text||"").split("\n").slice(0,30).join("\n").toLowerCase();
+  for(const s of (DB.subs||[])){
+    const terms = [s.name, ...(s.aliases||[])].map(t=>String(t||"").toLowerCase().trim()).filter(t=>t.length>=4);
+    if(terms.some(t => cur && (cur===t || cur.includes(t)))) return s;
+  }
+  for(const s of (DB.subs||[])){
+    const terms = [s.name, ...(s.aliases||[])].map(t=>String(t||"").toLowerCase().trim()).filter(t=>t.length>=4);
+    if(terms.some(t => head.includes(t))) return s;
+  }
+  return null;
+}
+
+function normMaterial(s){
+  if(!s) return null;
+  const t = String(s).toLowerCase();
+  if(/aqua\s*-?pan/.test(t)) return "Aquapanel";
+  const m = t.match(/(\d)\s*[x×]\s*(\d{1,2}(?:[.,]\d)?)\s*(?:mm)?(?!\d)/);
+  if(m) return `${m[1]}x${m[2].replace(",",".")}mm`;
+  return null;
+}
+
+function labelTokens(s){
+  return String(s||"").toLowerCase().replace(/[^a-zäöüß0-9 ]/g," ").split(/\s+/)
+    .filter(w => w.length>2 && !/^\d/.test(w) && !STOPWORDS.has(w));
+}
+function jaccard(a, b){
+  if(!a.length || !b.length) return 0;
+  const A = new Set(a), B = new Set(b);
+  let inter = 0; A.forEach(x=>{ if(B.has(x)) inter++; });
+  return inter / (A.size + B.size - inter);
+}
+function median(arr){ const s = arr.slice().sort((a,b)=>a-b); const m = Math.floor(s.length/2); return s.length%2 ? s[m] : (s[m-1]+s[m])/2; }
+
+// Einheitspreis einer Rechnungsposition (explizit gelesen oder Betrag / Menge)
+function itemEP(it){
+  if(num(it.ep)!=null) return +it.ep;
+  if(num(it.preis)!=null && num(it.menge)) return +it.preis / +it.menge;
+  return null;
+}
+
+function parseDateCH(s){
+  const m = String(s||"").match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})/);
+  if(!m) return null;
+  let y = +m[3]; if(y<100) y += 2000;
+  return new Date(y, +m[2]-1, +m[1]);
+}
+
+// Passenden Tarif (Preis) des Subunternehmers fuer eine Rechnungsposition finden
+function findTarif(sub, inv, it){
+  if(!sub) return { tarif:null, reason:"kein Subunternehmer hinterlegt" };
+  const all = (sub.tarife||[]).filter(t => num(t.preis)!=null);
+  if(it.tarifId){
+    const t = all.find(x=>x.id===it.tarifId);
+    if(t) return { tarif:t, manual:true };
+  }
+  const d = parseDateCH(inv && inv.datum) || new Date();
+  let cands = all.filter(t => t.category===it.category);
+  if(!cands.length) return { tarif:null, reason:`kein Preis für „${catLabel(it.category)}“ hinterlegt` };
+  // nur zum Rechnungsdatum gueltige Preise; je Bezeichnung die neuste gueltige Version
+  const valid = cands.filter(t => !t.gueltigAb || new Date(t.gueltigAb) <= d);
+  if(valid.length) cands = valid;
+  const latest = {};
+  cands.forEach(t=>{
+    const k = [t.category, (t.bezeichnung||"").toLowerCase(), (t.material||"").toLowerCase()].join("|");
+    if(!latest[k] || String(t.gueltigAb||"") > String(latest[k].gueltigAb||"")) latest[k] = t;
+  });
+  cands = Object.values(latest);
+
+  const mat = it.category==="Beplankung" ? normMaterial(it.label) : null;
+  if(mat){
+    const withMat = cands.filter(t => normMaterial(t.material||t.bezeichnung)===mat);
+    if(withMat.length) cands = withMat;
+    else if(cands.some(t => t.material)) return { tarif:null, reason:`kein Preis für Beplankung ${mat} hinterlegt` };
+  }
+  if(cands.length===1) return { tarif:cands[0] };
+
+  const lab = String(it.label||"").toLowerCase();
+  const lt = labelTokens(it.label);
+  const scored = cands.map(t=>{
+    let s = 0;
+    String(t.keywords||"").split(",").map(k=>k.trim().toLowerCase()).filter(Boolean).forEach(k=>{ if(lab.includes(k)) s += 2; });
+    s += labelTokens(t.bezeichnung).filter(x=>lt.includes(x)).length;
+    if(t.einheit && it.einheit && unitKey(t.einheit)!==unitKey(it.einheit)) s -= 1;
+    return { t, s };
+  }).sort((a,b)=>b.s-a.s);
+  if(scored[0].s > scored[1].s) return { tarif:scored[0].t };
+  const top = scored.filter(x=>x.s===scored[0].s);
+  const ep = itemEP(it);
+  if(ep!=null){
+    const hit = top.find(x=>Math.abs(+x.t.preis - ep) <= 0.01);
+    if(hit) return { tarif:hit.t };
+  }
+  if(top.every(x=>+x.t.preis === +top[0].t.preis)) return { tarif:top[0].t };
+  return { tarif:null, ambiguous: top.map(x=>x.t), reason:"mehrere Preise möglich – bitte Tarif in der Position wählen" };
+}
+
+/* ============================= AUFTRAGSBESTAETIGUNG (AB) LESEN ============================= */
+
+function isABText(text){
+  return /Auftragsbest[äa]tigung\s+\d{5,}\s*\/\s*A-\d+/i.test(text) && /pe[\s-]?fabrikation/i.test(text);
+}
+function normalizeABUnit(u){
+  const t = String(u||"").toUpperCase();
+  if(t==="ST"||t==="STK") return "Stk";
+  if(t==="M2") return "m²";
+  if(t==="M3") return "m³";
+  if(t==="H"||t==="STD") return "h";
+  if(t==="M"||t==="LM") return "m";
+  if(t==="PA"||t==="PAU"||t==="PSCH") return "Psch";
+  return u;
+}
+function suggestABCategory(pos){
+  const t = (pos.artikel + " " + pos.beschreibung).toLowerCase();
+  const art = String(pos.artikel||"").toLowerCase();
+  if(/anfahrt|parking/.test(t)) return "Anfahrt";
+  if(/entsorgung|abfall/.test(t)) return "Entsorgung";
+  if(pos.einheit==="m²" || /beplank/.test(t)) return "Beplankung";
+  if(pos.einheit==="m³" || /ausflock/.test(t)) return "Ausflockung";
+  if(/silent\s*-?panel/.test(t)) return "SilentPanel";
+  if(/duofix/.test(t)) return "Duofix";
+  if(/^twm\b/.test(art) || (/montage/.test(t) && /trennwand/.test(t))) return "TW";
+  if(/^vwm\b/.test(art) || (/montage/.test(t) && /vorwand/.test(t))) return "VW";
+  if(/verbinden/.test(t) && /(schweiss|press|anschliess)/.test(t)) return "Verbinden";
+  if(pos.einheit==="h" && /regie/.test(t)) return "Regie";
+  return ""; // nicht Sub-relevant (z.B. Vorfabrikation / Material PE)
+}
+
+function parseABText(text){
+  const lines = String(text||"").split("\n").map(l=>l.trim()).filter(Boolean);
+  const ab = { nr:"", anr:"", baustelle:"", kunde:"", kontakt:"", bestelldatum:"", offertdatum:"", einheiten:null,
+               inkl:[], exkl:[], positionen:[], auftragswert:null, totalInklMwst:null };
+  let m = text.match(/Auftragsbest[äa]tigung\s+(\d{5,})\s*\/\s*(A-\d+)/i);
+  if(m){ ab.nr = m[1]; ab.anr = m[2]; }
+  m = text.match(/Baustelle\s*:\s*([^\n]+)/i);
+  if(m) ab.baustelle = m[1].trim();
+  m = text.match(/^Fax[\s\d]+?\s([A-ZÄÖÜ][^\n]+)$/m);
+  if(m) ab.kunde = m[1].trim();
+  else {
+    const i = lines.findIndex(l=>/^Fax\s/i.test(l));
+    if(i>-1 && lines[i+1] && !/Auftragsbest/i.test(lines[i+1])) ab.kunde = lines[i+1];
+  }
+  m = text.match(/Ihr Kontakt\s*:\s*(.+?)(?:\s+Kunden-Nr|\n|$)/i); if(m) ab.kontakt = m[1].trim();
+  m = text.match(/Bestellung vom\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.bestelldatum = m[1];
+  m = text.match(/Offert-Datum\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.offertdatum = m[1];
+  m = text.match(/f[üu]r\s+(\d+)\s+Einheiten/i); if(m) ab.einheiten = +m[1];
+  m = text.match(/exkl\.?\s*MwSt\s+([\d']+\.\d{2})/i); if(m) ab.auftragswert = parseSwissNumber(m[1]);
+  m = text.match(/Gesamtbetrag\s+inkl\.?\s*MwSt\s+([\d']+\.\d{2})/i); if(m) ab.totalInklMwst = parseSwissNumber(m[1]);
+
+  // Inkl./Exkl.-Vermerke (auch "... | exkl. ..." innerhalb einer Zeile) und "nicht enthalten"-Saetze
+  lines.forEach((line, idx)=>{
+    if(/^(inkl|exkl)\.?\s/i.test(line)){
+      line.split(/\s*\|\s*|\s+(?=exkl\.)/i).map(s=>s.trim()).filter(Boolean).forEach(part=>{
+        if(/^exkl/i.test(part)) ab.exkl.push(part);
+        else if(/^inkl/i.test(part)) ab.inkl.push(part);
+      });
+    } else if(/nicht\s+(im\s+lieferumfang\s+)?enthalten/i.test(line)){
+      let sentence = /^sind\s+nicht/i.test(line) && lines[idx-1] ? (lines[idx-1] + " " + line) : line;
+      sentence = sentence.split(/\s*,\s*Sie\s/i)[0].trim();
+      ab.exkl.push(sentence);
+    }
+  });
+  ab.inkl = Array.from(new Set(ab.inkl));
+  ab.exkl = Array.from(new Set(ab.exkl));
+
+  // Positionen: "003 Element 16.000 ST 810.93/1 12'974.90" + Beschreibungszeilen
+  const posRe = /^(\d{3})\s+(.+?)\s+(-?[\d']+\.\d{1,3})\s+(ST|STK|M2|M3|M|LM|H|STD|PA|PAU|PSCH|KG|L)\s+(-?[\d']+\.\d{2})\/(\d+)\s+(-?[\d']+\.\d{2})$/i;
+  const noise = [/^PE Fabrikations AG$/i, /^Feldmoosstrasse/i, /^www\./i, /^Tel\.\s/i, /^Fax\s/i, /^Auftragsbest[äa]tigung\s+\d+/i, /^Mwst-Nr/i, /^-$/];
+  let started = false, group = "", cur = null;
+  for(const line of lines){
+    if(/^Pos\s+Artikel/i.test(line)){ started = true; cur = null; continue; }
+    if(!started) continue;
+    if(/^Übertrag/i.test(line)){ cur = null; continue; }
+    if(noise.some(r=>r.test(line))) continue;
+    if(/^Summe von/i.test(line)){ cur = null; continue; }
+    if(/^(Porto\/Verpackung|Gesamtbetrag|Zahlungskonditionen|Es freut uns)/i.test(line)){ cur = null; started = false; continue; }
+    const pm = line.match(posRe);
+    if(pm){
+      const per = +pm[6] || 1;
+      cur = { pos: pm[1], artikel: pm[2].trim(), menge: parseSwissNumber(pm[3]), einheit: normalizeABUnit(pm[4]),
+              ep: roundNum(parseSwissNumber(pm[5]) / per), betrag: parseSwissNumber(pm[7]), rabatt: null,
+              gruppe: group, beschreibung: [] };
+      ab.positionen.push(cur);
+      continue;
+    }
+    if(cur){
+      if(/^\(-?\d+\.\d{2}\)$/.test(line)) continue; // reine Rundungszeile
+      let d = line;
+      const rm = d.match(/\s(\d{1,2}(?:\.\d{1,2})?)\s*%\s*\(-?[\d'.]+\)\s*$/);
+      if(rm){ cur.rabatt = parseFloat(rm[1]); d = d.slice(0, rm.index); }
+      d = d.replace(/(\s*\(-?\d+\.\d{2}\))+\s*$/, "").trim();
+      if(d) cur.beschreibung.push(d);
+      continue;
+    }
+    if(!/^(inkl|exkl)\.?\s/i.test(line)) group = line; // Gruppentitel (z.B. "Montage GIS auf Bau")
+  }
+  ab.positionen = ab.positionen.map(p=>{
+    const beschreibung = p.beschreibung.join("\n");
+    const out = { ...p, beschreibung };
+    out.category = suggestABCategory(out);
+    out.categoryManual = false;
+    out.material = out.category==="Beplankung" ? (normMaterial(out.artikel + " " + beschreibung) || null) : null;
+    const lf = beschreibung.match(/Leitfadenzeit[^\n]*?(\d+(?:[.,]\d+)?)\s*h\b/i);
+    out.leitfadenzeitH = lf ? parseSwissNumber(lf[1]) : null;
+    if(out.menge===null) out.menge = 0;
+    if(out.betrag===null) out.betrag = 0;
+    if(out.ep===null || isNaN(out.ep)) out.ep = null;
+    return out;
+  });
+  return ab;
+}
+
+// Soll-Werte aus allen hinterlegten ABs eines Auftrags (Summe pro Kategorie)
+function abSoll(p){
+  const out = {};
+  (p && p.abs || []).forEach(ab => (ab.positionen||[]).forEach(pos=>{
+    if(!pos.category) return;
+    const o = out[pos.category] || (out[pos.category] = { menge:0, erloes:0, einheit:pos.einheit, materials:[], positionen:[] });
+    o.menge += +pos.menge || 0;
+    o.erloes += +pos.betrag || 0;
+    if(pos.material && !o.materials.includes(pos.material)) o.materials.push(pos.material);
+    o.positionen.push(pos);
+  }));
+  return out;
+}
+function getSoll(p, cat){
+  const man = p && p.soll && p.soll[cat];
+  if(man && num(man.menge)!=null) return { menge:+man.menge, quelle:"manuell" };
+  const a = abSoll(p)[cat];
+  if(a) return { menge: roundNum(a.menge), quelle:"AB" };
+  return null;
+}
+function abMaterials(p){ return (abSoll(p).Beplankung || {}).materials || []; }
+
+function exklTerms(line){
+  let head = String(line||"").replace(/^exkl\.?\s*/i,"");
+  head = head.split(/:|\sfür\s|\sfur\s|\(|\ssind\s/i)[0];
+  return labelTokens(head).filter(w => w.length>=6 && !EXKL_GENERIC.has(w));
+}
+function exklHit(label, exklLines){
+  const compact = String(label||"").toLowerCase().replace(/[^a-zäöüß0-9]/g,"");
+  if(!compact) return null;
+  for(const line of exklLines){
+    const terms = exklTerms(line);
+    if(!terms.length) continue;
+    if(terms.every(t => compact.includes(t.slice(0, Math.min(t.length, 8))))) return line;
+  }
+  return null;
+}
+
+/* ============================= AUTOMATISCHE RECHNUNGSPRUEFUNG ============================= */
+
+function isActiveInvoice(inv){ return !(inv.pruefung && inv.pruefung.status==="beanstandet"); }
+function projName(id){ const p = DB.projects.find(x=>x.id===id); return p ? p.name : "gelöschter Auftrag"; }
+
+// Gleiche Leistung desselben Subs auf anderen Objekten vergleichen -> Ausreisser finden
+function outlierFor(inv, it){
+  const S = getSettings();
+  if(num(it.preis)==null || +it.preis<=0) return null;
+  const toks = labelTokens(it.label);
+  if(!toks.length) return null;
+  const myVal = itemEP(it) ?? +it.preis;
+  const lief = String(inv.lieferant||"").toLowerCase();
+  const refs = [];
+  DB.invoices.forEach(o=>{
+    if(o.id===inv.id || o.projectId===inv.projectId || !isActiveInvoice(o)) return;
+    if(String(o.lieferant||"").toLowerCase()!==lief) return;
+    (o.items||[]).forEach(x=>{
+      if(x.category!==it.category || num(x.preis)==null || +x.preis<=0) return;
+      if(unitKey(x.einheit)!==unitKey(it.einheit)) return;
+      if(jaccard(toks, labelTokens(x.label)) < 0.5) return;
+      refs.push({ inv:o, it:x, val: itemEP(x) ?? +x.preis });
+    });
+  });
+  if(!refs.length) return null;
+  const med = median(refs.map(r=>r.val));
+  const diffTotal = (myVal - med) * (num(it.menge) && itemEP(it)!=null ? +it.menge : 1);
+  if(myVal > med * S.ausreisserFaktor && diffTotal >= S.ausreisserMinCHF){
+    const ex = refs.slice().sort((a,b)=>a.val-b.val)[0];
+    return { med, n: refs.length, ex };
+  }
+  return null;
+}
+
+function checkInvoice(inv){
+  const S = getSettings();
+  const f = [];
+  const p = DB.projects.find(x=>x.id===inv.projectId);
+  const sub = getSubFor(inv.lieferant);
+  const items = inv.items || [];
+
+  // --- Doppelte Rechnung ---
+  if(inv.rechnungsnr){
+    const nr = String(inv.rechnungsnr).trim().toLowerCase();
+    const dup = DB.invoices.find(o => o.id!==inv.id && String(o.lieferant||"").toLowerCase()===String(inv.lieferant||"").toLowerCase()
+      && String(o.rechnungsnr||"").trim().toLowerCase()===nr);
+    if(dup) f.push({ level:"danger", text:`Doppelte Rechnung? Rechnungsnr. ${inv.rechnungsnr} von ${inv.lieferant} ist bereits erfasst (${dup.datum||"ohne Datum"}, ${projName(dup.projectId)}).` });
+  }
+  if(num(inv.total)!=null && inv.datum){
+    const dup2 = DB.invoices.find(o => o.id!==inv.id && String(o.lieferant||"").toLowerCase()===String(inv.lieferant||"").toLowerCase()
+      && o.datum===inv.datum && num(o.total)!=null && Math.abs(+o.total - +inv.total) < 0.01
+      && String(o.rechnungsnr||"").trim().toLowerCase()!==String(inv.rechnungsnr||"").trim().toLowerCase());
+    if(dup2) f.push({ level:"warn", text:`Gleicher Betrag (CHF ${fmt(inv.total)}) und gleiches Datum wie Rechnung ${dup2.rechnungsnr||"ohne Nr."} – evtl. doppelt?` });
+  }
+
+  // --- Stammdaten vorhanden? ---
+  const hasPrices = sub && (sub.tarife||[]).some(t=>num(t.preis)!=null);
+  if(!hasPrices) f.push({ level:"info", text:`Für „${inv.lieferant||"unbekannter Lieferant"}“ sind keine Preise hinterlegt (⚙️ Einstellungen → Subunternehmer & Preise) – Preisprüfung nicht möglich.` });
+
+  const abs = (p && p.abs) || [];
+  const exklLines = abs.flatMap(a => a.exkl || []);
+  const mats = abMaterials(p);
+
+  items.forEach(it=>{
+    const name = `„${displayLabel(it.label) || catLabel(it.category)}“`;
+    const ep = itemEP(it);
+
+    // --- Preis gegen vereinbarten Tarif ---
+    if(hasPrices){
+      const r = findTarif(sub, inv, it);
+      if(r.tarif){
+        const tp = +r.tarif.preis;
+        if(ep==null){
+          f.push({ level:"warn", itemId:it.id, text:`${name}: kein Betrag/Einheitspreis erfasst – vereinbart wären CHF ${fmt(tp)} / ${r.tarif.einheit||""}.` });
+        } else {
+          const tol = Math.max(S.tolPreisCHF, tp * S.tolPreisProzent / 100);
+          const diff = ep - tp;
+          if(it.ep==null && num(it.menge) && +it.menge>1 && Math.abs(+it.preis - tp) <= tol){
+            f.push({ level:"warn", itemId:it.id, text:`${name}: Der erfasste Betrag CHF ${fmt(it.preis)} entspricht dem Einheitspreis – wurde der Positionsbetrag richtig gelesen?` });
+          } else if(diff > tol){
+            const mehr = num(it.menge) ? diff * +it.menge : diff;
+            f.push({ level:"danger", itemId:it.id, text:`${name}: Einheitspreis CHF ${fmt(ep)} statt vereinbart CHF ${fmt(tp)} (${r.tarif.bezeichnung}) → zu viel verrechnet: CHF ${fmt(mehr)}.` });
+          } else if(-diff > tol){
+            f.push({ level:"info", itemId:it.id, text:`${name}: Einheitspreis CHF ${fmt(ep)} liegt unter dem vereinbarten Preis CHF ${fmt(tp)}.` });
+          } else {
+            f.push({ level:"ok", itemId:it.id, text:`${name}: Preis CHF ${fmt(ep)} = vereinbart (${r.tarif.bezeichnung}).` });
+          }
+        }
+      } else if(it.category!=="Sonstiges"){
+        f.push({ level:"warn", itemId:it.id, text:`${name}: ${r.reason || "kein passender Preis gefunden"}.` });
+      }
+    }
+
+    // --- Material gegen AB ---
+    if(it.category==="Beplankung" && mats.length){
+      const m = normMaterial(it.label);
+      if(m && !mats.includes(m)) f.push({ level:"danger", itemId:it.id, text:`${name}: verrechnet ${m}, laut AB ist ${mats.join(" / ")} vorgesehen.` });
+    }
+
+    // --- Leistung laut AB ausgeschlossen? ---
+    const ex = exklLines.length ? exklHit(it.label, exklLines) : null;
+    if(ex) f.push({ level:"warn", itemId:it.id, text:`${name}: laut AB nicht im Auftrag („${shortText(ex,70)}“) → ablehnen oder als Nachtrag an den Kunden weiterverrechnen.` });
+
+    // --- Regie ---
+    if(it.category==="Regie" && num(it.menge)) f.push({ level:"info", itemId:it.id, text:`${name}: ${fmtQty(it.menge)} h Regie – visierten Regierapport prüfen.` });
+
+    // --- Vergleich mit anderen Objekten ---
+    const o = outlierFor(inv, it);
+    if(o) f.push({ level:"warn", itemId:it.id, text:`${name}: auffällig teuer – CHF ${fmt(ep ?? it.preis)}, auf ${o.n} anderen Objekt(en) im Mittel CHF ${fmt(o.med)} (z.B. ${projName(o.ex.inv.projectId)}: CHF ${fmt(o.ex.val)}).` });
+  });
+
+  // --- Mengen kumuliert gegen Soll (AB) ---
+  if(p){
+    const projInvs = DB.invoices.filter(o => o.projectId===p.id && (o.id===inv.id || isActiveInvoice(o)));
+    if(!projInvs.some(o=>o.id===inv.id)) projInvs.push(inv);
+    const cats = Array.from(new Set(items.map(it=>it.category).filter(Boolean)));
+    cats.forEach(cat=>{
+      const ist = projInvs.reduce((s,o)=> s + (o.items||[]).filter(x=>x.category===cat).reduce((a,x)=>a+(num(x.menge)||0),0), 0);
+      const soll = getSoll(p, cat);
+      const u = catUnit(cat);
+      if(!soll){
+        if(abs.length && !["Sonstiges","Regie"].includes(cat)) f.push({ level:"warn", text:`${catLabel(cat)}: in der AB nicht enthalten (kein Soll) – Nachtrag oder falsche Zuordnung?` });
+      } else if(ist > soll.menge * (1 + S.mengenTolProzent/100) + 1e-9){
+        f.push({ level:"danger", text:`${catLabel(cat)}: kumuliert ${fmtQty(ist)} ${u} verrechnet, Soll (${soll.quelle}) ${fmtQty(soll.menge)} ${u} → ${fmtQty(ist - soll.menge)} ${u} zu viel.` });
+      } else {
+        f.push({ level:"ok", text:`${catLabel(cat)}: kumuliert ${fmtQty(ist)} von ${fmtQty(soll.menge)} ${u} (${soll.quelle}).` });
+      }
+    });
+    if(!abs.length) f.push({ level:"info", text:"Für diesen Auftrag ist keine AB hinterlegt – Mengen und Leistungsumfang können nicht gegen den Auftrag geprüft werden." });
+  }
+  return f;
+}
+
+const FD_ICON = { danger:"✗", warn:"⚠", info:"ℹ", ok:"✓" };
+function findingsHtml(f){
+  if(!f.length) return `<div class="muted" style="font-size:12.5px;">Keine Prüfpunkte.</div>`;
+  const order = { danger:0, warn:1, info:2, ok:3 };
+  const sorted = f.slice().sort((a,b)=>order[a.level]-order[b.level]);
+  const rest = sorted.filter(x=>x.level!=="ok"), oks = sorted.filter(x=>x.level==="ok");
+  const li = x => `<li class="fd ${x.level}"><span class="fdi">${FD_ICON[x.level]}</span><span>${escapeHtml(x.text)}</span></li>`;
+  return `${rest.length ? `<ul class="findings">${rest.map(li).join("")}</ul>` : `<div class="fd ok" style="font-size:12.5px;">✓ Keine Abweichungen gefunden.</div>`}
+    ${oks.length ? `<details class="okdetails"><summary>✓ ${oks.length} Punkt(e) in Ordnung</summary><ul class="findings">${oks.map(li).join("")}</ul></details>` : ""}`;
+}
+function findingsPill(inv){
+  const st = inv.pruefung && inv.pruefung.status;
+  if(st==="ok") return `<span class="pill ok">✓ freigegeben</span>`;
+  if(st==="beanstandet") return `<span class="pill danger">✗ beanstandet</span>`;
+  const f = checkInvoice(inv);
+  const d = f.filter(x=>x.level==="danger").length, w = f.filter(x=>x.level==="warn").length;
+  if(d) return `<span class="pill danger">✗ ${d} Fehler${w?` · ${w} ⚠`:""}</span>`;
+  if(w) return `<span class="pill warn">⚠ ${w} Hinweis(e)</span>`;
+  return `<span class="pill neutral">✓ ok – offen</span>`;
+}
+
+function beanstandungText(inv){
+  const f = checkInvoice(inv).filter(x=>x.level==="danger" || x.level==="warn");
+  const p = DB.projects.find(x=>x.id===inv.projectId);
+  return [
+    `Rechnung ${inv.rechnungsnr||"(ohne Nr.)"} vom ${inv.datum||"?"} – Objekt: ${p?p.name:"?"}`,
+    "",
+    "Bei der Prüfung Ihrer Rechnung sind uns folgende Punkte aufgefallen:",
+    ...f.map(x=>"– " + x.text),
+    ...(inv.pruefung && inv.pruefung.kommentar ? ["", "Bemerkung: " + inv.pruefung.kommentar] : []),
+    "",
+    "Wir bitten Sie, die Rechnung zu korrigieren bzw. uns eine Gutschrift zu stellen.",
+  ].join("\n");
+}
+
+function renderPruefPanel(el, getInv){
+  const inv = getInv(); if(!inv || !el) return;
+  const st = (inv.pruefung && inv.pruefung.status) || "offen";
+  const f = checkInvoice(inv);
+  el.innerHTML = `
+    <div class="pruefbox">
+      <div class="pruefhead"><b>Prüfbericht</b> ${findingsPill(inv)}
+        <span class="muted" style="margin-left:auto;font-size:11.5px;">${st!=="offen" && inv.pruefung && inv.pruefung.by ? `Status von ${escapeHtml(inv.pruefung.by)}${inv.pruefung.at?" · "+escapeHtml(inv.pruefung.at):""}` : ""}</span>
+      </div>
+      ${findingsHtml(f)}
+      <div class="row" style="margin-top:12px;align-items:flex-end;flex-wrap:wrap;">
+        <label class="field" style="flex:3;min-width:220px;margin:0;"><span>Kommentar zur Prüfung</span>
+          <input type="text" data-pk value="${escapeAttr((inv.pruefung && inv.pruefung.kommentar)||"")}" placeholder="z.B. Gutschrift verlangt am …"></label>
+        <div style="flex:0 0 auto;display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="small ${st==="ok"?"st-ok":""}" data-ps="ok">✓ Freigeben</button>
+          <button class="small ${st==="beanstandet"?"st-bad":"danger"}" data-ps="beanstandet">✗ Beanstanden</button>
+          <button class="small" data-ps="offen" ${st==="offen"?"disabled":""}>↺ Offen</button>
+          <button class="small" data-copybean>📋 Beanstandung kopieren</button>
+        </div>
+      </div>
+    </div>`;
+  const kom = el.querySelector("[data-pk]");
+  kom.addEventListener("change", ()=>{
+    const i = getInv(); if(!i) return;
+    i.pruefung = { status: (i.pruefung && i.pruefung.status) || "offen", kommentar: kom.value, by: (i.pruefung && i.pruefung.by) || "", at: (i.pruefung && i.pruefung.at) || "" };
+    saveInvoice(i);
+  });
+  el.querySelectorAll("[data-ps]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const i = getInv(); if(!i) return;
+      const next = btn.dataset.ps;
+      if(next==="ok"){
+        const d = checkInvoice(i).filter(x=>x.level==="danger").length;
+        if(d && !confirm(`Die Prüfung hat ${d} Fehler gefunden. Rechnung trotzdem freigeben?`)) return;
+      }
+      i.pruefung = { status: next, kommentar: kom.value, by: currentUser ? currentUser.email : "", at: new Date().toLocaleString("de-CH") };
+      saveInvoice(i);
+      renderPruefPanel(el, getInv);
+      toast(next==="ok" ? "Rechnung freigegeben." : next==="beanstandet" ? "Rechnung beanstandet – zählt nicht mehr ins Ist." : "Status zurückgesetzt.");
+    });
+  });
+  el.querySelector("[data-copybean]").addEventListener("click", ()=>{
+    const i = getInv(); if(!i) return;
+    navigator.clipboard.writeText(beanstandungText(i)).then(()=>toast("Beanstandungstext kopiert – in E-Mail einfügen."), ()=>toast("Kopieren nicht möglich."));
+  });
+}
+
+// Gemeinsame Positionstabelle (Upload-Karte und Bearbeiten im Auftrag)
+function renderItemsTable(container, getInv, onChange){
+  const catOptions = (DB.categories||DEFAULT_CATEGORIES).map(c=>`<option value="${escapeAttr(c.key)}">${escapeHtml(c.label)}</option>`).join("");
+  function commit(redraw){
+    const inv = getInv(); if(!inv) return;
+    saveInvoice(inv);
+    if(redraw) draw();
+    if(onChange) onChange();
+  }
+  function draw(){
+    const inv = getInv(); if(!inv) return;
+    if(!Array.isArray(inv.items)) inv.items = [];
+    const sub = getSubFor(inv.lieferant);
+    const tarife = sub ? (sub.tarife||[]).filter(t=>num(t.preis)!=null) : [];
+    container.innerHTML = `
+      <div class="tablewrap"><table class="itemtable">
+        <thead><tr><th>Kategorie</th><th>Beschreibung (Original)</th><th>Menge</th><th>Einh.</th><th title="Einheitspreis – leer = Betrag ÷ Menge">EP CHF</th><th>Betrag CHF</th><th>Vereinbarter Preis (Sub)</th><th></th></tr></thead>
+        <tbody>${inv.items.map(it=>{
+          const r = sub ? findTarif(sub, inv, it) : { tarif:null };
+          const autoLabel = r.tarif && !r.manual ? `auto: ${r.tarif.bezeichnung} · ${fmt(r.tarif.preis)}` : (tarife.length ? "auto: kein Treffer" : "keine Preise hinterlegt");
+          const epCalc = (num(it.preis)!=null && num(it.menge)) ? roundNum(it.preis/it.menge) : "";
+          return `<tr data-id="${escapeAttr(it.id)}">
+            <td style="min-width:140px;"><select data-if="category">${catOptions}</select></td>
+            <td style="min-width:180px;"><input type="text" data-if="label" value="${escapeAttr(it.label||"")}"></td>
+            <td style="width:82px;"><input type="number" step="any" data-if="menge" value="${it.menge!=null?it.menge:""}"></td>
+            <td style="width:62px;"><input type="text" data-if="einheit" value="${escapeAttr(it.einheit||"")}"></td>
+            <td style="width:92px;"><input type="number" step="any" data-if="ep" value="${it.ep!=null?it.ep:""}" placeholder="${epCalc}"></td>
+            <td style="width:104px;"><input type="number" step="any" data-if="preis" value="${it.preis!=null?it.preis:""}"></td>
+            <td style="min-width:170px;"><select data-if="tarifId"><option value="">${escapeHtml(autoLabel)}</option>${tarife.map(t=>`<option value="${escapeAttr(t.id)}">${escapeHtml(t.bezeichnung||"?")} · ${fmt(t.preis)}/${escapeHtml(t.einheit||"")}</option>`).join("")}</select></td>
+            <td><button class="close-x" data-removeitem="${escapeAttr(it.id)}" title="Position entfernen">✕</button></td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table></div>
+      <button class="small" data-additem style="margin-top:8px;">+ Position hinzufügen</button>`;
+    container.querySelectorAll("tr[data-id]").forEach(row=>{
+      const it = inv.items.find(i=>i.id===row.dataset.id); if(!it) return;
+      const catSel = row.querySelector('select[data-if="category"]');
+      catSel.value = it.category;
+      catSel.addEventListener("change", ()=>{ it.category = catSel.value; it.tarifId = null; commit(true); });
+      const tSel = row.querySelector('select[data-if="tarifId"]');
+      tSel.value = it.tarifId || "";
+      if(tSel.value !== (it.tarifId||"")) tSel.value = "";
+      tSel.addEventListener("change", ()=>{ it.tarifId = tSel.value || null; commit(true); });
+      row.querySelectorAll("input[data-if]").forEach(inp=>{
+        inp.addEventListener("input", ()=>{
+          const fld = inp.dataset.if;
+          it[fld] = ["menge","preis","ep"].includes(fld) ? (inp.value===""?null:parseFloat(inp.value)) : inp.value;
+        });
+        inp.addEventListener("change", ()=>commit(false));
+      });
+    });
+    container.querySelectorAll("[data-removeitem]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const i = getInv(); if(!i) return;
+        i.items = i.items.filter(x=>x.id!==btn.dataset.removeitem);
+        commit(true);
+      });
+    });
+    container.querySelector("[data-additem]").addEventListener("click", ()=>{
+      const i = getInv(); if(!i) return;
+      i.items.push({ id:uid("it"), category:"Sonstiges", label:"", menge:null, einheit:"Stk", preis:null, ep:null });
+      commit(true);
+    });
+  }
+  draw();
+}
+
+/* ============================= AB IMPORT & ZUORDNUNG ============================= */
+
+function addrTokens(s){ return String(s||"").toLowerCase().replace(/[,.\-\/()"']/g," ").split(/\s+/).filter(w=>w.length>3 && !/^\d+$/.test(w)); }
+function scoreAddress(a, b){
+  const ta = addrTokens(a), tb = addrTokens(b);
+  if(!ta.length || !tb.length) return 0;
+  const overlap = ta.filter(t=>tb.includes(t)).length;
+  if(!overlap) return 0;
+  const na = String(a||"").match(/\b\d{1,3}[a-z]?\b/gi) || [];
+  const nb = String(b||"").match(/\b\d{1,3}[a-z]?\b/gi) || [];
+  const numMatch = na.some(n=>nb.map(x=>x.toLowerCase()).includes(n.toLowerCase()));
+  return overlap + (numMatch ? 0.5 : 0);
+}
+function projectAddrScore(addr, p){
+  return Math.max(scoreAddress(addr, p.address), scoreAddress(addr, p.name), ...((p.abs||[]).map(a=>scoreAddress(addr, a.baustelle))), 0);
+}
+function bestProjectForAddress(addr){
+  let best = null, bestScore = 0;
+  DB.projects.forEach(p=>{ const s = projectAddrScore(addr, p); if(s>bestScore){ best = p; bestScore = s; } });
+  return { project: best, score: bestScore };
+}
+
+async function attachAB(projectId, ab){
+  const p = DB.projects.find(x=>x.id===projectId);
+  if(!p) throw new Error("Auftrag nicht gefunden.");
+  const old = (p.abs||[]).find(a=>a.nr===ab.nr);
+  if(old){ // manuelle Kategorie-Zuordnungen einer frueheren Version uebernehmen
+    ab.positionen.forEach(np=>{
+      const op = (old.positionen||[]).find(o=>o.pos===np.pos && o.artikel===np.artikel);
+      if(op && op.categoryManual){ np.category = op.category; np.categoryManual = true; }
+    });
+  }
+  p.abs = (p.abs||[]).filter(a=>a.nr!==ab.nr).concat([ab]);
+  if(!p.address && ab.baustelle) p.address = ab.baustelle;
+  if(!p.auftragsnummer && ab.anr) p.auftragsnummer = ab.anr;
+  await saveProject(p);
+}
+async function detachAB(projectId, nr){
+  const p = DB.projects.find(x=>x.id===projectId);
+  if(!p) return;
+  p.abs = (p.abs||[]).filter(a=>a.nr!==nr);
+  await saveProject(p);
+}
+async function autoAssignAB(ab){
+  const sameNr = DB.projects.find(p=>(p.abs||[]).some(a=>a.nr && a.nr===ab.nr));
+  if(sameNr){ await attachAB(sameNr.id, ab); return { projectId: sameNr.id, how:"revision" }; }
+  const { project, score } = bestProjectForAddress(ab.baustelle);
+  if(project && score >= 1){ await attachAB(project.id, ab); return { projectId: project.id, how: score>=2 ? "auto" : "unsicher" }; }
+  const id = await createProject({ name: ab.baustelle || `AB ${ab.nr}`, address: ab.baustelle || "", auftragsnummer: ab.anr || "", soll: {}, abs: [ab] });
+  return { projectId: id, how:"neu" };
+}
+function abFromPages(pages, filename){
+  const fullText = pages.map(p=>p.text).join("\n");
+  const ab = parseABText(fullText);
+  ab.filename = filename || "";
+  ab.importedAt = new Date().toLocaleString("de-CH");
+  ab.importedBy = currentUser ? currentUser.email : "";
+  ab.rawText = fullText.slice(0, 60000);
+  return ab;
+}
+
+function abSummaryHtml(ab){
+  const tmp = { abs:[ab] };
+  const s = abSoll(tmp);
+  const keys = Object.keys(s);
+  return keys.length
+    ? keys.map(k=>`<span class="tag">${escapeHtml(catLabel(k))}: <b>${fmtQty(s[k].menge)}</b> ${escapeHtml(catUnit(k))}${s[k].materials.length?` (${escapeHtml(s[k].materials.join(", "))})`:""}</span>`).join(" ")
+    : `<span class="muted">Keine Sub-relevanten Positionen erkannt – Zuordnung im Auftrag prüfen.</span>`;
+}
+
+function appendABCard(ab, res){
+  const area = document.getElementById("reviewArea");
+  if(!area) return;
+  const wrap = document.createElement("div");
+  wrap.className = "card";
+  wrap.style.borderLeft = "4px solid var(--accent)";
+  let projectId = res.projectId;
+  const howTxt = { revision:"Neue Version einer bereits vorhandenen AB – ersetzt.", auto:"Automatisch über die Baustellenadresse zugeordnet.",
+                   unsicher:"⚠ Zuordnung unsicher (nur teilweise Adressübereinstimmung) – bitte bestätigen oder ändern.", neu:"Kein passender Auftrag gefunden – neuer Auftrag angelegt." }[res.how] || "";
+  function draw(){
+    wrap.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+        <h2>📑 Auftragsbestätigung ${escapeHtml(ab.nr)} ${ab.anr?`/ ${escapeHtml(ab.anr)}`:""}</h2>
+        <span class="pill ${res.how==="unsicher"?"warn":"ok"}">${res.how==="unsicher"?"⚠ bitte prüfen":"✓ gespeichert"}</span>
+      </div>
+      <p class="subtitle" style="margin-top:-8px;">${escapeHtml(howTxt)}</p>
+      <div class="row">
+        <div><div class="muted" style="font-size:11.5px;">Baustelle</div><b>${escapeHtml(ab.baustelle||"—")}</b></div>
+        <div><div class="muted" style="font-size:11.5px;">Kunde</div>${escapeHtml(ab.kunde||"—")}</div>
+        <div><div class="muted" style="font-size:11.5px;">Einheiten</div>${ab.einheiten!=null?ab.einheiten:"—"}</div>
+        <div><div class="muted" style="font-size:11.5px;">Auftragswert exkl. MwSt</div><span class="num">CHF ${fmt(ab.auftragswert)}</span></div>
+      </div>
+      <div style="margin-top:12px;">${abSummaryHtml(ab)}</div>
+      <div class="muted" style="font-size:12px;margin-top:8px;">${ab.positionen.length} Positionen · ${ab.inkl.length} Inkl.- und ${ab.exkl.length} Exkl.-Vermerke gelesen</div>
+      <label class="field" style="margin-top:12px;"><span>Zugeordneter Auftrag</span>
+        <select class="abProjSel"><option value="__new">— neuen Auftrag anlegen —</option>${DB.projects.map(p=>`<option value="${escapeAttr(p.id)}" ${p.id===projectId?"selected":""}>${escapeHtml(p.name)}</option>`).join("")}</select>
+      </label>
+      <button class="abGoto">Zum Auftrag →</button>`;
+    wrap.querySelector(".abProjSel").addEventListener("change", async (e)=>{
+      const target = e.target.value;
+      try{
+        await detachAB(projectId, ab.nr);
+        if(target==="__new"){
+          projectId = await createProject({ name: ab.baustelle || `AB ${ab.nr}`, address: ab.baustelle||"", auftragsnummer: ab.anr||"", soll:{}, abs:[ab] });
+        } else {
+          await attachAB(target, ab);
+          projectId = target;
+        }
+        res.how = "auto";
+        toast("AB neu zugeordnet.");
+        draw();
+      }catch(err){ toast("Fehler: " + (err.message||err)); }
+    });
+    wrap.querySelector(".abGoto").addEventListener("click", ()=> navigateTo("projectDetail", { projectId }));
+  }
+  draw();
+  area.prepend(wrap);
+}
+
+// AB direkt aus Datei lesen (Auftragsseite / Auftragsliste)
+function pickABFile(onFile){
+  const fi = document.createElement("input");
+  fi.type = "file"; fi.accept = "application/pdf";
+  fi.addEventListener("change", ()=>{ if(fi.files && fi.files[0]) onFile(fi.files[0]); });
+  fi.click();
+}
+async function readABFile(file){
+  toast(`„${file.name}“ wird gelesen…`);
+  const pages = await extractPagesFromPDF(file);
+  const fullText = pages.map(p=>p.text).join("\n");
+  if(!isABText(fullText) && !confirm("Das Dokument sieht nicht wie eine PE-Auftragsbestätigung aus. Trotzdem versuchen?")) return null;
+  const ab = abFromPages(pages, file.name);
+  if(!ab.positionen.length){ alert("In diesem Dokument konnten keine AB-Positionen gelesen werden."); return null; }
+  return ab;
+}
+
+/* ============================= EINSTELLUNGEN: TOLERANZEN + PREISE PRO SUB ============================= */
+
+let editingSub = null;
+
+function blankTarif(t){
+  return { id: uid("tf"), category: (t&&t.category)||"Sonstiges", bezeichnung: (t&&t.bezeichnung)||"", material: (t&&t.material)||"",
+           einheit: (t&&t.einheit)||"Stk", preis: (t && num(t.preis)!=null) ? +t.preis : null, gueltigAb: (t&&t.gueltigAb)||"", keywords: (t&&t.keywords)||"" };
+}
+function cleanSubForSave(s){
+  return {
+    name: s.name || "", aliases: (s.aliases||[]).map(a=>String(a).trim()).filter(Boolean),
+    kontakt: s.kontakt || "", notizen: s.notizen || "",
+    tarife: (s.tarife||[]).map(t=>({ id:t.id||uid("tf"), category:t.category||"Sonstiges", bezeichnung:t.bezeichnung||"", material:t.material||"",
+      einheit:t.einheit||"", preis: num(t.preis), gueltigAb:t.gueltigAb||"", keywords:t.keywords||"" })),
+    updatedAt: new Date().toISOString(), updatedBy: currentUser ? currentUser.email : "",
+  };
+}
+async function saveSub(s){
+  if(!hasPerm("editPreise")){ toast("Keine Berechtigung zum Bearbeiten von Preisen."); return; }
+  try{
+    await window.fb.setDoc("subunternehmer", s.id, cleanSubForSave(s));
+  }catch(err){ showDbError("subunternehmer", err); }
+}
+
+function renderSettings(){
+  const S = getSettings();
+  const canEdit = hasPerm("editPreise");
+  const names = getSuppliers();
+  mainEl.innerHTML = `
+    <h1>Einstellungen</h1>
+    <p class="subtitle">Preise und Stundenansätze pro Subunternehmer sowie die Prüf-Toleranzen. Das ist die Grundlage für die automatische Rechnungskontrolle.</p>
+    ${canEdit ? "" : `<div class="card" style="background:var(--warn-bg);border-color:var(--warn-bg);">Nur Lesen – zum Bearbeiten braucht es die Berechtigung „Preise bearbeiten“ (Benutzerverwaltung).</div>`}
+    <div class="card">
+      <h2>Prüf-Toleranzen</h2>
+      <div class="row" style="flex-wrap:wrap;">
+        <label class="field"><span>Preisabweichung erlaubt (%)</span><input type="number" step="any" data-set="tolPreisProzent" value="${S.tolPreisProzent}" ${canEdit?"":"disabled"}></label>
+        <label class="field"><span>…mindestens (CHF / Einheit)</span><input type="number" step="any" data-set="tolPreisCHF" value="${S.tolPreisCHF}" ${canEdit?"":"disabled"}></label>
+        <label class="field"><span>Mengen-Toleranz über Soll (%)</span><input type="number" step="any" data-set="mengenTolProzent" value="${S.mengenTolProzent}" ${canEdit?"":"disabled"}></label>
+        <label class="field"><span>Ausreisser ab Faktor (× Mittel)</span><input type="number" step="any" data-set="ausreisserFaktor" value="${S.ausreisserFaktor}" ${canEdit?"":"disabled"}></label>
+        <label class="field"><span>Ausreisser ab Mehrbetrag (CHF)</span><input type="number" step="any" data-set="ausreisserMinCHF" value="${S.ausreisserMinCHF}" ${canEdit?"":"disabled"}></label>
+      </div>
+      <p class="muted" style="font-size:12px;margin:0;">Beispiel: Faktor 1.5 und CHF 100 → „Demontieren und wieder montieren“ für CHF 1'800 wird gemeldet, wenn derselbe Sub dafür auf anderen Objekten im Mittel CHF 500 verrechnet hat.</p>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="margin:0;">Subunternehmer & Preise</h2>
+        ${canEdit ? `<button class="primary" id="newSubBtn">+ Subunternehmer anlegen</button>` : ""}
+      </div>
+      ${names.length ? names.map(n=>{
+        const s = getSubFor(n);
+        const priced = s ? (s.tarife||[]).filter(t=>num(t.preis)!=null).length : 0;
+        const invCount = DB.invoices.filter(i=>i.lieferant===n).length;
+        return `<div class="proj-list-item" data-subname="${escapeAttr(n)}">
+          <div><div class="pname">🏢 ${escapeHtml(n)}</div>
+          <div class="paddr">${invCount} Rechnung(en)${s && (s.aliases||[]).length ? ` · Aliase: ${escapeHtml(s.aliases.join(", "))}` : ""}</div></div>
+          <div class="pmeta">${priced ? `<span class="pill ok">${priced} Preise</span>` : `<span class="pill warn">⚠ keine Preise</span>`}</div>
+        </div>`;
+      }).join("") : `<div class="empty">Noch keine Subunternehmer. Lege einen an oder lade eine Rechnung hoch.</div>`}
+    </div>`;
+  mainEl.querySelectorAll("[data-set]").forEach(inp=>{
+    inp.addEventListener("change", async ()=>{
+      if(!hasPerm("editPreise")) return;
+      const v = inp.value === "" ? null : parseFloat(inp.value);
+      DB.settings = { ...(DB.settings||{}), [inp.dataset.set]: v };
+      try{ await window.fb.setDocMerge("einstellungen", "global", { [inp.dataset.set]: v }); toast("Gespeichert."); }
+      catch(err){ showDbError("einstellungen", err); }
+    });
+  });
+  const nb = document.getElementById("newSubBtn");
+  if(nb) nb.addEventListener("click", ()=>{
+    const name = prompt("Name des Subunternehmers (genau so, wie er auf den Rechnungen erscheinen soll):");
+    if(!name || !name.trim()) return;
+    if(getSubFor(name.trim())){ navigateTo("subPrices", { supplierName: getSubFor(name.trim()).name }); return; }
+    editingSub = { id: slugify(name.trim()), name: name.trim(), aliases: [], kontakt:"", notizen:"", tarife: TARIF_VORLAGE.map(blankTarif) };
+    saveSub(editingSub);
+    navigateTo("subPrices", { supplierName: name.trim() });
+  });
+  mainEl.querySelectorAll("[data-subname]").forEach(el=>{
+    el.addEventListener("click", ()=> navigateTo("subPrices", { supplierName: el.dataset.subname }));
+  });
+}
+
+function renderSubPrices(name){
+  if(!name){ goBack("settings"); return; }
+  const canEdit = hasPerm("editPreise");
+  const stored = getSubFor(name);
+  if(!editingSub || (editingSub.name!==name && !(stored && editingSub.id===stored.id))){
+    editingSub = stored ? JSON.parse(JSON.stringify(stored))
+      : { id: slugify(name), name, aliases: [], kontakt:"", notizen:"", tarife: TARIF_VORLAGE.map(blankTarif), _unsaved: true };
+  }
+  const s = editingSub;
+  if(!Array.isArray(s.tarife)) s.tarife = [];
+  const cats = DB.categories || DEFAULT_CATEGORIES;
+  const order = cats.map(c=>c.key);
+  const rows = s.tarife.slice().sort((a,b)=> order.indexOf(a.category)-order.indexOf(b.category));
+  const others = (DB.subs||[]).filter(x=>x.id!==s.id && (x.tarife||[]).length);
+  const dis = canEdit ? "" : "disabled";
+
+  mainEl.innerHTML = `
+    <button class="backlink" id="backBtn">← Zurück</button>
+    <h1>💰 ${escapeHtml(s.name)} – Preise & Stundenansätze</h1>
+    <p class="subtitle">Vereinbarte Preise dieses Subunternehmers. Jede Rechnungsposition wird automatisch mit der passenden Zeile verglichen (über Kategorie, Material und Suchbegriffe).${s._unsaved?` <b style="color:var(--warn);">Noch nicht gespeichert – wird bei der ersten Änderung angelegt.</b>`:""}</p>
+    <div class="card">
+      <div class="row">
+        <label class="field"><span>Weitere Namen auf Rechnungen (Aliase, mit Komma)</span><input type="text" data-sf="aliases" value="${escapeAttr((s.aliases||[]).join(", "))}" placeholder="z.B. FA Bauservice, Froh Haustechnik" ${dis}></label>
+        <label class="field"><span>Ansprechpartner / Kontakt</span><input type="text" data-sf="kontakt" value="${escapeAttr(s.kontakt||"")}" ${dis}></label>
+      </div>
+      <label class="field"><span>Notizen / Konditionen</span><input type="text" data-sf="notizen" value="${escapeAttr(s.notizen||"")}" placeholder="z.B. Skonto 2% 10 Tage, Preise gültig 2026" ${dis}></label>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+        <h2 style="margin:0;">Preisliste (${rows.length} Zeilen)</h2>
+        ${canEdit ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="small" id="addRowBtn">+ Zeile</button>
+          <button class="small" id="addTplBtn">Standardzeilen ergänzen</button>
+          ${others.length ? `<select id="copyFromSel" style="width:auto;font-size:12px;"><option value="">Preise kopieren von…</option>${others.map(o=>`<option value="${escapeAttr(o.id)}">${escapeHtml(o.name)}</option>`).join("")}</select>` : ""}
+        </div>` : ""}
+      </div>
+      <div class="tablewrap"><table class="itemtable">
+        <thead><tr><th>Kategorie</th><th>Bezeichnung</th><th>Material / Variante</th><th>Einheit</th><th>Preis CHF</th><th>Gültig ab</th><th title="Wörter, an denen die Position auf der Rechnung erkannt wird">Suchbegriffe</th><th></th></tr></thead>
+        <tbody>${rows.map(t=>`
+          <tr data-tid="${escapeAttr(t.id)}" class="${num(t.preis)==null?"noprice":""}">
+            <td style="min-width:150px;"><select data-tf="category" ${dis}>${cats.map(c=>`<option value="${escapeAttr(c.key)}" ${c.key===t.category?"selected":""}>${escapeHtml(c.label)}</option>`).join("")}</select></td>
+            <td style="min-width:170px;"><input type="text" data-tf="bezeichnung" value="${escapeAttr(t.bezeichnung||"")}" ${dis}></td>
+            <td style="width:110px;"><input type="text" data-tf="material" value="${escapeAttr(t.material||"")}" placeholder="z.B. 1x18mm" ${dis}></td>
+            <td style="width:70px;"><input type="text" data-tf="einheit" value="${escapeAttr(t.einheit||"")}" ${dis}></td>
+            <td style="width:100px;"><input type="number" step="any" data-tf="preis" value="${num(t.preis)!=null?t.preis:""}" placeholder="—" ${dis}></td>
+            <td style="width:135px;"><input type="date" data-tf="gueltigAb" value="${escapeAttr(t.gueltigAb||"")}" ${dis}></td>
+            <td style="min-width:130px;"><input type="text" data-tf="keywords" value="${escapeAttr(t.keywords||"")}" placeholder="komma-getrennt" ${dis}></td>
+            <td style="white-space:nowrap;">${canEdit?`<button class="close-x" data-duptf="${escapeAttr(t.id)}" title="Duplizieren (z.B. für neuen Preis ab Datum)">⧉</button><button class="close-x" data-deltf="${escapeAttr(t.id)}" title="Zeile löschen">✕</button>`:""}</td>
+          </tr>`).join("")}</tbody>
+      </table></div>
+      <p class="muted" style="font-size:12px;margin:10px 0 0 0;">Tipps: Zeilen ohne Preis werden ignoriert. Für eine Preiserhöhung die Zeile duplizieren (⧉) und „Gültig ab“ setzen – alte Rechnungen werden dann weiterhin mit dem alten Preis geprüft. Bei der Beplankung entscheidet das Material (1x18mm, 2x12.5mm, Aquapanel …), welcher Preis gilt.</p>
+    </div>`;
+
+  document.getElementById("backBtn").addEventListener("click", ()=>{ editingSub = null; goBack("settings"); });
+  if(!canEdit) return;
+
+  const persist = ()=>{ delete s._unsaved; saveSub(s); };
+  mainEl.querySelectorAll("[data-sf]").forEach(inp=>{
+    inp.addEventListener("change", ()=>{
+      const k = inp.dataset.sf;
+      s[k] = k==="aliases" ? inp.value.split(",").map(x=>x.trim()).filter(Boolean) : inp.value;
+      persist();
+    });
+  });
+  mainEl.querySelectorAll("tr[data-tid]").forEach(row=>{
+    const t = s.tarife.find(x=>x.id===row.dataset.tid); if(!t) return;
+    row.querySelectorAll("[data-tf]").forEach(inp=>{
+      inp.addEventListener("change", ()=>{
+        const k = inp.dataset.tf;
+        if(k==="preis") t.preis = inp.value==="" ? null : parseFloat(inp.value);
+        else t[k] = inp.value;
+        if(k==="category"){ const c = catDef(t.category); if(c && !t.einheit) t.einheit = c.unit; }
+        row.classList.toggle("noprice", num(t.preis)==null);
+        persist();
+      });
+    });
+  });
+  mainEl.querySelectorAll("[data-deltf]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const t = s.tarife.find(x=>x.id===btn.dataset.deltf);
+      if(t && num(t.preis)!=null && !confirm(`Zeile „${t.bezeichnung}“ (CHF ${fmt(t.preis)}) löschen?`)) return;
+      s.tarife = s.tarife.filter(x=>x.id!==btn.dataset.deltf);
+      persist(); renderSubPrices(name);
+    });
+  });
+  mainEl.querySelectorAll("[data-duptf]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const t = s.tarife.find(x=>x.id===btn.dataset.duptf); if(!t) return;
+      const copy = blankTarif(t); copy.gueltigAb = "";
+      s.tarife.push(copy);
+      persist(); renderSubPrices(name);
+    });
+  });
+  document.getElementById("addRowBtn").addEventListener("click", ()=>{
+    s.tarife.push(blankTarif({ category:"Sonstiges", einheit:"Stk" }));
+    persist(); renderSubPrices(name);
+  });
+  document.getElementById("addTplBtn").addEventListener("click", ()=>{
+    const have = new Set(s.tarife.map(t=>(t.bezeichnung||"").toLowerCase()));
+    const add = TARIF_VORLAGE.filter(t=>!have.has(t.bezeichnung.toLowerCase())).map(blankTarif);
+    if(!add.length){ toast("Alle Standardzeilen sind bereits vorhanden."); return; }
+    s.tarife.push(...add);
+    persist(); renderSubPrices(name);
+    toast(`${add.length} Standardzeile(n) ergänzt – Preise eintragen.`);
+  });
+  const cf = document.getElementById("copyFromSel");
+  if(cf) cf.addEventListener("change", ()=>{
+    const src = (DB.subs||[]).find(x=>x.id===cf.value); if(!src) return;
+    if(!confirm(`Alle ${src.tarife.length} Zeilen von „${src.name}“ hinzufügen? (Bestehende Zeilen bleiben.)`)){ cf.value=""; return; }
+    s.tarife.push(...src.tarife.map(blankTarif));
+    persist(); renderSubPrices(name);
+  });
+}
+
+async function renameSubMaster(oldName, newName){
+  const s = getSubFor(oldName);
+  if(!s || getSubFor(newName)) return; // existiert der neue Name schon, bleiben beide Stammdaten bestehen
+  const copy = JSON.parse(JSON.stringify(s));
+  copy.aliases = Array.from(new Set([...(copy.aliases||[]), oldName])).filter(a=>a!==newName);
+  copy.name = newName;
+  try{ await window.fb.setDoc("subunternehmer", s.id, cleanSubForSave(copy)); }catch(err){ showDbError("subunternehmer", err); }
+}
+
 /* ============================= HELPERS ============================= */
 
 function formatCHF(n){
@@ -1783,6 +2940,7 @@ function toast(msg){
 document.querySelectorAll(".navbtn").forEach(btn=>{
   btn.addEventListener("click", ()=>{
     navStack = [];
+    editingSub = null;
     currentView = btn.dataset.view;
     render();
   });
