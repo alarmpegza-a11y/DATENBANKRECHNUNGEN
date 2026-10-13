@@ -255,7 +255,7 @@ const DEFAULT_CATEGORIES = [
   { key: "Anfahrt", label: "Anfahrt / Parking", unit: "Stk", keywords: ["anfahrt","parking","fahrtspesen"] },
   { key: "Entsorgung", label: "Entsorgung", unit: "Stk", keywords: ["entsorgung","abfall"] },
   { key: "Elemente", label: "Elemente (allg.)", unit: "Stk", keywords: ["element"] },
-  { key: "Sonstiges", label: "Sonstiges", unit: "Stk", keywords: [] },
+  { key: "Sonstiges", label: "⚠ Nicht zugeordnet", unit: "Stk", keywords: [] },
 ];
 
 // Bekannte Subunternehmer -> sauberer Anzeigename (hilft bei Logos/Stilschriften, die OCR schlecht liest)
@@ -837,6 +837,23 @@ function parseInvoiceText(text){
     result.items.push({ id: uid("it"), category: "Ausflockung", label: "Total m³ (Ausmassblatt)", menge: parseSwissNumber(totalM3[1]), einheit: "m³", preis: null, ep: null });
   }
 
+  // Nicht erkannte Zeilen: zuerst ueber die Preisliste des Subs zuordnen (Bezeichnung/Suchbegriffe),
+  // was dann immer noch unbekannt ist UND keinen Betrag hat, ist kein Rechnungsposten (Adresse, Hinweis …)
+  const subForItems = getSubFor(result.lieferant);
+  result.items.forEach(it=>{
+    if(it.category!=="Sonstiges" || !subForItems) return;
+    const t = classifyBySubTarif(subForItems, it.label);
+    if(t){ it.category = t.category; it.tarifId = t.id; }
+  });
+  result.items = result.items.filter(it => !(it.category==="Sonstiges" && (it.preis===null || it.preis===undefined)));
+
+  // Rechnung besteht nur aus der Ausmassblatt-Menge ohne Betrag: Betrag aus dem Rechnungstotal (inkl. 8.1% MwSt) ableiten
+  if(result.items.length===1 && result.items[0].preis==null && result.total){
+    const it = result.items[0];
+    it.preis = roundNum(result.total / 1.081);
+    it.label = (it.label + " – Betrag = Rechnungstotal ÷ 1.081").slice(0,120);
+  }
+
   return result;
 }
 
@@ -898,7 +915,7 @@ function findMatchingProject(parsed){
       const s = projectAddrScore(parsed.objekt, p);
       if(s > bestScore){ best = p; bestScore = s; }
     }
-    if(best && bestScore >= 1) return best;
+    if(best && bestScore >= 2) return best; // nur sichere Treffer, sonst neuer Auftrag
   }
   return null;
 }
@@ -1205,7 +1222,7 @@ function roundNum(n){ return Math.round(n*100)/100; }
 
 function mengeSummary(invs){
   const agg = aggregateByCategory(invs);
-  const keys = Object.keys(agg).filter(k=>agg[k].menge);
+  const keys = Object.keys(agg).filter(k=>agg[k].menge && k!=="Sonstiges");
   if(!keys.length) return "keine Mengen erfasst";
   return keys.map(k=>`${k}: ${roundNum(agg[k].menge)} ${agg[k].einheit||""}`).join(" · ");
 }
@@ -1284,7 +1301,13 @@ function renderSuppliers(){
       e.stopPropagation();
       if(!hasPerm('deleteSubunternehmer')){ toast("Keine Berechtigung."); return; }
       const name = btn.dataset.delsup;
-      if(!confirm(`Alle Rechnungen von "${name}" wirklich löschen?`)) return;
+      const nInv = DB.invoices.filter(i=>i.lieferant===name).length;
+      const master = getSubFor(name);
+      if(!confirm(`Subunternehmer "${name}" wirklich löschen?\n\n– ${nInv} Rechnung(en) werden gelöscht${master?"\n– die hinterlegte Preisliste wird gelöscht":""}`)) return;
+      if(master){
+        try{ await window.fb.deleteDoc("subunternehmer", master.id); DB.subs = DB.subs.filter(s=>s.id!==master.id); }
+        catch(err){ toast("Preisliste konnte nicht gelöscht werden (fehlende Berechtigung / Firestore-Regeln)."); console.error(err); return; }
+      }
       const toDelete = DB.invoices.filter(i=>i.lieferant===name);
       const touched = new Set(toDelete.map(i=>i.projectId));
       for(const inv of toDelete) await deleteInvoiceDoc(inv.id);
@@ -1292,6 +1315,7 @@ function renderSuppliers(){
       const orphanProjects = DB.projects.filter(p => touched.has(p.id) && !(p.abs||[]).length && !remainingInvoices.some(i=>i.projectId===p.id));
       for(const p of orphanProjects) await deleteProjectDoc(p.id);
       toast(`Subunternehmer "${name}" gelöscht.`);
+      renderSuppliers();
     });
   });
 }
@@ -1471,6 +1495,7 @@ function invoiceNeedsReview(inv){
   if(!inv.lieferant) return true;
   if(!inv.items || inv.items.length===0) return true;
   if(inv.items.some(it=>it.menge===null || it.menge===undefined)) return true;
+  if(inv.items.some(it=>it.category==="Sonstiges")) return true;
   return false;
 }
 
@@ -1517,6 +1542,7 @@ function projectControlRows(p){
     const s = inv.lieferant || "?"; o.subs[s] = (o.subs[s]||0) + 1;
   }));
   Object.keys(ist).forEach(k=>cats.add(k));
+  cats.delete("Sonstiges");
   const order = (DB.categories||DEFAULT_CATEGORIES).map(c=>c.key);
   return Array.from(cats).sort((a,b)=>order.indexOf(a)-order.indexOf(b)).map(cat=>{
     const soll = getSoll(p, cat);
@@ -1631,6 +1657,7 @@ function renderProjectDetail(projectId){
 
     <div class="card">
       <h2>Kontrolle pro Leistung</h2>
+      ${(()=>{ const un = invs.filter(i=>(i.items||[]).some(it=>it.category==="Sonstiges")); return un.length ? `<div class="fd warn" style="margin-bottom:12px;"><span class="fdi">⚠</span><span>${un.reduce((s,i)=>s+(i.items||[]).filter(it=>it.category==="Sonstiges").length,0)} Position(en) in ${un.length} Rechnung(en) sind keiner Leistung zugeordnet und fehlen in dieser Kontrolle: ${un.map(i=>`<a href="#" data-openunassigned="${escapeAttr(i.id)}">${escapeHtml(i.rechnungsnr||i.lieferant||"Rechnung")}</a>`).join(", ")} – bitte Kategorie wählen.</span></div>` : ""; })()}
       ${rows.length ? `
       <div class="tablewrap"><table class="ctltable">
         <thead><tr><th>Leistung</th><th>Soll</th><th>Ist (verrechnet)</th><th>Rest / Über</th><th style="width:110px;"></th><th>Budget Sub</th><th>Verrechnet Sub</th><th>Erlös AB</th><th>Marge</th><th></th></tr></thead>
@@ -1793,6 +1820,7 @@ function renderProjectDetail(projectId){
     saveProject(p);
     renderProjectDetail(projectId);
   };
+  mainEl.querySelectorAll("[data-openunassigned]").forEach(a=> a.addEventListener("click", (e)=>{ e.preventDefault(); expandedInvoiceId = a.dataset.openunassigned; renderProjectDetail(projectId); const el = document.getElementById("editPanel-"+expandedInvoiceId); if(el) el.scrollIntoView({behavior:"smooth", block:"center"}); }));
   mainEl.querySelectorAll("[data-sollset]").forEach(btn=> btn.addEventListener("click", ()=> setManualSoll(btn.dataset.sollset)));
   const addSoll = document.getElementById("addSollCat");
   addSoll.addEventListener("change", ()=>{ if(addSoll.value) setManualSoll(addSoll.value); addSoll.value = ""; });
@@ -2095,6 +2123,22 @@ function parseDateCH(s){
   return new Date(y, +m[2]-1, +m[1]);
 }
 
+// Unbekannte Rechnungszeile ueber Bezeichnung/Suchbegriffe der Preisliste einer Leistung zuordnen
+function classifyBySubTarif(sub, label){
+  const lab = String(label||"").toLowerCase();
+  const lt = labelTokens(label);
+  let best = null, bestScore = 0, tie = false;
+  (sub.tarife||[]).forEach(t=>{
+    if(!t.category || t.category==="Sonstiges") return;
+    let s = 0;
+    String(t.keywords||"").split(",").map(k=>k.trim().toLowerCase()).filter(k=>k.length>=3).forEach(k=>{ if(lab.includes(k)) s += 2; });
+    s += labelTokens(t.bezeichnung).filter(x=>lt.includes(x)).length;
+    if(s > bestScore){ best = t; bestScore = s; tie = false; }
+    else if(s === bestScore && s > 0 && best && best.category !== t.category) tie = true;
+  });
+  return bestScore >= 2 && !tie ? best : null;
+}
+
 // Passenden Tarif (Preis) des Subunternehmers fuer eine Rechnungsposition finden
 function findTarif(sub, inv, it){
   if(!sub) return { tarif:null, reason:"kein Subunternehmer hinterlegt" };
@@ -2339,15 +2383,20 @@ function checkInvoice(inv){
   const items = inv.items || [];
 
   // --- Doppelte Rechnung ---
-  if(inv.rechnungsnr){
+  const sameLief = o => String(o.lieferant||"").toLowerCase()===String(inv.lieferant||"").toLowerCase();
+  const sameTotal = o => num(o.total)!=null && num(inv.total)!=null && Math.abs(+o.total - +inv.total) < 0.01;
+  if(inv.rechnungsnr && String(inv.rechnungsnr).replace(/\D/g,"").length >= 3){
     const nr = String(inv.rechnungsnr).trim().toLowerCase();
-    const dup = DB.invoices.find(o => o.id!==inv.id && String(o.lieferant||"").toLowerCase()===String(inv.lieferant||"").toLowerCase()
-      && String(o.rechnungsnr||"").trim().toLowerCase()===nr);
-    if(dup) f.push({ level:"danger", text:`Doppelte Rechnung? Rechnungsnr. ${inv.rechnungsnr} von ${inv.lieferant} ist bereits erfasst (${dup.datum||"ohne Datum"}, ${projName(dup.projectId)}).` });
+    const same = DB.invoices.filter(o => o.id!==inv.id && sameLief(o) && String(o.rechnungsnr||"").trim().toLowerCase()===nr);
+    const realDup = same.find(o => sameTotal(o) || (o.projectId===inv.projectId && (!o.datum || !inv.datum || o.datum===inv.datum)));
+    if(realDup){
+      f.push({ level:"danger", text:`Doppelte Rechnung? Rechnungsnr. ${inv.rechnungsnr} von ${inv.lieferant} ist bereits erfasst (${realDup.datum||"ohne Datum"}, ${projName(realDup.projectId)}${num(realDup.total)!=null?", CHF "+fmt(realDup.total):""}).` });
+    } else if(same.length){
+      f.push({ level:"warn", text:`Rechnungsnr. ${inv.rechnungsnr} kommt auch bei einer anderen Rechnung vor (${projName(same[0].projectId)}) – Objekt/Betrag sind aber verschieden. Wahrscheinlich wurde die Nummer falsch gelesen, bitte Rechnungsnr. kontrollieren.` });
+    }
   }
   if(num(inv.total)!=null && inv.datum){
-    const dup2 = DB.invoices.find(o => o.id!==inv.id && String(o.lieferant||"").toLowerCase()===String(inv.lieferant||"").toLowerCase()
-      && o.datum===inv.datum && num(o.total)!=null && Math.abs(+o.total - +inv.total) < 0.01
+    const dup2 = DB.invoices.find(o => o.id!==inv.id && sameLief(o) && o.datum===inv.datum && sameTotal(o)
       && String(o.rechnungsnr||"").trim().toLowerCase()!==String(inv.rechnungsnr||"").trim().toLowerCase());
     if(dup2) f.push({ level:"warn", text:`Gleicher Betrag (CHF ${fmt(inv.total)}) und gleiches Datum wie Rechnung ${dup2.rechnungsnr||"ohne Nr."} – evtl. doppelt?` });
   }
@@ -2363,6 +2412,9 @@ function checkInvoice(inv){
   items.forEach(it=>{
     const name = `„${displayLabel(it.label) || catLabel(it.category)}“`;
     const ep = itemEP(it);
+    if(it.category==="Sonstiges"){
+      f.push({ level:"warn", itemId:it.id, text:`${name}: keiner Leistung zugeordnet – bitte Kategorie wählen oder Position löschen (zählt sonst in keine Kontrolle).` });
+    }
 
     // --- Preis gegen vereinbarten Tarif ---
     if(hasPrices){
@@ -2554,7 +2606,12 @@ function renderItemsTable(container, getInv, onChange){
       const tSel = row.querySelector('select[data-if="tarifId"]');
       tSel.value = it.tarifId || "";
       if(tSel.value !== (it.tarifId||"")) tSel.value = "";
-      tSel.addEventListener("change", ()=>{ it.tarifId = tSel.value || null; commit(true); });
+      tSel.addEventListener("change", ()=>{
+        it.tarifId = tSel.value || null;
+        const t = tarife.find(x=>x.id===it.tarifId);
+        if(t && t.category && it.category!==t.category) it.category = t.category; // Preiszeile bestimmt die Leistung
+        commit(true);
+      });
       row.querySelectorAll("input[data-if]").forEach(inp=>{
         inp.addEventListener("input", ()=>{
           const fld = inp.dataset.if;
@@ -2581,16 +2638,30 @@ function renderItemsTable(container, getInv, onChange){
 
 /* ============================= AB IMPORT & ZUORDNUNG ============================= */
 
-function addrTokens(s){ return String(s||"").toLowerCase().replace(/[,.\-\/()"']/g," ").split(/\s+/).filter(w=>w.length>3 && !/^\d+$/.test(w)); }
+const ADDR_GENERIC = new Set(["haus","häuser","block","etappe","neubau","umbau","sanierung","überbauung","uberbauung","mfh","efh","objekt","wohnung","wohnungen","baustelle","areal","parzelle","gebäude","gebaude","trakt","stockwerk","haupt"]);
+const STREET_RE = /(strasse|str|weg|gasse|platz|rain|ring|allee|halde|matt|matte|hof|quai|promenade|steig|stich|graben|berg|acker|feld|wiese|park)$/;
+function addrTokens(s){
+  return String(s||"").toLowerCase().replace(/[,.\-\/()"'„“]/g," ").split(/\s+/)
+    .filter(w => w.length>3 && !/^\d/.test(w) && !ADDR_GENERIC.has(w));
+}
+function houseNo(s, street){
+  const m = String(s||"").toLowerCase().match(new RegExp(street.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + "[\\s,]*(\\d{1,4}[a-z]?)\\b"));
+  return m ? m[1] : null;
+}
+// 0 = anderes Objekt, 1 = unsicher, >=2 = gleiches Objekt
 function scoreAddress(a, b){
   const ta = addrTokens(a), tb = addrTokens(b);
   if(!ta.length || !tb.length) return 0;
-  const overlap = ta.filter(t=>tb.includes(t)).length;
-  if(!overlap) return 0;
-  const na = String(a||"").match(/\b\d{1,3}[a-z]?\b/gi) || [];
-  const nb = String(b||"").match(/\b\d{1,3}[a-z]?\b/gi) || [];
-  const numMatch = na.some(n=>nb.map(x=>x.toLowerCase()).includes(n.toLowerCase()));
-  return overlap + (numMatch ? 0.5 : 0);
+  const overlap = ta.filter(t=>tb.includes(t));
+  const sa = ta.find(t=>STREET_RE.test(t)), sb = tb.find(t=>STREET_RE.test(t));
+  if(sa && sb){
+    if(sa !== sb) return 0;                       // verschiedene Strassen = verschiedene Objekte
+    const na = houseNo(a, sa), nb = houseNo(b, sb);
+    if(na && nb && na !== nb) return 1;           // gleiche Strasse, andere Hausnummer -> unsicher
+    return 2 + (overlap.length - 1) * 0.5 + (na && nb ? 0.5 : 0);
+  }
+  if(sa || sb) return overlap.length >= 2 ? 1 : 0; // nur eine Seite hat eine Strasse -> hoechstens unsicher
+  return overlap.length >= 2 ? 2 : (overlap.length === 1 ? 1 : 0); // Projektnamen wie "Parco Lago"
 }
 function projectAddrScore(addr, p){
   return Math.max(scoreAddress(addr, p.address), scoreAddress(addr, p.name), ...((p.abs||[]).map(a=>scoreAddress(addr, a.baustelle))), 0);
