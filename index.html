@@ -4076,7 +4076,10 @@ function matPreisVermerk(inv){
   let datum = p.freigabeDatum;
   if(!datum && p.at){ const m = String(p.at).match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})/); if(m) datum = `${m[1].padStart(2,"0")}.${m[2].padStart(2,"0")}.${m[3].slice(-2)}`; }
   if(!datum) datum = shortDate(new Date());
-  const ini = p.initialen || initialsFor(p.by || (currentUser && currentUser.email));
+  // immer die AKTUELLEN Initialen aus der Benutzerverwaltung (falls dort nachträglich geändert)
+  const approver = p.by || (currentUser && currentUser.email);
+  const u = (allUsers||[]).find(x => String(x.email||"").toLowerCase() === String(approver||"").toLowerCase());
+  const ini = (u && u.initialen) || (currentUser && approver && String(currentUser.email).toLowerCase()===String(approver).toLowerCase() && currentProfile && currentProfile.initialen) || p.initialen || initialsFor(approver);
   return `${datum} ${ini}`.trim();
 }
 function stampSvg(d, matText){
