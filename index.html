@@ -1307,13 +1307,14 @@ function updateBadges(){
   const nProj = computeProjectTodos().length;
   const nInv = computeInvoiceTodos().length;
   const nMsg = unreadMessages().length;
-  setBadge("projBadge", nProj);
+  setBadge("projBadge", 0); // Aufträge sind nur die Liste – fehlende ABs werden unter ② Prüfen verlangt
   setBadge("reviewBadge", nInv);
   setBadge("msgBadge", nMsg);
   setBadge("printBadge", readyToPrintCount());
-  setBadge("checkBadge", DB.invoices.filter(i=>invPrintState(i)==="neu").length);
+  { const neuInv = DB.invoices.filter(i=>invPrintState(i)==="neu"); const np = new Set(neuInv.map(i=>i.projectId));
+    setBadge("checkBadge", neuInv.length + computeProjectTodos().filter(t => !(t.kind==="ab" && np.has(t.projectId))).length); }
   if(isAdmin()) setBadge("pendingBadge", (allUsers||[]).filter(u=>u.role!=="admin" && !u.approved && isFirmenMail(u.email)).length);
-  const total = nProj + nInv + nMsg;
+  const total = DB.invoices.filter(i=>invPrintState(i)==="neu").length + readyToPrintCount() + nMsg;
   document.title = (total ? `(${total}) ` : "") + "PE Rechnungskontrolle";
 }
 
@@ -1924,7 +1925,7 @@ function renderProjects(){
       <button class="primary" id="abUploadListBtn">📑 AB hochladen</button>
     </div>
     <p class="subtitle">${DB.projects.length} Auftrag/Aufträge — klicke für Details und Soll/Ist-Vergleich. Eine AB gilt für das ganze Objekt bzw. Haus – für alle Subunternehmer.</p>
-    ${(()=>{ const td = computeProjectTodos(); return td.length ? `<div class="todobanner"><h2><span class="nbadge" style="display:inline-flex;margin:0;">${td.length}</span> Zu erledigen</h2><div id="todoSlot">${todosHtml(td, true)}</div></div>` : ""; })()}
+
     <div id="searchSlot"></div>
     <div id="projList"></div>
   `;
@@ -1957,7 +1958,7 @@ function renderProjects(){
     return `
       <div class="proj-list-item" data-id="${p.id}" data-search="${escapeAttr((p.name+" "+(p.address||"")+" "+houses.join(" ")).toLowerCase())}">
         <div style="min-width:0;">
-          <div class="pname">${myTodos.length ? `<span class="projdot" title="${escapeAttr(myTodos.map(t=>t.text).join("\n"))}">${myTodos.length}</span>` : ""}${escapeHtml(p.name)}</div>
+          <div class="pname">${escapeHtml(p.name)}</div>
           ${houses.length ? `<div>${houses.map(h=>`<span class="hchip ${houseNeedsAB(p,h)?"bad":"ok"}">${escapeHtml(h)} ${houseNeedsAB(p,h)?"✗ AB":"✓ AB"}</span>`).join("")}</div>` : ""}
           <div class="paddr">${escapeHtml(p.address||"—")} ${p.auftragsnummer?`· Auftragsnr. ${escapeHtml(p.auftragsnummer)}`:""}</div>
           <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
@@ -3227,7 +3228,7 @@ function checkInvoice(inv){
         f.push({ level:"ok", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} von ${fmtQty(soll.menge)} ${u} (${soll.quelle}).` });
       }
     });
-    if(!abs.length && !ohneAB) f.push({ level:"info", text:"Für diesen Auftrag ist keine AB hinterlegt – Mengen und Leistungsumfang können nicht gegen den Auftrag geprüft werden." });
+    if(!abs.length && !ohneAB) f.push({ level:"danger", code:"ab", text:"AB fehlt – bitte die Auftragsbestätigung hochladen oder „Keine AB vorhanden“ bestätigen." });
   }
   return f;
 }
@@ -4510,6 +4511,23 @@ function attachOriginalPdf(inv, after){
   });
 }
 
+// AB fuer ein bestimmtes Objekt hochladen (z.B. direkt aus ② Pruefen)
+function uploadABForProject(projectId, after){
+  const p = DB.projects.find(x=>x.id===projectId); if(!p) return;
+  pickABFile(async (file)=>{
+    try{
+      const ab = await readABFile(file);
+      if(!ab) return;
+      if(ab.baustelle && projectAddrScore(ab.baustelle, p) < 1 && !confirm(`Die AB-Baustelle „${ab.baustelle}“ passt nicht zu „${p.name}“. Trotzdem diesem Objekt zuordnen?`)) return;
+      const elsewhere = DB.projects.find(x=>x.id!==p.id && (x.abs||[]).some(a=>a.nr===ab.nr));
+      if(elsewhere){ if(!confirm(`Diese AB ist bereits bei „${elsewhere.name}“ hinterlegt. Hierher verschieben?`)) return; await detachAB(elsewhere.id, ab.nr); }
+      await attachAB(p.id, ab);
+      toast(`AB ${ab.nr} bei „${p.name}“ hinterlegt – alle Rechnungen dieses Objekts werden jetzt dagegen geprüft.`);
+      if(after) after();
+    }catch(err){ console.error(err); toast("Fehler beim Lesen der AB: " + (err.message||err)); }
+  });
+}
+
 let printTab = "bereit";
 const printSel = new Set();
 const printDeselected = new Set(); // vom Benutzer bewusst abgewählt
@@ -4532,12 +4550,16 @@ function renderPrintCenter(){
   DB.invoices.forEach(inv=> groups[invPrintState(inv)].push(inv));
   Object.values(groups).forEach(g=>g.sort((a,b)=>(toDateSafe(b.createdAt)||0)-(toDateSafe(a.createdAt)||0)));
   let list = (groups[printTab] || []).filter(inv => matchesQuery(invSearchText(inv), printQuery));
+  // Objekt-Punkte, die nicht schon in einer Rechnungszeile unten stehen (dort gibt es eigene Knöpfe)
+  const neuProjects = new Set((groups.neu||[]).map(i=>i.projectId));
+  const checkTodos = printTab==="neu" ? computeProjectTodos().filter(t => !(t.kind==="ab" && neuProjects.has(t.projectId))) : [];
   const probs = {};
   if(printTab==="neu"){
     list.forEach(inv => { const f = checkInvoice(inv); probs[inv.id] = { d: f.filter(x=>x.level==="danger"), w: f.filter(x=>x.level==="warn") }; });
     list = list.slice().sort((a,b)=> (probs[b.id].d.length*10 + probs[b.id].w.length) - (probs[a.id].d.length*10 + probs[a.id].w.length));
   }
   const cleanNeu = printTab==="neu" ? list.filter(i => !probs[i.id].d.length && !probs[i.id].w.length) : [];
+  const abMissingCount = printTab==="neu" ? list.filter(i => probs[i.id].d.some(x=>x.code==="ab")).length : 0;
   // Freigegebene Rechnungen sind beim Öffnen automatisch alle markiert
   if(printTab==="bereit") list.filter(i=>hasOriginal(i) && !printDeselected.has(i.id)).forEach(i=>printSel.add(i.id));
   Array.from(printSel).forEach(id=>{ if(!list.some(i=>i.id===id)) printSel.delete(id); });
@@ -4548,13 +4570,20 @@ function renderPrintCenter(){
 
   mainEl.innerHTML = `
     ${printTab==="neu"
-      ? `<h1>② Prüfen</h1><p class="subtitle">Neu eingelesene Rechnungen. <b>Klick auf eine Zeile</b> öffnet den Prüfbericht. Rechnungen ohne Fehler kannst du markieren und <b>gesammelt freigeben</b> – danach erscheinen sie unter ③ Drucken.</p>`
+      ? `<h1>② Prüfen</h1><p class="subtitle">Neu eingelesene Rechnungen. Jede Rechnung braucht eine <b>AB</b> (oder die Bestätigung „Keine AB vorhanden“). <b>Klick auf eine Zeile</b> öffnet den Prüfbericht. Alles ohne Auffälligkeiten mit einem Klick freigeben – danach erscheint es unter ③ Drucken.</p>
+         ${checkTodos.length ? `<div class="todobanner"><h2><span class="nbadge" style="display:inline-flex;margin:0;">${checkTodos.length}</span> Offene Punkte bei Objekten</h2><div id="checkTodoSlot">${todosHtml(checkTodos, true)}</div></div>` : ""}`
       : `<h1>③ Drucken</h1><p class="subtitle">Freigegebene Rechnungen sind schon markiert. Ein Klick auf <b>„Drucken“</b> – alle werden mit Eingangsstempel gedruckt. Danach nur noch Barcode-Sticker aufkleben. Die gespeicherten PDFs werden nach dem Drucken gelöscht.</p>`}
     ${printTab==="neu" ? "" : `<div class="tabs">
       ${tabBtn("bereit","Bereit zum Drucken",true)}
       ${tabBtn("gedruckt","Gedruckt (Archiv)",false)}
       ${tabBtn("beanstandet","Beanstandet",false)}
     </div>`}
+    ${printTab==="neu" && abMissingCount ? `
+      <div class="drop" id="abBulkDrop" style="padding:16px;margin-bottom:14px;border-color:#f3c7c4;background:#fff7f6;">
+        <b style="color:var(--danger);">📑 Bei ${abMissingCount} Rechnung(en) fehlt die AB.</b>
+        <div style="font-size:12.5px;margin-top:4px;">Alle fehlenden ABs <b>gleichzeitig</b> hier hineinziehen (oder klicken) – sie werden automatisch dem richtigen Objekt zugeordnet. Gibt es keine AB, in der Zeile „Keine AB vorhanden“ klicken.</div>
+        <div id="abBulkStatus" class="muted" style="font-size:12.5px;margin-top:6px;"></div>
+      </div>` : ""}
     ${missing.length && printTab!=="gedruckt" ? `
       <div class="drop" id="bulkDrop" style="padding:18px;margin-bottom:14px;">
         <b>${missing.length} Rechnung(en) ohne gespeichertes Original</b> (vor der Druckfunktion eingelesen)
@@ -4588,7 +4617,13 @@ function renderPrintCenter(){
             <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
             <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
             <td style="cursor:pointer;" data-popen="${inv.id}">${findingsPill(inv)}</td>
-            ${printTab==="neu" ? `<td style="cursor:pointer;font-size:12.5px;max-width:420px;" data-popen="${inv.id}" class="${probs[inv.id].d.length?"flag":"muted"}">${probs[inv.id].d.length||probs[inv.id].w.length ? escapeHtml(shortText((probs[inv.id].d[0]||probs[inv.id].w[0]).text, 120)) + ((probs[inv.id].d.length+probs[inv.id].w.length)>1 ? ` <b>(+${probs[inv.id].d.length+probs[inv.id].w.length-1})</b>` : "") : "✓ alles in Ordnung"}</td>` : ""}
+            ${printTab==="neu" && probs[inv.id].d.some(x=>x.code==="ab") ? `<td style="font-size:12.5px;max-width:460px;">
+                <div class="flag" style="margin-bottom:6px;">📑 AB fehlt für dieses Objekt${(probs[inv.id].d.length+probs[inv.id].w.length)>1 ? ` <b>(+${probs[inv.id].d.length+probs[inv.id].w.length-1} weitere)</b>` : ""}</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                  <button class="small primary" data-abup="${inv.projectId}">📑 AB hochladen</button>
+                  <button class="small" data-noab="${inv.id}">🚫 Keine AB vorhanden</button>
+                </div></td>` : ""}
+            ${printTab==="neu" && !probs[inv.id].d.some(x=>x.code==="ab") ? `<td style="cursor:pointer;font-size:12.5px;max-width:420px;" data-popen="${inv.id}" class="${probs[inv.id].d.length?"flag":"muted"}">${probs[inv.id].d.length||probs[inv.id].w.length ? escapeHtml(shortText((probs[inv.id].d[0]||probs[inv.id].w[0]).text, 120)) + ((probs[inv.id].d.length+probs[inv.id].w.length)>1 ? ` <b>(+${probs[inv.id].d.length+probs[inv.id].w.length-1})</b>` : "") : "✓ alles in Ordnung"}</td>` : ""}
             <td>${orig ? `<span class="hchip ok">✓ gespeichert</span>` : printTab==="gedruckt" ? `<span class="muted" style="font-size:12px;">gelöscht</span>` : `<button class="small" data-pattach="${inv.id}">PDF anhängen</button>`}</td>
             ${printTab==="gedruckt"
               ? `<td class="muted" style="font-size:12px;">${escapeHtml(inv.gedrucktAm||"")}</td>`
@@ -4599,6 +4634,17 @@ function renderPrintCenter(){
       ${printTab==="neu" ? `<p class="muted" style="font-size:12px;">„Markierte freigeben“ gibt nur Rechnungen ohne Fehler frei – Rechnungen mit Fehlern einzeln prüfen (Klick auf die Zeile).</p>` : ""}
       ${printTab==="gedruckt" ? `<p class="muted" style="font-size:12px;">Nach dem Drucken wird die PDF gelöscht, um Speicher zu sparen. Nochmals drucken geht nur, wenn das Original noch vorhanden ist.</p>` : ""}`
     : `<div class="empty">${printQuery ? `Keine Treffer für „${escapeHtml(printQuery)}“ in diesem Tab.` : printTab==="bereit" ? "Keine freigegebenen Rechnungen zum Drucken." : printTab==="neu" ? "Keine neuen Rechnungen." : "Keine Einträge."}</div>`}`;
+  const cts = document.getElementById("checkTodoSlot");
+  if(cts) wireTodos(cts, checkTodos, renderPrintCenter);
+  mainEl.querySelectorAll("[data-abup]").forEach(b=>b.addEventListener("click", (e)=>{ e.stopPropagation(); uploadABForProject(b.dataset.abup, renderPrintCenter); }));
+  mainEl.querySelectorAll("[data-noab]").forEach(b=>b.addEventListener("click", async (e)=>{
+    e.stopPropagation();
+    const inv = DB.invoices.find(i=>i.id===b.dataset.noab); if(!inv) return;
+    inv.ohneAB = true; inv.ohneABvon = `${initialsFor(currentUser.email)} ${shortDate(new Date())}`;
+    await window.fb.setDocMerge("invoices", inv.id, { ohneAB: true, ohneABvon: inv.ohneABvon });
+    toast("Bestätigt: keine AB vorhanden.");
+    renderPrintCenter(); updateBadges();
+  }));
   const ps = document.getElementById("pSearch");
   let psTimer = null;
   ps.addEventListener("input", ()=>{
@@ -4638,6 +4684,49 @@ function renderPrintCenter(){
     bd.addEventListener("dragover", e=>{ e.preventDefault(); bd.classList.add("hover"); });
     bd.addEventListener("dragleave", ()=> bd.classList.remove("hover"));
     bd.addEventListener("drop", e=>{ e.preventDefault(); bd.classList.remove("hover"); run(e.dataTransfer.files); });
+  }
+  // AB direkt in der Pruefung hochladen / "keine AB" bestaetigen
+  mainEl.querySelectorAll("[data-abup]").forEach(b=>b.addEventListener("click", ()=> pickABFile(async (file)=>{
+    const p = DB.projects.find(x=>x.id===b.dataset.abup); if(!p) return;
+    try{
+      const ab = await readABFile(file); if(!ab) return;
+      if(ab.baustelle && projectAddrScore(ab.baustelle, p) < 1 && !confirm(`Die AB-Baustelle „${ab.baustelle}“ passt nicht zu „${p.name}“. Trotzdem zuordnen?`)) return;
+      await attachAB(p.id, ab);
+      toast(`AB ${ab.nr} bei „${p.name}“ hinterlegt.`);
+      renderPrintCenter();
+    }catch(err){ toast("Fehler beim Lesen der AB: " + (err.message||err)); }
+  })));
+  mainEl.querySelectorAll("[data-noab]").forEach(b=>b.addEventListener("click", async ()=>{
+    const inv = DB.invoices.find(i=>i.id===b.dataset.noab); if(!inv) return;
+    inv.ohneAB = true; inv.ohneABvon = `${initialsFor(currentUser.email)} ${shortDate(new Date())}`;
+    await window.fb.setDocMerge("invoices", inv.id, { ohneAB: true, ohneABvon: inv.ohneABvon });
+    toast("Bestätigt: keine AB vorhanden.");
+    renderPrintCenter();
+  }));
+  const abd = document.getElementById("abBulkDrop");
+  if(abd){
+    const run = async files => {
+      const pdfs = Array.from(files).filter(f=>/pdf$/i.test(f.name) || f.type==="application/pdf");
+      const st = document.getElementById("abBulkStatus");
+      let ok = 0; const bad = [];
+      for(const f of pdfs){
+        try{
+          if(st) st.textContent = `„${f.name}“ wird gelesen…`;
+          const pages = await extractPagesFromPDF(f);
+          const text = pages.map(p=>p.text).join("\n");
+          if(!isABText(text)){ bad.push(`${f.name} (keine PE-AB)`); continue; }
+          const ab = abFromPages(pages, f.name);
+          if(!ab.positionen.length){ bad.push(`${f.name} (keine Positionen lesbar)`); continue; }
+          await autoAssignAB(ab); ok++;
+        }catch(err){ bad.push(f.name); }
+      }
+      toast(`${ok} AB(s) zugeordnet${bad.length ? ` · nicht verarbeitet: ${bad.join(", ")}` : ""}.`);
+      renderPrintCenter();
+    };
+    abd.addEventListener("click", ()=>{ const fi = document.createElement("input"); fi.type="file"; fi.accept="application/pdf"; fi.multiple = true; fi.addEventListener("change", ()=>run(fi.files)); fi.click(); });
+    abd.addEventListener("dragover", e=>{ e.preventDefault(); abd.classList.add("hover"); });
+    abd.addEventListener("dragleave", ()=> abd.classList.remove("hover"));
+    abd.addEventListener("drop", e=>{ e.preventDefault(); abd.classList.remove("hover"); run(e.dataTransfer.files); });
   }
   const apc = document.getElementById("pApproveClean");
   if(apc) apc.addEventListener("click", async ()=>{
@@ -4804,6 +4893,7 @@ function closePrintPreview(){
 function renderHome(){
   const neu = DB.invoices.filter(i=>invPrintState(i)==="neu");
   const neuFehler = neu.filter(i=>checkInvoice(i).some(f=>f.level==="danger")).length;
+  const neuOhneAB = neu.filter(i=>checkInvoice(i).some(f=>f.code==="ab")).length;
   const bereit = DB.invoices.filter(i=>invPrintState(i)==="bereit");
   const todos = computeProjectTodos();
   const unread = unreadMessages();
@@ -4820,13 +4910,13 @@ function renderHome(){
     <p class="subtitle">So funktioniert es: <b>① Hochladen</b> → <b>② Prüfen &amp; freigeben</b> → <b>③ Drucken</b>. Die App vergleicht jede Rechnung automatisch mit der AB und den vereinbarten Preisen.</p>
     <div class="home-grid">
       ${card(1, "upload", "Hochladen", "📄", "Rechnungen und Auftragsbestätigungen (PDF) hineinziehen. Alles wird automatisch erkannt und zugeordnet.", false, "Rechnungen hochladen")}
-      ${card(2, "check", "Prüfen", neu.length, neu.length ? `${neu.length} neue Rechnung(en)${neuFehler ? ` – <b style="color:var(--danger)">${neuFehler} mit Fehlern</b>` : " – keine Fehler gefunden"}.` : "Keine neuen Rechnungen.", neuFehler>0, "Jetzt prüfen")}
+      ${card(2, "check", "Prüfen", neu.length, neu.length ? `${neu.length} neue Rechnung(en)${neuFehler ? ` – <b style="color:var(--danger)">${neuFehler} mit Fehlern</b>${neuOhneAB ? `, davon ${neuOhneAB} ohne AB` : ""}` : " – keine Fehler gefunden"}.` : "Keine neuen Rechnungen.", neuFehler>0, "Jetzt prüfen")}
       ${card(3, "print", "Drucken", bereit.length, bereit.length ? `${bereit.length} freigegebene Rechnung(en) warten auf den Druck mit Stempel.` : "Nichts zu drucken.", false, "Jetzt drucken")}
     </div>
     <div class="row" style="align-items:stretch;flex-wrap:wrap;">
       <div class="card" style="flex:2;min-width:320px;">
         <h2>🔴 Zu erledigen (${todos.length})</h2>
-        ${todos.length ? `<div id="homeTodos">${todosHtml(todos.slice(0,8), true)}</div>${todos.length>8 ? `<button class="small" data-go="projects" style="margin-top:10px;">Alle ${todos.length} anzeigen →</button>` : ""}` : `<div class="muted">✓ Alles erledigt – alle Aufträge haben eine AB und sind sauber zugeordnet.</div>`}
+        ${todos.length ? `<div id="homeTodos">${todosHtml(todos.slice(0,8), true)}</div>${todos.length>8 ? `<button class="small" data-go="check" style="margin-top:10px;">Alle ${todos.length} unter ② Prüfen →</button>` : ""}` : `<div class="muted">✓ Alles erledigt – alle Aufträge haben eine AB und sind sauber zugeordnet.</div>`}
       </div>
       <div class="card" style="flex:1;min-width:260px;">
         <h2>💬 Nachrichten</h2>
