@@ -461,7 +461,12 @@ async function createInvoice(data){
   return await window.fb.addDoc("invoices", { ...data, createdBy: currentUser.uid, createdByEmail: currentUser.email, createdAt: window.fb.serverTimestamp() });
 }
 async function deleteProjectDoc(id){ await window.fb.deleteDoc("projects", id); }
-async function deleteInvoiceDoc(id){ await window.fb.deleteDoc("invoices", id); deleteInvoiceImages(id); }
+async function deleteInvoiceDoc(id){
+  const inv = DB.invoices.find(i=>i.id===id);
+  await window.fb.deleteDoc("invoices", id);
+  if(inv && (inv.bildSeiten||0) > 0) deleteInvoiceImages(id);
+  if(inv && inv.pdfId) releasePdfIfUnused(inv.pdfId, id);
+}
 
 function renderAuthScreen(mode){
   document.querySelector(".app").style.display = "none";
@@ -1318,15 +1323,30 @@ async function handleFiles(fileList){
       const skipped = allGroups.length - groups.length;
       statusEl.innerHTML = `<div class="muted">"${escapeHtml(file.name)}": <b>${groups.length}</b> Rechnung(en) erkannt, getrennt und automatisch gespeichert.${skipped ? ` <span class="flag">${skipped} Dokument(e) ohne Rechnung (z.B. Ausmass-Formular ohne Beträge) wurden nicht als Rechnung gespeichert.</span>` : ""}</div>`;
 
-      groups.forEach(g => {
+      let pdfPromise = null;
+      const getPdfId = () => pdfPromise || (pdfPromise = storePdfFile(file));
+      let dupInfo = [];
+      for(const g of groups){
         const parsed = parseInvoiceText(g.allText);
+        const existing = findExistingInvoice(parsed);
+        if(existing){
+          if(!hasOriginal(existing) && !existing.gedrucktAm){
+            const pid = await getPdfId();
+            if(pid) await attachPdfToInvoice(existing, pid, g.pages);
+            dupInfo.push(`${existing.lieferant} ${existing.rechnungsnr||""}: war schon erfasst – Original ergänzt`);
+          } else {
+            dupInfo.push(`${existing.lieferant} ${existing.rechnungsnr||""}: bereits erfasst – nicht doppelt gespeichert`);
+          }
+          continue;
+        }
         parsed._filename = file.name;
         parsed._pages = g.pages;
         parsed._rawText = g.allText;
         parsed._ocrUsed = g.sources.includes("ocr");
-        parsed._file = file;
-        appendReviewCard(parsed);
-      });
+        parsed._getPdfId = getPdfId;
+        await appendReviewCard(parsed);
+      }
+      if(dupInfo.length) statusEl.insertAdjacentHTML("beforeend", `<div class="flag" style="margin-top:4px;">${dupInfo.map(escapeHtml).join("<br>")}</div>`);
     }catch(err){
       console.error(err);
       statusEl.innerHTML = `<span class="flag">Fehler beim Lesen von "${escapeHtml(file.name)}": ${escapeHtml(err.message||"unbekannt")}</span>`;
@@ -1361,7 +1381,11 @@ async function appendReviewCard(parsed){
     items: items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: (it.ep!==undefined ? it.ep : null) })),
   };
   const invoiceId = await createInvoice(invoiceData);
-  if(parsed._file && parsed._pages && parsed._pages.length) storeInvoiceImages(invoiceId, parsed._file, parsed._pages);
+  if(parsed._getPdfId) parsed._getPdfId().then(pid=>{
+    if(!pid) return;
+    window.fb.setDocMerge("invoices", invoiceId, { pdfId: pid, pdfPages: parsed._pages || [] });
+    const i = DB.invoices.find(x=>x.id===invoiceId); if(i){ i.pdfId = pid; i.pdfPages = parsed._pages || []; }
+  });
   const invoice = { id: invoiceId, ...invoiceData, createdBy: currentUser.uid, createdByEmail: currentUser.email, createdAt: new Date() };
   // Optimistisch lokal einfuegen, damit die Karte sofort erscheint (onSnapshot bestaetigt gleich danach)
   if(!DB.invoices.some(i=>i.id===invoiceId)) DB.invoices.push(invoice);
@@ -3905,49 +3929,7 @@ function stampSvg(d){
   </svg>`;
 }
 
-function invPrintState(inv){
-  if(inv.gedrucktAm) return "gedruckt";
-  if(inv.pruefung && inv.pruefung.status==="ok") return "bereit";
-  if(inv.pruefung && inv.pruefung.status==="beanstandet") return "beanstandet";
-  return "neu";
-}
-function readyToPrintCount(){ return DB.invoices.filter(i=>invPrintState(i)==="bereit").length; }
-
-// Seitenbilder der Original-PDF speichern (fuer Druck mit Stempel)
-async function storeInvoiceImages(invoiceId, file, pageNums){
-  try{
-    const buf = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    let idx = 0;
-    for(const pn of pageNums){
-      const page = await pdf.getPage(pn);
-      const base = page.getViewport({ scale: 1 });
-      let targetW = 1240, quality = 0.72, data = "", w = 0, h = 0;
-      for(let attempt=0; attempt<4; attempt++){
-        const scale = targetW / base.width;
-        const vp = page.getViewport({ scale });
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
-        const ctx = canvas.getContext("2d");
-        ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
-        await page.render({ canvasContext: ctx, viewport: vp }).promise;
-        data = canvas.toDataURL("image/jpeg", quality);
-        w = canvas.width; h = canvas.height;
-        if(data.length < 900000) break;  // Firestore-Dokument max. 1 MB
-        targetW = Math.round(targetW * 0.8); quality = Math.max(0.45, quality - 0.1);
-      }
-      await window.fb.setDoc("rechnungsbilder", `${invoiceId}_${idx}`, {
-        invoiceId, idx, page: pn, data, w, h, createdBy: currentUser.uid, createdAt: window.fb.serverTimestamp(),
-      });
-      idx++;
-    }
-    await window.fb.setDocMerge("invoices", invoiceId, { bildSeiten: idx });
-    const inv = DB.invoices.find(i=>i.id===invoiceId); if(inv) inv.bildSeiten = idx;
-  }catch(err){
-    console.error("Seitenbilder konnten nicht gespeichert werden", err);
-    showDbError("rechnungsbilder (Firestore-Regeln aktualisieren)", err);
-  }
-}
+// Alte Variante (Seitenbilder) – nur noch zum Lesen/Löschen bestehender Daten
 async function loadInvoiceImages(invoiceId){
   const snap = await window.fb.queryDocs("rechnungsbilder", "invoiceId", invoiceId);
   return snap.docs.map(d=>d.data()).sort((a,b)=>a.idx-b.idx);
@@ -3958,26 +3940,177 @@ async function deleteInvoiceImages(invoiceId){
     for(const d of snap.docs) await window.fb.deleteDoc("rechnungsbilder", d.id);
   }catch(err){ console.warn("Seitenbilder nicht geloescht", err); }
 }
-// Original nachtraeglich anhaengen (fuer Rechnungen, die vor dieser Funktion eingelesen wurden)
+
+function invPrintState(inv){
+  if(inv.gedrucktAm) return "gedruckt";
+  if(inv.pruefung && inv.pruefung.status==="ok") return "bereit";
+  if(inv.pruefung && inv.pruefung.status==="beanstandet") return "beanstandet";
+  return "neu";
+}
+function hasOriginal(inv){ return !!inv.pdfId || (inv.bildSeiten||0) > 0; }
+function readyToPrintCount(){ return DB.invoices.filter(i=>invPrintState(i)==="bereit").length; }
+
+/* ---------- Original-PDF: komprimiert, in Teile zerlegt speichern, beim Laden zusammensetzen ---------- */
+const PDF_CHUNK_CHARS = 700000; // pro Firestore-Dokument (Limit 1 MB)
+function bytesToB64(bytes){
+  let s = "";
+  for(let i=0;i<bytes.length;i+=0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i+0x8000));
+  return btoa(s);
+}
+function b64ToBytes(b64){
+  const s = atob(b64); const out = new Uint8Array(s.length);
+  for(let i=0;i<s.length;i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+async function gzipBytes(bytes, mode){
+  const S = mode==="c" ? (typeof CompressionStream!=="undefined" ? new CompressionStream("gzip") : null)
+                       : (typeof DecompressionStream!=="undefined" ? new DecompressionStream("gzip") : null);
+  if(!S) return null;
+  const stream = new Blob([bytes]).stream().pipeThrough(S);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function storePdfFile(file){
+  try{
+    const raw = new Uint8Array(await file.arrayBuffer());
+    let bytes = raw, gzip = false;
+    const gz = await gzipBytes(raw, "c");
+    if(gz && gz.length < raw.length * 0.97){ bytes = gz; gzip = true; }
+    const b64 = bytesToB64(bytes);
+    const fileId = uid("pdf");
+    const total = Math.max(1, Math.ceil(b64.length / PDF_CHUNK_CHARS));
+    for(let i=0;i<total;i++){
+      await window.fb.setDoc("pdfteile", `${fileId}_${String(i).padStart(4,"0")}`, {
+        fileId, idx: i, total, gzip, name: file.name || "", bytes: raw.length,
+        data: b64.slice(i*PDF_CHUNK_CHARS, (i+1)*PDF_CHUNK_CHARS),
+        createdBy: currentUser.uid, createdAt: window.fb.serverTimestamp(),
+      });
+    }
+    return fileId;
+  }catch(err){
+    console.error("PDF konnte nicht gespeichert werden", err);
+    showDbError("pdfteile (Firestore-Regeln aktualisieren)", err);
+    return null;
+  }
+}
+const pdfCache = {};
+async function loadPdfBytes(fileId){
+  if(pdfCache[fileId]) return pdfCache[fileId];
+  const snap = await window.fb.queryDocs("pdfteile", "fileId", fileId);
+  const parts = snap.docs.map(d=>d.data()).sort((a,b)=>a.idx-b.idx);
+  if(!parts.length || parts.length !== parts[0].total) throw new Error("Original unvollständig oder bereits gelöscht.");
+  let bytes = b64ToBytes(parts.map(p=>p.data).join(""));
+  if(parts[0].gzip){ const un = await gzipBytes(bytes, "d"); if(!un) throw new Error("Browser kann das Original nicht entpacken."); bytes = un; }
+  pdfCache[fileId] = bytes;
+  return bytes;
+}
+async function deletePdfFile(fileId){
+  try{
+    const snap = await window.fb.queryDocs("pdfteile", "fileId", fileId);
+    for(const d of snap.docs) await window.fb.deleteDoc("pdfteile", d.id);
+    delete pdfCache[fileId];
+  }catch(err){ console.warn("PDF-Teile nicht gelöscht", err); }
+}
+// PDF nur löschen, wenn keine andere (noch nicht gedruckte) Rechnung dieselbe Datei braucht
+async function releasePdfIfUnused(fileId, exceptInvoiceId){
+  if(!fileId) return;
+  const stillNeeded = DB.invoices.some(i => i.pdfId===fileId && i.id!==exceptInvoiceId && !i.gedrucktAm);
+  if(!stillNeeded) await deletePdfFile(fileId);
+}
+async function renderPdfPages(bytes, pageNums){
+  const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+  const out = [];
+  const nums = (pageNums && pageNums.length ? pageNums : Array.from({length: pdf.numPages}, (_,i)=>i+1)).filter(n=>n>=1 && n<=pdf.numPages);
+  for(const pn of nums){
+    const page = await pdf.getPage(pn);
+    const base = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: 1654 / base.width }); // ca. 200 dpi auf A4
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    out.push(canvas.toDataURL("image/jpeg", 0.85));
+  }
+  return out;
+}
+async function loadInvoicePageImages(inv){
+  if(inv.pdfId){
+    const bytes = await loadPdfBytes(inv.pdfId);
+    return await renderPdfPages(bytes, inv.pdfPages);
+  }
+  if((inv.bildSeiten||0) > 0) return (await loadInvoiceImages(inv.id)).map(x=>x.data);
+  return [];
+}
+
+/* ---------- Bereits erfasste Rechnung wiedererkennen (kein Duplikat, nur Original ergänzen) ---------- */
+function sameSupplier(a, b){
+  if(!a || !b) return false;
+  const sa = getSubFor(a), sb = getSubFor(b);
+  if(sa && sb) return sa.id === sb.id;
+  const na = String(a).toLowerCase().replace(/\b(gmbh|ag|sa|sàrl)\b/g,"").trim();
+  const nb = String(b).toLowerCase().replace(/\b(gmbh|ag|sa|sàrl)\b/g,"").trim();
+  return na === nb || (na.split(/\s+/)[0] && na.split(/\s+/)[0] === nb.split(/\s+/)[0]);
+}
+function findExistingInvoice(parsed){
+  const nr = cleanRnr(parsed.rechnungsnr).toLowerCase();
+  const sameSup = DB.invoices.filter(i => sameSupplier(i.lieferant, parsed.lieferant));
+  if(nr){
+    const byNr = sameSup.find(i => cleanRnr(i.rechnungsnr).toLowerCase() === nr);
+    if(byNr) return byNr;
+  }
+  if(parsed.total!=null){
+    const byTotal = sameSup.filter(i => !hasOriginal(i) && num(i.total)!=null && Math.abs(+i.total - +parsed.total) < 0.01);
+    if(byTotal.length === 1) return byTotal[0];
+  }
+  return null;
+}
+async function attachPdfToInvoice(inv, pdfId, pages){
+  const old = inv.pdfId;
+  inv.pdfId = pdfId; inv.pdfPages = pages || [];
+  await window.fb.setDocMerge("invoices", inv.id, { pdfId, pdfPages: inv.pdfPages });
+  if(old && old !== pdfId) releasePdfIfUnused(old, inv.id);
+}
+
+// Mehrere PDFs auf einmal: automatisch den vorhandenen Rechnungen zuordnen
+async function bulkAttachOriginals(files, statusEl){
+  let ok = 0; const misses = [];
+  for(const file of files){
+    try{
+      if(statusEl) statusEl.textContent = `„${file.name}“ wird gelesen…`;
+      const pages = await extractPagesFromPDF(file);
+      const groups = splitPagesIntoInvoices(pages);
+      const hits = [];
+      groups.forEach(g=>{
+        const parsed = parseInvoiceText(g.allText);
+        const ex = findExistingInvoice(parsed);
+        if(ex) hits.push({ inv: ex, pages: g.pages }); else misses.push(`${file.name}${groups.length>1?` (S. ${g.pages.join(",")})`:""}`);
+      });
+      if(hits.length){
+        const pdfId = await storePdfFile(file);
+        if(pdfId) for(const h of hits){ await attachPdfToInvoice(h.inv, pdfId, h.pages); ok++; }
+      }
+    }catch(err){ console.error(err); misses.push(file.name); }
+  }
+  if(statusEl) statusEl.textContent = "";
+  toast(`${ok} Original(e) zugeordnet${misses.length ? ` · nicht zugeordnet: ${misses.join(", ")}` : ""}.`);
+  if(misses.length) alert(`Nicht zugeordnet (keine passende Rechnung gefunden):\n${misses.join("\n")}\n\nDiese Rechnungen über „PDF anhängen“ in der jeweiligen Zeile zuordnen.`);
+  if(currentView==="print") renderPrintCenter();
+}
 function attachOriginalPdf(inv, after){
   pickABFile(async (file)=>{
     try{
       toast("Original wird gespeichert…");
-      const buf = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-      let pages = Array.from({ length: pdf.numPages }, (_, i)=>i+1);
-      if(pdf.numPages > 1){
-        const v = prompt(`Die PDF hat ${pdf.numPages} Seiten. Welche Seiten gehören zu dieser Rechnung? (z.B. 1-2 oder 1,3)`, `1-${pdf.numPages}`);
-        if(v===null) return;
-        const sel = [];
-        v.split(",").forEach(part=>{
-          const m = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
-          if(m){ const a = +m[1], b = +(m[2]||m[1]); for(let k=a;k<=b;k++) if(k>=1 && k<=pdf.numPages) sel.push(k); }
-        });
-        if(sel.length) pages = sel;
-      }
-      await deleteInvoiceImages(inv.id);
-      await storeInvoiceImages(inv.id, file, pages);
+      const pdfId = await storePdfFile(file);
+      if(!pdfId) return;
+      let pages = [];
+      try{
+        const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+        if(pdf.numPages > 1){
+          const v = prompt(`Die PDF hat ${pdf.numPages} Seiten. Welche gehören zu dieser Rechnung? (z.B. 1-2 oder 1,3 – leer = alle)`, "");
+          if(v) v.split(",").forEach(part=>{ const m = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/); if(m){ for(let k=+m[1];k<=+(m[2]||m[1]);k++) pages.push(k); } });
+        }
+      }catch(e){}
+      await attachPdfToInvoice(inv, pdfId, pages);
       toast("Original gespeichert.");
       if(after) after();
     }catch(err){ toast("Fehler: " + (err.message||err)); }
@@ -3986,73 +4119,96 @@ function attachOriginalPdf(inv, after){
 
 let printTab = "bereit";
 const printSel = new Set();
+const printDeselected = new Set(); // vom Benutzer bewusst abgewählt
 
 function renderPrintCenter(){
   const groups = { neu:[], bereit:[], gedruckt:[], beanstandet:[] };
   DB.invoices.forEach(inv=> groups[invPrintState(inv)].push(inv));
   Object.values(groups).forEach(g=>g.sort((a,b)=>(toDateSafe(b.createdAt)||0)-(toDateSafe(a.createdAt)||0)));
   const list = groups[printTab] || [];
+  // Freigegebene Rechnungen sind beim Öffnen automatisch alle markiert
+  if(printTab==="bereit") list.filter(i=>hasOriginal(i) && !printDeselected.has(i.id)).forEach(i=>printSel.add(i.id));
   Array.from(printSel).forEach(id=>{ if(!list.some(i=>i.id===id)) printSel.delete(id); });
+  const missing = DB.invoices.filter(i => !hasOriginal(i) && (invPrintState(i)==="bereit" || invPrintState(i)==="neu"));
   const tabBtn = (k, label, red) => `<button class="tab ${printTab===k?"active":""}" data-ptab="${k}">${label} ${groups[k].length ? (red ? `<span class="nbadge" style="display:inline-flex;">${groups[k].length}</span>` : `<span class="muted">(${groups[k].length})</span>`) : ""}</button>`;
   const proj = id => DB.projects.find(p=>p.id===id);
+  const printable = list.filter(hasOriginal);
 
   mainEl.innerHTML = `
     <h1>🖨️ Stempeln &amp; Drucken</h1>
-    <p class="subtitle">Ablauf: <b>Neu</b> (eingelesen) → prüfen &amp; <b>freigeben</b> → hier markieren und <b>mit Eingangsstempel drucken</b> → nur noch Barcode-Sticker aufkleben.</p>
+    <p class="subtitle">Ablauf: <b>Neu</b> → prüfen &amp; <b>freigeben</b> → hier <b>mit Eingangsstempel drucken</b> → Barcode-Sticker aufkleben. Nach dem Drucken wird die gespeicherte PDF automatisch gelöscht.</p>
     <div class="tabs">
       ${tabBtn("neu","1 · Neu – noch prüfen",false)}
       ${tabBtn("bereit","2 · Freigegeben – bereit zum Drucken",true)}
       ${tabBtn("gedruckt","3 · Gedruckt",false)}
       ${tabBtn("beanstandet","Beanstandet",false)}
     </div>
+    ${missing.length && printTab!=="gedruckt" ? `
+      <div class="drop" id="bulkDrop" style="padding:18px;margin-bottom:14px;">
+        <b>${missing.length} Rechnung(en) ohne gespeichertes Original</b> (vor der Druckfunktion eingelesen)
+        <div style="font-size:12.5px;margin-top:4px;">Alle PDFs <b>gleichzeitig</b> hierher ziehen oder klicken – die App ordnet sie automatisch der richtigen Rechnung zu (Lieferant + Rechnungsnr. bzw. Betrag).</div>
+        <div id="bulkStatus" class="muted" style="font-size:12.5px;margin-top:6px;"></div>
+      </div>` : ""}
     ${list.length ? `
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
         <label style="display:flex;gap:6px;align-items:center;font-size:13px;"><input type="checkbox" id="pSelAll" style="width:auto;"> Alle markieren</label>
         <span class="muted" style="font-size:13px;">${printSel.size} markiert</span>
         <span style="flex:1;"></span>
         ${printTab==="neu" ? `<button class="primary" id="pApprove" ${printSel.size?"":"disabled"}>✓ Markierte freigeben</button>` : ""}
-        ${printTab==="bereit" || printTab==="gedruckt" ? `<button class="primary" id="pPrint" ${printSel.size?"":"disabled"}>🖨️ Vorschau &amp; drucken (${printSel.size})</button>` : ""}
+        ${printTab==="bereit" ? `<button class="primary" id="pPrint" ${printSel.size?"":"disabled"} style="font-size:15px;padding:10px 18px;">🖨️ ${printSel.size===printable.length && printable.length ? "Alle" : printSel.size} mit Stempel drucken</button>` : ""}
+        ${printTab==="gedruckt" ? `<button id="pPrint" ${printSel.size?"":"disabled"}>🖨️ Nochmals drucken (${printSel.size})</button>` : ""}
       </div>
       <div class="card" style="padding:0;"><div class="tablewrap"><table>
         <thead><tr><th style="width:30px;"></th><th>Eingegangen</th><th>Lieferant</th><th>Objekt</th><th>Rechnungsnr.</th><th>Betrag CHF</th><th>Prüfung</th><th>Original</th>${printTab==="gedruckt"?"<th>Gedruckt</th>":"<th>Stempeldatum</th>"}</tr></thead>
         <tbody>${list.map(inv=>{
           const p = proj(inv.projectId);
-          const hasImg = (inv.bildSeiten||0) > 0;
-          const selectable = printTab==="neu" || hasImg;
+          const orig = hasOriginal(inv);
+          const selectable = printTab==="neu" || orig;
           return `<tr>
-            <td><input type="checkbox" data-psel="${inv.id}" style="width:auto;" ${printSel.has(inv.id)?"checked":""} ${selectable?"":"disabled title='Original fehlt – PDF anhängen'"}></td>
+            <td><input type="checkbox" data-psel="${inv.id}" style="width:auto;" ${printSel.has(inv.id)?"checked":""} ${selectable?"":"disabled"}></td>
             <td>${escapeHtml((toDateSafe(inv.createdAt)||new Date()).toLocaleDateString("de-CH"))}</td>
             <td>${escapeHtml(inv.lieferant||"—")}</td>
             <td style="cursor:pointer;" data-popen="${inv.id}">${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
             <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
             <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
             <td style="cursor:pointer;" data-popen="${inv.id}">${findingsPill(inv)}</td>
-            <td>${hasImg ? `<span class="hchip ok">✓ ${inv.bildSeiten} S.</span>` : `<button class="small" data-pattach="${inv.id}">PDF anhängen</button>`}</td>
+            <td>${orig ? `<span class="hchip ok">✓ gespeichert</span>` : printTab==="gedruckt" ? `<span class="muted" style="font-size:12px;">gelöscht</span>` : `<button class="small" data-pattach="${inv.id}">PDF anhängen</button>`}</td>
             ${printTab==="gedruckt"
               ? `<td class="muted" style="font-size:12px;">${escapeHtml(inv.gedrucktAm||"")}</td>`
               : `<td><input type="date" data-pdate="${inv.id}" value="${isoDate(eingangsDatum(inv))}" style="width:140px;padding:5px 6px;font-size:12.5px;"></td>`}
           </tr>`;
         }).join("")}</tbody>
       </table></div></div>
-      ${printTab==="neu" ? `<p class="muted" style="font-size:12px;">„Markierte freigeben“ gibt nur Rechnungen ohne Fehler im Prüfbericht frei – Rechnungen mit Fehlern bitte einzeln prüfen (Klick auf die Zeile).</p>` : ""}
-      ${printTab==="bereit" ? `<p class="muted" style="font-size:12px;">Rechnungen, die vor dieser Funktion eingelesen wurden, haben kein gespeichertes Original – einmal „PDF anhängen“, dann sind sie druckbar. Neu eingelesene Rechnungen werden automatisch gespeichert.</p>` : ""}`
-    : `<div class="empty">${printTab==="bereit" ? "Keine freigegebenen Rechnungen zum Drucken. Rechnungen im Tab „1 · Neu“ prüfen und freigeben." : printTab==="neu" ? "Keine neuen Rechnungen." : "Keine Einträge."}</div>`}`;
+      ${printTab==="neu" ? `<p class="muted" style="font-size:12px;">„Markierte freigeben“ gibt nur Rechnungen ohne Fehler frei – Rechnungen mit Fehlern einzeln prüfen (Klick auf die Zeile).</p>` : ""}
+      ${printTab==="gedruckt" ? `<p class="muted" style="font-size:12px;">Nach dem Drucken wird die PDF gelöscht, um Speicher zu sparen. Nochmals drucken geht nur, wenn das Original noch vorhanden ist.</p>` : ""}`
+    : `<div class="empty">${printTab==="bereit" ? "Keine freigegebenen Rechnungen zum Drucken." : printTab==="neu" ? "Keine neuen Rechnungen." : "Keine Einträge."}</div>`}`;
 
-  mainEl.querySelectorAll("[data-ptab]").forEach(b=>b.addEventListener("click", ()=>{ printTab = b.dataset.ptab; printSel.clear(); renderPrintCenter(); }));
+  mainEl.querySelectorAll("[data-ptab]").forEach(b=>b.addEventListener("click", ()=>{ printTab = b.dataset.ptab; printSel.clear(); printDeselected.clear(); renderPrintCenter(); }));
   const all = document.getElementById("pSelAll");
   if(all){
-    const selectable = list.filter(inv => printTab==="neu" || (inv.bildSeiten||0) > 0);
+    const selectable = list.filter(inv => printTab==="neu" || hasOriginal(inv));
     all.checked = selectable.length > 0 && selectable.every(i=>printSel.has(i.id));
-    all.addEventListener("change", ()=>{ selectable.forEach(i=> all.checked ? printSel.add(i.id) : printSel.delete(i.id)); renderPrintCenter(); });
+    all.addEventListener("change", ()=>{ selectable.forEach(i=>{ if(all.checked){ printSel.add(i.id); printDeselected.delete(i.id); } else { printSel.delete(i.id); printDeselected.add(i.id); } }); renderPrintCenter(); });
   }
-  mainEl.querySelectorAll("[data-psel]").forEach(cb=>cb.addEventListener("change", ()=>{ cb.checked ? printSel.add(cb.dataset.psel) : printSel.delete(cb.dataset.psel); renderPrintCenter(); }));
+  mainEl.querySelectorAll("[data-psel]").forEach(cb=>cb.addEventListener("change", ()=>{
+    if(cb.checked){ printSel.add(cb.dataset.psel); printDeselected.delete(cb.dataset.psel); } else { printSel.delete(cb.dataset.psel); printDeselected.add(cb.dataset.psel); }
+    renderPrintCenter();
+  }));
   mainEl.querySelectorAll("[data-popen]").forEach(td=>td.addEventListener("click", ()=> openLink({ type:"invoice", id: td.dataset.popen })));
-  mainEl.querySelectorAll("[data-pattach]").forEach(b=>b.addEventListener("click", ()=>{ const inv = DB.invoices.find(i=>i.id===b.dataset.pattach); if(inv) attachOriginalPdf(inv, renderPrintCenter); }));
+  mainEl.querySelectorAll("[data-pattach]").forEach(b=>b.addEventListener("click", ()=>{ const inv = DB.invoices.find(i=>i.id===b.dataset.pattach); if(inv) attachOriginalPdf(inv, ()=>{ printSel.add(inv.id); renderPrintCenter(); }); }));
   mainEl.querySelectorAll("[data-pdate]").forEach(inp=>inp.addEventListener("change", ()=>{
     const inv = DB.invoices.find(i=>i.id===inp.dataset.pdate); if(!inv) return;
     inv.eingangsdatum = inp.value || "";
     window.fb.setDocMerge("invoices", inv.id, { eingangsdatum: inv.eingangsdatum });
   }));
+  const bd = document.getElementById("bulkDrop");
+  if(bd){
+    const run = files => { const pdfs = Array.from(files).filter(f=>/pdf$/i.test(f.name) || f.type==="application/pdf"); if(pdfs.length){ bulkAttachOriginals(pdfs, document.getElementById("bulkStatus")); } };
+    bd.addEventListener("click", ()=>{ const fi = document.createElement("input"); fi.type="file"; fi.accept="application/pdf"; fi.multiple = true; fi.addEventListener("change", ()=>run(fi.files)); fi.click(); });
+    bd.addEventListener("dragover", e=>{ e.preventDefault(); bd.classList.add("hover"); });
+    bd.addEventListener("dragleave", ()=> bd.classList.remove("hover"));
+    bd.addEventListener("drop", e=>{ e.preventDefault(); bd.classList.remove("hover"); run(e.dataTransfer.files); });
+  }
   const ap = document.getElementById("pApprove");
   if(ap) ap.addEventListener("click", async ()=>{
     const sel = list.filter(i=>printSel.has(i.id));
@@ -4065,7 +4221,8 @@ function renderPrintCenter(){
       await saveInvoice(inv);
     }
     printSel.clear();
-    toast(`${ok.length} Rechnung(en) freigegeben – jetzt im Tab „2 · Freigegeben“.`);
+    printTab = "bereit"; printDeselected.clear();
+    toast(`${ok.length} Rechnung(en) freigegeben – bereit zum Drucken.`);
     renderPrintCenter();
   });
   const pp = document.getElementById("pPrint");
@@ -4080,41 +4237,44 @@ async function openPrintPreview(invs){
   root.innerHTML = `
     <div class="ptoolbar noprint">
       <b>Druckvorschau – ${invs.length} Rechnung(en)</b>
-      <span class="muted" style="font-size:12.5px;">Stempel lässt sich mit der Maus verschieben (wird pro Rechnung gespeichert).</span>
+      <span class="muted" style="font-size:12.5px;" id="ppInfo">Originale werden geladen…</span>
       <span style="flex:1;"></span>
-      <button id="ppAll">Position der 1. Rechnung für alle übernehmen</button>
+      <button id="ppAll">Stempelposition der 1. Rechnung für alle</button>
       <button class="primary" id="ppPrint" disabled>🖨️ Drucken</button>
       <button id="ppClose">Schliessen</button>
     </div>
-    <div id="ppPages"><div class="muted noprint" style="padding:30px;text-align:center;">Originale werden geladen…</div></div>`;
+    <div id="ppPages"></div>`;
   document.body.appendChild(root);
   document.body.classList.add("printing");
   document.getElementById("ppClose").addEventListener("click", closePrintPreview);
-
   const pagesEl = document.getElementById("ppPages");
-  let html = "";
-  for(const inv of invs){
-    let imgs = [];
-    try{ imgs = await loadInvoiceImages(inv.id); }catch(err){ showDbError("rechnungsbilder", err); }
-    if(!imgs.length){ html += `<div class="noprint muted" style="padding:16px;">⚠ ${escapeHtml(inv.lieferant||"")} ${escapeHtml(inv.rechnungsnr||"")}: Original fehlt – übersprungen.</div>`; continue; }
-    const pos = inv.stempelPos || STAMP_DEFAULT_POS;
-    imgs.forEach((im, k)=>{
-      html += `<div class="ppage" data-inv="${inv.id}">
-        <img src="${im.data}" alt="">
-        ${k===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv))}</div>` : ""}
-      </div>`;
-    });
-  }
-  pagesEl.innerHTML = html || `<div class="empty">Keine druckbaren Rechnungen.</div>`;
-  document.getElementById("ppPrint").disabled = !pagesEl.querySelector(".ppage");
+  const info = document.getElementById("ppInfo");
 
-  // Stempel verschieben
+  let k = 0;
+  for(const inv of invs){
+    k++;
+    info.textContent = `Originale werden geladen… ${k}/${invs.length}`;
+    let imgs = [];
+    try{ imgs = await loadInvoicePageImages(inv); }
+    catch(err){ pagesEl.insertAdjacentHTML("beforeend", `<div class="noprint flag" style="padding:16px;text-align:center;">⚠ ${escapeHtml(inv.lieferant||"")} ${escapeHtml(inv.rechnungsnr||"")}: ${escapeHtml(err.message||"Original nicht ladbar")} – übersprungen.</div>`); continue; }
+    if(!imgs.length) continue;
+    const pos = inv.stempelPos || STAMP_DEFAULT_POS;
+    pagesEl.insertAdjacentHTML("beforeend", imgs.map((src, n)=>`
+      <div class="ppage" data-inv="${inv.id}">
+        <img src="${src}" alt="">
+        ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv))}</div>` : ""}
+      </div>`).join(""));
+  }
+  info.textContent = "Stempel lässt sich mit der Maus verschieben (wird pro Rechnung gespeichert).";
+  document.getElementById("ppPrint").disabled = !pagesEl.querySelector(".ppage");
+  if(!pagesEl.querySelector(".ppage")) pagesEl.insertAdjacentHTML("beforeend", `<div class="empty">Keine druckbaren Rechnungen.</div>`);
+
   pagesEl.querySelectorAll(".pstamp").forEach(st=>{
     st.addEventListener("pointerdown", (e)=>{
       e.preventDefault();
       const page = st.parentElement, r = page.getBoundingClientRect(), sr = st.getBoundingClientRect();
       const offX = e.clientX - sr.left, offY = e.clientY - sr.top;
-      st.setPointerCapture(e.pointerId);
+      if(st.setPointerCapture) st.setPointerCapture(e.pointerId);
       const move = (ev)=>{
         const x = Math.min(100 - STAMP_WIDTH_PCT, Math.max(0, (ev.clientX - offX - r.left) / r.width * 100));
         const y = Math.min(96, Math.max(0, (ev.clientY - offY - r.top) / r.height * 100));
@@ -4139,19 +4299,29 @@ async function openPrintPreview(invs){
     });
     toast("Position für alle übernommen.");
   });
-  document.getElementById("ppPrint").addEventListener("click", async ()=>{
+  document.getElementById("ppPrint").addEventListener("click", ()=>{
     window.print();
     const printed = invs.filter(inv => pagesEl.querySelector(`.ppage[data-inv="${inv.id}"]`));
     setTimeout(async ()=>{
-      if(!confirm(`Wurden alle ${printed.length} Rechnung(en) korrekt gedruckt?\nDann werden sie als „Gedruckt“ abgelegt.`)) return;
+      if(!confirm(`Wurden alle ${printed.length} Rechnung(en) korrekt gedruckt?\n\nOK = als „Gedruckt“ ablegen und die gespeicherten PDFs löschen.`)) return;
       const stamp = new Date().toLocaleString("de-CH");
+      const files = new Set();
       for(const inv of printed){
+        if(inv.pdfId) files.add(inv.pdfId);
         inv.gedrucktAm = stamp; inv.gedrucktVon = currentUser.email;
         await window.fb.setDocMerge("invoices", inv.id, { gedrucktAm: stamp, gedrucktVon: currentUser.email, eingangsdatum: inv.eingangsdatum || isoDate(eingangsDatum(inv)) });
       }
+      // Original-PDFs löschen (sofern keine andere, noch nicht gedruckte Rechnung dieselbe Datei braucht)
+      for(const fid of files){
+        const stillNeeded = DB.invoices.some(i => i.pdfId===fid && !i.gedrucktAm && !printed.some(p=>p.id===i.id));
+        if(stillNeeded) continue;
+        await deletePdfFile(fid);
+        for(const inv of DB.invoices.filter(i=>i.pdfId===fid)){ inv.pdfId = null; inv.pdfPages = []; await window.fb.setDocMerge("invoices", inv.id, { pdfId: null, pdfPages: [] }); }
+      }
+      for(const inv of printed){ if((inv.bildSeiten||0) > 0){ await deleteInvoiceImages(inv.id); inv.bildSeiten = 0; await window.fb.setDocMerge("invoices", inv.id, { bildSeiten: 0 }); } }
       printSel.clear();
       closePrintPreview();
-      toast(`${printed.length} Rechnung(en) als gedruckt abgelegt.`);
+      toast(`${printed.length} Rechnung(en) gedruckt und abgelegt – PDFs gelöscht.`);
       if(currentView==="print") renderPrintCenter();
     }, 400);
   });
