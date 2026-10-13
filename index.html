@@ -432,6 +432,7 @@ function startDataListeners(){
     dataLoaded.projects = true;
     if(!abMigrationDone) setTimeout(migrateABs, 0);
     setTimeout(normalizeSupplierNames, 500);
+    setTimeout(fillMissingHouses, 1500);
     renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
@@ -477,6 +478,7 @@ function stopDataListeners(){
   if(unsubMsgIn){ unsubMsgIn(); unsubMsgIn=null; }
   if(unsubMsgOut){ unsubMsgOut(); unsubMsgOut=null; }
   abMigrationDone = false;
+  houseFixDone = false;
   seenMsgIds = null;
   dataLoaded = { projects:false, invoices:false };
   if(unsubProfile){ unsubProfile(); unsubProfile=null; }
@@ -1466,6 +1468,7 @@ async function handleFiles(fileList){
           continue;
         }
         const res = await autoAssignAB(ab);
+        await syncHousesWithABs(DB.projects.find(x=>x.id===res.projectId));
         statusEl.insertAdjacentHTML("beforeend", `<div class="muted">"${escapeHtml(file.name)}": Auftragsbestätigung <b>${escapeHtml(ab.nr)}</b> erkannt (${ab.positionen.length} Positionen) und gespeichert.</div>`);
         appendABCard(ab, res);
         continue;
@@ -1543,8 +1546,8 @@ async function appendReviewCard(parsed){
     datum: parsed.datum || "",
     total: parsed.total,
     objekt: parsed.objekt || "",
-    haus: hausFromText(parsed.objekt) || hausFromText(String(parsed._rawText||"").split("\n").slice(0,45).join("\n"))
-      || (((DB.projects.find(p=>p.id===projectId)||{}).abs||[]).find(a => a.haus && parsed.auftragsnummer && a.nr === String(parsed.auftragsnummer).replace(/[^0-9A-Za-z]/g,""))||{}).haus || "",
+    auftragsnummer: String(parsed.auftragsnummer || auftragsNrFromText(parsed._rawText) || ""),
+    haus: detectInvoiceHaus({ rawText: parsed._rawText, objekt: parsed.objekt, auftragsnummer: parsed.auftragsnummer }, projectId),
     rawText: String(parsed._rawText||"").slice(0, 30000),
     filename: parsed._filename || "",
     items: items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: (it.ep!==undefined ? it.ep : null) })),
@@ -1922,7 +1925,7 @@ function renderProjects(){
   mainEl.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
       <h1>Aufträge</h1>
-      <button class="primary" id="abUploadListBtn">📑 AB hochladen</button>
+      <button class="primary" id="abUploadListBtn">📑 AB(s) hochladen</button>
     </div>
     <p class="subtitle">${DB.projects.length} Auftrag/Aufträge — klicke für Details und Soll/Ist-Vergleich. Eine AB gilt für das ganze Objekt bzw. Haus – für alle Subunternehmer.</p>
 
@@ -1937,15 +1940,21 @@ function renderProjects(){
     });
   });
 
-  document.getElementById("abUploadListBtn").addEventListener("click", ()=> pickABFile(async (file)=>{
-    try{
-      const ab = await readABFile(file);
-      if(!ab) return;
-      const res = await autoAssignAB(ab);
-      const msg = { revision:"als neue Version ersetzt", auto:"automatisch zugeordnet", unsicher:"zugeordnet – bitte prüfen (unsichere Adressübereinstimmung)", neu:"neuer Auftrag angelegt" }[res.how];
-      toast(`AB ${ab.nr}: ${msg}.`);
-      navigateTo("projectDetail", { projectId: res.projectId });
-    }catch(err){ console.error(err); toast("Fehler beim Lesen der AB: " + (err.message||err)); }
+  document.getElementById("abUploadListBtn").addEventListener("click", ()=> pickPdfFiles(async (files)=>{
+    const msgs = []; let lastPid = null;
+    for(const file of files){
+      try{
+        const ab = await readABFile(file);
+        if(!ab) continue;
+        const res = await autoAssignAB(ab);
+        lastPid = res.projectId;
+        await syncHousesWithABs(DB.projects.find(x=>x.id===res.projectId));
+        const p = DB.projects.find(x=>x.id===res.projectId);
+        msgs.push(`AB ${ab.nr}${ab.haus ? " (" + ab.haus + ")" : ""} → ${p ? p.name : "neuer Auftrag"}${res.how==="unsicher" ? " ⚠ bitte prüfen" : ""}`);
+      }catch(err){ console.error(err); msgs.push(`${file.name}: Fehler`); }
+    }
+    if(files.length === 1 && lastPid) navigateTo("projectDetail", { projectId: lastPid });
+    else { alert(`${msgs.length} AB(s) verarbeitet:\n\n${msgs.join("\n")}`); renderProjects(); }
   }));
   const list = document.getElementById("projList");
   const allTodos = computeProjectTodos();
@@ -2160,7 +2169,7 @@ function renderProjectDetail(projectId){
     <div class="card" data-sec="ab">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
         <h2 style="margin:0;">📑 Auftragsbestätigung${abs.length>1?"en":""}</h2>
-        <div style="display:flex;gap:6px;"><button class="small" id="addHausBtn">+ Haus</button><button class="small primary" id="abUploadBtn">${abs.length ? "+ Weitere AB / Revision hochladen" : "AB hochladen"}</button></div>
+        <div style="display:flex;gap:6px;"><button class="small" id="addHausBtn">+ Haus</button><button class="small primary" id="abUploadBtn">${abs.length ? "+ Weitere AB(s) hochladen" : "AB(s) hochladen"}</button></div>
       </div>
       <p class="muted" style="font-size:12.5px;margin:6px 0 0 0;">Eine AB gilt für <b>alle Subunternehmer</b> dieses Objekts. Bei mehreren Häusern: bei jeder AB „Gilt für“ das richtige Haus wählen.</p>
       ${houses.length ? `
@@ -2362,7 +2371,8 @@ function renderProjectDetail(projectId){
       renderProjectDetail(projectId);
     }catch(err){ console.error(err); toast("Fehler beim Lesen der AB: " + (err.message||err)); }
   };
-  document.getElementById("abUploadBtn").addEventListener("click", ()=> pickABFile(doABUpload));
+  const doABUploadMany = async (files)=>{ await addABsToProject(p, files); renderProjectDetail(projectId); };
+  document.getElementById("abUploadBtn").addEventListener("click", ()=> pickPdfFiles(doABUploadMany));
   const poa = document.getElementById("projOhneAB");
   if(poa) poa.addEventListener("click", async ()=>{
     p.ohneAB = !p.ohneAB;
@@ -2372,10 +2382,10 @@ function renderProjectDetail(projectId){
   });
   const abDrop = document.getElementById("abDrop");
   if(abDrop){
-    abDrop.addEventListener("click", ()=> pickABFile(doABUpload));
+    abDrop.addEventListener("click", ()=> pickPdfFiles(doABUploadMany));
     abDrop.addEventListener("dragover", e=>{ e.preventDefault(); abDrop.classList.add("hover"); });
     abDrop.addEventListener("dragleave", ()=> abDrop.classList.remove("hover"));
-    abDrop.addEventListener("drop", e=>{ e.preventDefault(); abDrop.classList.remove("hover"); const f = e.dataTransfer.files[0]; if(f) doABUpload(f); });
+    abDrop.addEventListener("drop", e=>{ e.preventDefault(); abDrop.classList.remove("hover"); const fs = Array.from(e.dataTransfer.files||[]).filter(f=>/pdf$/i.test(f.name)); if(fs.length) doABUploadMany(fs); });
   }
   mainEl.querySelectorAll("[data-abtoggle]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
@@ -2830,6 +2840,14 @@ const AB_PARSER_VERSION = 3;
 // Bereits gespeicherte ABs mit dem aktuellen Leser neu auswerten (Rohtext ist gespeichert -> kein erneuter Upload noetig)
 let abMigrationDone = false;
 let supplierFixDone = false;
+let houseFixDone = false;
+async function fillMissingHouses(){
+  if(houseFixDone) return; houseFixDone = true;
+  for(const p of DB.projects){
+    if(!DB.invoices.some(i=>i.projectId===p.id && !i.haus)) continue;
+    try{ await syncHousesWithABs(p); }catch(e){}
+  }
+}
 async function normalizeSupplierNames(){
   if(supplierFixDone || !(DB.subs||[]).length) return;
   supplierFixDone = true;
@@ -3554,6 +3572,12 @@ function appendABCard(ab, res){
 }
 
 // AB direkt aus Datei lesen (Auftragsseite / Auftragsliste)
+function pickPdfFiles(onFiles){
+  const fi = document.createElement("input");
+  fi.type = "file"; fi.accept = "application/pdf"; fi.multiple = true;
+  fi.addEventListener("change", ()=>{ if(fi.files && fi.files.length) onFiles(Array.from(fi.files)); });
+  fi.click();
+}
 function pickABFile(onFile){
   const fi = document.createElement("input");
   fi.type = "file"; fi.accept = "application/pdf";
@@ -3818,6 +3842,93 @@ function invOhneAB(inv){
   const p = DB.projects.find(x=>x.id===inv.projectId);
   return !!(p && p.ohneAB);
 }
+// Auftrags-/AB-Nummer auf der Rechnung (FUBS: "Auf-Nr. 202517989", "AUFTRAGSNR. 202417612")
+function auftragsNrFromText(text){
+  const m = String(text||"").match(/Auf(?:trags?)?\s*-?\s*n(?:r|ummer)\.?\s*[:.]?\s*([0-9]{6,12})/i);
+  return m ? m[1] : "";
+}
+// Haus einer Rechnung bestimmen – in dieser Reihenfolge:
+// 1) unsere AB-Nummer auf der Rechnung -> Haus dieser AB   2) "Objekt: … Haus W7"
+// 3) ein bereits bekanntes Haus des Objekts kommt im Text vor (W7, S1, Haus 32 …)
+// 4) "Haus X" irgendwo auf der Rechnung   5) Ausmassblatt: Bereichs-Titel ("W7", "Haus 32 Süd")
+function detectInvoiceHaus(info, projectId){
+  const text = String(info.rawText || "");
+  const p = DB.projects.find(x=>x.id===projectId);
+  const anr = String(info.auftragsnummer || auftragsNrFromText(text) || "").replace(/[^0-9A-Za-z]/g,"");
+  if(p && anr){
+    const ab = (p.abs||[]).find(a => a.haus && (a.nr === anr || String(a.anr||"").replace(/[^0-9A-Za-z]/g,"") === anr));
+    if(ab) return ab.haus;
+  }
+  const fromObj = hausFromText(info.objekt);
+  if(fromObj) return fromObj;
+  if(p){
+    for(const h of projectHouses(p)){
+      const id = h.replace(/^(Haus|Gebäude|Block|Trakt|Nr\.)\s*/i, "");
+      if(/[a-z]/i.test(id) && new RegExp("(^|[^A-Za-z0-9])" + id.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + "([^A-Za-z0-9]|$)").test(text)) return h;
+      if(new RegExp("\\bHaus\\s*" + id + "\\b", "i").test(text)) return h;
+    }
+  }
+  const anyHaus = hausFromText(text.replace(/hauserstrasse|hausmatt\w*|hausen\b/gi, ""));
+  if(anyHaus) return anyHaus;
+  const lines = text.split("\n").map(l=>l.trim());
+  const bi = lines.findIndex(l => /^bereich\b/i.test(l) || /l[aä]nge\s+breite/i.test(l));
+  if(bi > -1){
+    for(const l of lines.slice(bi+1, bi+5)){
+      const m = l.match(/^(?:Haus\s+)?([A-Z]{1,2}\s?\d{1,3}[a-z]?)(?:\s+(?:Süd|Nord|Ost|West|Mitte))?$/);
+      if(m) return normHaus("Haus " + m[1].replace(/\s/g,""));
+    }
+  }
+  return "";
+}
+// Nach dem Hinterlegen von ABs: Haeuser zwischen Rechnungen und ABs gegenseitig ergaenzen
+async function syncHousesWithABs(p){
+  if(!p) return;
+  let projChanged = false;
+  const invs = DB.invoices.filter(i=>i.projectId===p.id);
+  for(const ab of (p.abs||[])){
+    if(ab.haus) continue;
+    // AB ohne Haus: Rechnungen mit dieser AB-Nummer verraten das Haus
+    const hs = Array.from(new Set(invs.filter(i => i.haus && String(i.auftragsnummer || auftragsNrFromText(i.rawText)).replace(/\D/g,"") === ab.nr).map(i=>i.haus)));
+    if(hs.length === 1){ ab.haus = hs[0]; projChanged = true; }
+  }
+  if(projChanged){
+    p.haeuser = Array.from(new Set([...(p.haeuser||[]), ...(p.abs||[]).map(a=>a.haus).filter(Boolean)]));
+    await saveProject(p);
+  }
+  for(const inv of invs){
+    if(inv.haus) continue;
+    const h = detectInvoiceHaus(inv, p.id);
+    if(h){ inv.haus = h; await window.fb.setDocMerge("invoices", inv.id, { haus: h }); }
+  }
+}
+// AB(s) einem bestimmten Objekt hinzufuegen; fehlt das Haus, wird gefragt
+async function addABsToProject(p0, files){
+  const pid = p0.id;
+  const cur = () => DB.projects.find(x=>x.id===pid) || p0;  // immer den aktuellen Stand verwenden
+  let ok = 0; const bad = [];
+  for(const file of files){
+    const p = cur();
+    try{
+      const ab = await readABFile(file);
+      if(!ab){ bad.push(file.name); continue; }
+      if(ab.baustelle && projectAddrScore(ab.baustelle, p) < 1 && !confirm(`Die AB-Baustelle „${ab.baustelle}“ (${file.name}) passt nicht zu „${p.name}“. Trotzdem hier zuordnen?`)) { bad.push(file.name); continue; }
+      const elsewhere = DB.projects.find(x=>x.id!==p.id && (x.abs||[]).some(a=>a.nr===ab.nr));
+      if(elsewhere){ if(!confirm(`AB ${ab.nr} ist bereits bei „${elsewhere.name}“ hinterlegt. Hierher verschieben?`)){ bad.push(file.name); continue; } await detachAB(elsewhere.id, ab.nr); }
+      const known = projectHouses(p);
+      if(!ab.haus && (files.length > 1 || known.length || (p.abs||[]).length)){
+        const v = prompt(`Für welches Haus gilt die AB ${ab.nr}${ab.los ? " (Los " + ab.los + ")" : ""}?\nBaustelle: ${ab.baustelle || "?"}\n${known.length ? "Bekannte Häuser: " + known.join(", ") + "\n" : ""}Leer lassen = gilt für das ganze Objekt.`, "");
+        if(v && v.trim()) ab.haus = normHaus(v);
+      }
+      if(ab.haus){ const c = cur(); c.haeuser = Array.from(new Set([...(c.haeuser||[]), ab.haus])); }
+      await attachAB(pid, ab);
+      ok++;
+    }catch(err){ console.error(err); bad.push(file.name); }
+  }
+  await syncHousesWithABs(cur());
+  toast(`${ok} AB(s) bei „${cur().name}“ hinterlegt${bad.length ? ` · nicht übernommen: ${bad.join(", ")}` : ""}.`);
+  return ok;
+}
+
 function houseNeedsAB(p, h){
   const abs = p.abs || [];
   return !abs.some(a=>a.haus===h) && !abs.some(a=>!a.haus);
@@ -3849,6 +3960,9 @@ function computeProjectTodos(){
       houses.filter(h=>houseNeedsAB(p, h) && (!invs.some(i=>i.haus===h) || relevant.some(i=>i.haus===h))).forEach(h=>{
         t.push({ kind:"ab", projectId:p.id, text:`AB fehlt für ${h} – ${p.name}`, hint:"Für dieses Haus ist keine eigene AB hinterlegt.", share:`Bitte für „${p.name}“, ${h}, die Auftragsbestätigung (AB) im Tool hochladen.` });
       });
+    }
+    if(abs.filter(a=>!a.haus).length >= 2 && (houses.length || abs.some(a=>a.haus) || abs.filter(a=>!a.haus).length >= 2)){
+      t.push({ kind:"ab", projectId:p.id, text:`${abs.filter(a=>!a.haus).length} ABs ohne Haus – ${p.name}`, hint:"Mehrere ABs gelten fürs ganze Objekt – dann werden die Mengen zusammengezählt. Bitte bei jeder AB „Gilt für“ das Haus wählen.", share:`Bitte bei „${p.name}“ jeder AB das richtige Haus zuordnen.` });
     }
     if(!p.ohneAB && (houses.length > 1 || abs.some(a=>a.haus))){
       const n = relevant.filter(i=>!i.haus).length;
@@ -4514,18 +4628,7 @@ function attachOriginalPdf(inv, after){
 // AB fuer ein bestimmtes Objekt hochladen (z.B. direkt aus ② Pruefen)
 function uploadABForProject(projectId, after){
   const p = DB.projects.find(x=>x.id===projectId); if(!p) return;
-  pickABFile(async (file)=>{
-    try{
-      const ab = await readABFile(file);
-      if(!ab) return;
-      if(ab.baustelle && projectAddrScore(ab.baustelle, p) < 1 && !confirm(`Die AB-Baustelle „${ab.baustelle}“ passt nicht zu „${p.name}“. Trotzdem diesem Objekt zuordnen?`)) return;
-      const elsewhere = DB.projects.find(x=>x.id!==p.id && (x.abs||[]).some(a=>a.nr===ab.nr));
-      if(elsewhere){ if(!confirm(`Diese AB ist bereits bei „${elsewhere.name}“ hinterlegt. Hierher verschieben?`)) return; await detachAB(elsewhere.id, ab.nr); }
-      await attachAB(p.id, ab);
-      toast(`AB ${ab.nr} bei „${p.name}“ hinterlegt – alle Rechnungen dieses Objekts werden jetzt dagegen geprüft.`);
-      if(after) after();
-    }catch(err){ console.error(err); toast("Fehler beim Lesen der AB: " + (err.message||err)); }
-  });
+  pickPdfFiles(async (files)=>{ await addABsToProject(p, files); if(after) after(); });
 }
 
 let printTab = "bereit";
@@ -4620,7 +4723,7 @@ function renderPrintCenter(){
             ${printTab==="neu" && probs[inv.id].d.some(x=>x.code==="ab") ? `<td style="font-size:12.5px;max-width:460px;">
                 <div class="flag" style="margin-bottom:6px;">📑 AB fehlt für dieses Objekt${(probs[inv.id].d.length+probs[inv.id].w.length)>1 ? ` <b>(+${probs[inv.id].d.length+probs[inv.id].w.length-1} weitere)</b>` : ""}</div>
                 <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                  <button class="small primary" data-abup="${inv.projectId}">📑 AB hochladen</button>
+                  <button class="small primary" data-abup="${inv.projectId}" title="Auch mehrere ABs (z.B. pro Haus) auf einmal auswählen">📑 AB(s) hochladen</button>
                   <button class="small" data-noab="${inv.id}">🚫 Keine AB vorhanden</button>
                 </div></td>` : ""}
             ${printTab==="neu" && !probs[inv.id].d.some(x=>x.code==="ab") ? `<td style="cursor:pointer;font-size:12.5px;max-width:420px;" data-popen="${inv.id}" class="${probs[inv.id].d.length?"flag":"muted"}">${probs[inv.id].d.length||probs[inv.id].w.length ? escapeHtml(shortText((probs[inv.id].d[0]||probs[inv.id].w[0]).text, 120)) + ((probs[inv.id].d.length+probs[inv.id].w.length)>1 ? ` <b>(+${probs[inv.id].d.length+probs[inv.id].w.length-1})</b>` : "") : "✓ alles in Ordnung"}</td>` : ""}
@@ -4685,24 +4788,6 @@ function renderPrintCenter(){
     bd.addEventListener("dragleave", ()=> bd.classList.remove("hover"));
     bd.addEventListener("drop", e=>{ e.preventDefault(); bd.classList.remove("hover"); run(e.dataTransfer.files); });
   }
-  // AB direkt in der Pruefung hochladen / "keine AB" bestaetigen
-  mainEl.querySelectorAll("[data-abup]").forEach(b=>b.addEventListener("click", ()=> pickABFile(async (file)=>{
-    const p = DB.projects.find(x=>x.id===b.dataset.abup); if(!p) return;
-    try{
-      const ab = await readABFile(file); if(!ab) return;
-      if(ab.baustelle && projectAddrScore(ab.baustelle, p) < 1 && !confirm(`Die AB-Baustelle „${ab.baustelle}“ passt nicht zu „${p.name}“. Trotzdem zuordnen?`)) return;
-      await attachAB(p.id, ab);
-      toast(`AB ${ab.nr} bei „${p.name}“ hinterlegt.`);
-      renderPrintCenter();
-    }catch(err){ toast("Fehler beim Lesen der AB: " + (err.message||err)); }
-  })));
-  mainEl.querySelectorAll("[data-noab]").forEach(b=>b.addEventListener("click", async ()=>{
-    const inv = DB.invoices.find(i=>i.id===b.dataset.noab); if(!inv) return;
-    inv.ohneAB = true; inv.ohneABvon = `${initialsFor(currentUser.email)} ${shortDate(new Date())}`;
-    await window.fb.setDocMerge("invoices", inv.id, { ohneAB: true, ohneABvon: inv.ohneABvon });
-    toast("Bestätigt: keine AB vorhanden.");
-    renderPrintCenter();
-  }));
   const abd = document.getElementById("abBulkDrop");
   if(abd){
     const run = async files => {
@@ -4717,7 +4802,8 @@ function renderPrintCenter(){
           if(!isABText(text)){ bad.push(`${f.name} (keine PE-AB)`); continue; }
           const ab = abFromPages(pages, f.name);
           if(!ab.positionen.length){ bad.push(`${f.name} (keine Positionen lesbar)`); continue; }
-          await autoAssignAB(ab); ok++;
+          const res = await autoAssignAB(ab); ok++;
+          await syncHousesWithABs(DB.projects.find(x=>x.id===res.projectId));
         }catch(err){ bad.push(f.name); }
       }
       toast(`${ok} AB(s) zugeordnet${bad.length ? ` · nicht verarbeitet: ${bad.join(", ")}` : ""}.`);
