@@ -14,7 +14,7 @@
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
     getFirestore, collection, doc, setDoc, addDoc, updateDoc, deleteDoc,
-    onSnapshot, getDoc, serverTimestamp, query, where
+    onSnapshot, getDoc, getDocs, serverTimestamp, query, where
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -46,6 +46,7 @@
     watchUserDoc: (uid, cb, onErr) => onSnapshot(doc(dbFs, "users", uid), cb, onErr),
     watchCollection: (name, cb, onErr) => onSnapshot(collection(dbFs, name), cb, onErr),
     watchQuery: (name, field, value, cb, onErr) => onSnapshot(query(collection(dbFs, name), where(field, "==", value)), cb, onErr),
+    queryDocs: (name, field, value) => getDocs(query(collection(dbFs, name), where(field, "==", value))),
 
     setDoc: (col, id, data) => setDoc(doc(dbFs, col, id), data),
     setDocMerge: (col, id, data) => setDoc(doc(dbFs, col, id), data, { merge: true }),
@@ -246,6 +247,23 @@
   .hchip.bad{background:var(--danger-bg);color:var(--danger);}
   .projdot{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:10px;background:#e5302a;color:#fff;font-size:11px;font-weight:700;padding:0 6px;margin-right:6px;vertical-align:middle;}
   table select.hsel{padding:4px 6px;font-size:12px;min-width:100px;}
+  #printRoot{position:fixed;inset:0;background:#e9ebef;z-index:2000;overflow:auto;}
+  .ptoolbar{position:sticky;top:0;z-index:2;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff;border-bottom:1px solid var(--border);padding:10px 18px;}
+  #ppPages{padding:20px 0 60px 0;}
+  .ppage{position:relative;width:min(820px,94vw);aspect-ratio:210/297;margin:0 auto 22px auto;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.15);overflow:hidden;}
+  .ppage img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .pstamp{position:absolute;cursor:grab;touch-action:none;outline:1px dashed rgba(30,90,200,.55);outline-offset:4px;}
+  .pstamp:active{cursor:grabbing;}
+  @media print{
+    @page{size:A4;margin:0;}
+    body.printing > *:not(#printRoot){display:none !important;}
+    body.printing #printRoot{position:static;background:#fff;overflow:visible;}
+    body.printing .noprint{display:none !important;}
+    body.printing #ppPages{padding:0;}
+    body.printing .ppage{width:210mm;height:297mm;aspect-ratio:auto;margin:0;box-shadow:none;page-break-after:always;break-after:page;}
+    body.printing .ppage:last-child{page-break-after:auto;break-after:auto;}
+    body.printing .pstamp{outline:none;}
+  }
   @media (max-width:800px){ .app{flex-direction:column;} .sidebar{width:100%;} .main{padding:18px;} .row{flex-wrap:wrap;} }
 </style>
 </head>
@@ -257,6 +275,7 @@
     <button class="navbtn" data-view="messages">💬 Nachrichten <span class="nbadge" id="msgBadge"></span></button>
     <button class="navbtn" data-view="projects">🏗️ Aufträge <span class="nbadge" id="projBadge"></span></button>
     <button class="navbtn" data-view="invoices">🧾 Alle Rechnungen <span class="nbadge" id="reviewBadge"></span></button>
+    <button class="navbtn" data-view="print">🖨️ Stempeln &amp; Drucken <span class="nbadge" id="printBadge"></span></button>
     <button class="navbtn" data-view="suppliers">🏢 Subunternehmer</button>
     <button class="navbtn" data-view="settings">⚙️ Einstellungen &amp; Preise</button>
     <button class="navbtn" id="navAdmin" data-view="admin" style="display:none;">👤 Benutzerverwaltung <span class="nbadge" id="pendingBadge"></span></button>
@@ -442,7 +461,7 @@ async function createInvoice(data){
   return await window.fb.addDoc("invoices", { ...data, createdBy: currentUser.uid, createdByEmail: currentUser.email, createdAt: window.fb.serverTimestamp() });
 }
 async function deleteProjectDoc(id){ await window.fb.deleteDoc("projects", id); }
-async function deleteInvoiceDoc(id){ await window.fb.deleteDoc("invoices", id); }
+async function deleteInvoiceDoc(id){ await window.fb.deleteDoc("invoices", id); deleteInvoiceImages(id); }
 
 function renderAuthScreen(mode){
   document.querySelector(".app").style.display = "none";
@@ -1176,6 +1195,7 @@ function updateBadges(){
   setBadge("projBadge", nProj);
   setBadge("reviewBadge", nInv);
   setBadge("msgBadge", nMsg);
+  setBadge("printBadge", readyToPrintCount());
   if(isAdmin()) setBadge("pendingBadge", (allUsers||[]).filter(u=>u.role!=="admin" && !u.approved && isFirmenMail(u.email)).length);
   const total = nProj + nInv + nMsg;
   document.title = (total ? `(${total}) ` : "") + "PE Rechnungskontrolle";
@@ -1196,6 +1216,7 @@ function render(){
   else if(currentView==="settings") renderSettings();
   else if(currentView==="subPrices") renderSubPrices(currentSupplierName);
   else if(currentView==="messages") renderMessages();
+  else if(currentView==="print") renderPrintCenter();
   else if(currentView==="admin") renderAdmin();
   lastRenderedView = currentView;
 }
@@ -1303,6 +1324,7 @@ async function handleFiles(fileList){
         parsed._pages = g.pages;
         parsed._rawText = g.allText;
         parsed._ocrUsed = g.sources.includes("ocr");
+        parsed._file = file;
         appendReviewCard(parsed);
       });
     }catch(err){
@@ -1339,6 +1361,7 @@ async function appendReviewCard(parsed){
     items: items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: (it.ep!==undefined ? it.ep : null) })),
   };
   const invoiceId = await createInvoice(invoiceData);
+  if(parsed._file && parsed._pages && parsed._pages.length) storeInvoiceImages(invoiceId, parsed._file, parsed._pages);
   const invoice = { id: invoiceId, ...invoiceData, createdBy: currentUser.uid, createdByEmail: currentUser.email, createdAt: new Date() };
   // Optimistisch lokal einfuegen, damit die Karte sofort erscheint (onSnapshot bestaetigt gleich danach)
   if(!DB.invoices.some(i=>i.id===invoiceId)) DB.invoices.push(invoice);
@@ -3836,6 +3859,306 @@ function renderMessages(){
     markMsgRead(m.id);
     openShareDialog(m.link || { type:"project", id:"", label:"" }, "Erledigt. ", m.fromUid);
   }));
+}
+
+/* ============================= EINGANGSSTEMPEL & DRUCKEN ============================= */
+
+const STAMP_MONTHS = ["JAN.","FEB.","MÄRZ","APR.","MAI","JUNI","JULI","AUG.","SEPT.","OKT.","NOV.","DEZ."];
+const STAMP_DEFAULT_POS = { x: 58.5, y: 83.5 }; // in % der Seite (Position wie beim Handstempel: unten rechts)
+const STAMP_WIDTH_PCT = 32;                      // Breite des Stempels in % der Seitenbreite
+
+function stampDateText(d){
+  if(!d) d = new Date();
+  return `${String(d.getDate()).padStart(2,"0")}. ${STAMP_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
+function eingangsDatum(inv){
+  if(inv.eingangsdatum){ const d = new Date(inv.eingangsdatum + "T12:00:00"); if(!isNaN(d)) return d; }
+  return toDateSafe(inv.createdAt) || new Date();
+}
+function isoDate(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
+
+// Nachbildung des EPE-Eingangsstempels (Text + Datum, darunter Tabelle FA erf. / Mat.preis / Fibu)
+// Datum wie beim Gummistempel schmal setzen: Breite immer ca. 103 Einheiten
+function stampScaleX(d){
+  const t = stampDateText(d);
+  const w = [...t].reduce((s,ch)=> s + (/[0-9]/.test(ch) ? 0.556 : ch===" " ? 0.278 : ch==="." ? 0.278 : /[MÄ]/.test(ch) ? 0.833 : /[IJ]/.test(ch) ? 0.3 : 0.667), 0) * 28;
+  return Math.min(1, +(103 / w).toFixed(3));
+}
+function stampSvg(d){
+  const ink = "#1f1f22";
+  return `<svg viewBox="0 0 292 120" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;overflow:visible;">
+    <g fill="${ink}">
+      <g font-family="Arial, Helvetica, sans-serif" font-size="26"><text x="3" y="25">E</text><text x="25" y="25">P</text><text x="46" y="25">E</text></g>
+      <text transform="translate(95 26) scale(${stampScaleX(d)} 1)" x="0" y="0" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="600">${stampDateText(d)}</text>
+    </g>
+    <g stroke="${ink}" stroke-width="1.3" fill="none">
+      <rect x="1" y="44" width="290" height="74"/>
+      <line x1="1" y1="68.7" x2="291" y2="68.7"/>
+      <line x1="1" y1="93.3" x2="291" y2="93.3"/>
+      <line x1="101" y1="44" x2="101" y2="118"/>
+    </g>
+    <g fill="${ink}" font-family="Arial, Helvetica, sans-serif" font-size="19.5">
+      <text x="4" y="63.5">FA erf.</text>
+      <text x="4" y="88.2">Mat.preis</text>
+      <text x="4" y="112.8">Fibu</text>
+    </g>
+  </svg>`;
+}
+
+function invPrintState(inv){
+  if(inv.gedrucktAm) return "gedruckt";
+  if(inv.pruefung && inv.pruefung.status==="ok") return "bereit";
+  if(inv.pruefung && inv.pruefung.status==="beanstandet") return "beanstandet";
+  return "neu";
+}
+function readyToPrintCount(){ return DB.invoices.filter(i=>invPrintState(i)==="bereit").length; }
+
+// Seitenbilder der Original-PDF speichern (fuer Druck mit Stempel)
+async function storeInvoiceImages(invoiceId, file, pageNums){
+  try{
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    let idx = 0;
+    for(const pn of pageNums){
+      const page = await pdf.getPage(pn);
+      const base = page.getViewport({ scale: 1 });
+      let targetW = 1240, quality = 0.72, data = "", w = 0, h = 0;
+      for(let attempt=0; attempt<4; attempt++){
+        const scale = targetW / base.width;
+        const vp = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        data = canvas.toDataURL("image/jpeg", quality);
+        w = canvas.width; h = canvas.height;
+        if(data.length < 900000) break;  // Firestore-Dokument max. 1 MB
+        targetW = Math.round(targetW * 0.8); quality = Math.max(0.45, quality - 0.1);
+      }
+      await window.fb.setDoc("rechnungsbilder", `${invoiceId}_${idx}`, {
+        invoiceId, idx, page: pn, data, w, h, createdBy: currentUser.uid, createdAt: window.fb.serverTimestamp(),
+      });
+      idx++;
+    }
+    await window.fb.setDocMerge("invoices", invoiceId, { bildSeiten: idx });
+    const inv = DB.invoices.find(i=>i.id===invoiceId); if(inv) inv.bildSeiten = idx;
+  }catch(err){
+    console.error("Seitenbilder konnten nicht gespeichert werden", err);
+    showDbError("rechnungsbilder (Firestore-Regeln aktualisieren)", err);
+  }
+}
+async function loadInvoiceImages(invoiceId){
+  const snap = await window.fb.queryDocs("rechnungsbilder", "invoiceId", invoiceId);
+  return snap.docs.map(d=>d.data()).sort((a,b)=>a.idx-b.idx);
+}
+async function deleteInvoiceImages(invoiceId){
+  try{
+    const snap = await window.fb.queryDocs("rechnungsbilder", "invoiceId", invoiceId);
+    for(const d of snap.docs) await window.fb.deleteDoc("rechnungsbilder", d.id);
+  }catch(err){ console.warn("Seitenbilder nicht geloescht", err); }
+}
+// Original nachtraeglich anhaengen (fuer Rechnungen, die vor dieser Funktion eingelesen wurden)
+function attachOriginalPdf(inv, after){
+  pickABFile(async (file)=>{
+    try{
+      toast("Original wird gespeichert…");
+      const buf = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+      let pages = Array.from({ length: pdf.numPages }, (_, i)=>i+1);
+      if(pdf.numPages > 1){
+        const v = prompt(`Die PDF hat ${pdf.numPages} Seiten. Welche Seiten gehören zu dieser Rechnung? (z.B. 1-2 oder 1,3)`, `1-${pdf.numPages}`);
+        if(v===null) return;
+        const sel = [];
+        v.split(",").forEach(part=>{
+          const m = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+          if(m){ const a = +m[1], b = +(m[2]||m[1]); for(let k=a;k<=b;k++) if(k>=1 && k<=pdf.numPages) sel.push(k); }
+        });
+        if(sel.length) pages = sel;
+      }
+      await deleteInvoiceImages(inv.id);
+      await storeInvoiceImages(inv.id, file, pages);
+      toast("Original gespeichert.");
+      if(after) after();
+    }catch(err){ toast("Fehler: " + (err.message||err)); }
+  });
+}
+
+let printTab = "bereit";
+const printSel = new Set();
+
+function renderPrintCenter(){
+  const groups = { neu:[], bereit:[], gedruckt:[], beanstandet:[] };
+  DB.invoices.forEach(inv=> groups[invPrintState(inv)].push(inv));
+  Object.values(groups).forEach(g=>g.sort((a,b)=>(toDateSafe(b.createdAt)||0)-(toDateSafe(a.createdAt)||0)));
+  const list = groups[printTab] || [];
+  Array.from(printSel).forEach(id=>{ if(!list.some(i=>i.id===id)) printSel.delete(id); });
+  const tabBtn = (k, label, red) => `<button class="tab ${printTab===k?"active":""}" data-ptab="${k}">${label} ${groups[k].length ? (red ? `<span class="nbadge" style="display:inline-flex;">${groups[k].length}</span>` : `<span class="muted">(${groups[k].length})</span>`) : ""}</button>`;
+  const proj = id => DB.projects.find(p=>p.id===id);
+
+  mainEl.innerHTML = `
+    <h1>🖨️ Stempeln &amp; Drucken</h1>
+    <p class="subtitle">Ablauf: <b>Neu</b> (eingelesen) → prüfen &amp; <b>freigeben</b> → hier markieren und <b>mit Eingangsstempel drucken</b> → nur noch Barcode-Sticker aufkleben.</p>
+    <div class="tabs">
+      ${tabBtn("neu","1 · Neu – noch prüfen",false)}
+      ${tabBtn("bereit","2 · Freigegeben – bereit zum Drucken",true)}
+      ${tabBtn("gedruckt","3 · Gedruckt",false)}
+      ${tabBtn("beanstandet","Beanstandet",false)}
+    </div>
+    ${list.length ? `
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        <label style="display:flex;gap:6px;align-items:center;font-size:13px;"><input type="checkbox" id="pSelAll" style="width:auto;"> Alle markieren</label>
+        <span class="muted" style="font-size:13px;">${printSel.size} markiert</span>
+        <span style="flex:1;"></span>
+        ${printTab==="neu" ? `<button class="primary" id="pApprove" ${printSel.size?"":"disabled"}>✓ Markierte freigeben</button>` : ""}
+        ${printTab==="bereit" || printTab==="gedruckt" ? `<button class="primary" id="pPrint" ${printSel.size?"":"disabled"}>🖨️ Vorschau &amp; drucken (${printSel.size})</button>` : ""}
+      </div>
+      <div class="card" style="padding:0;"><div class="tablewrap"><table>
+        <thead><tr><th style="width:30px;"></th><th>Eingegangen</th><th>Lieferant</th><th>Objekt</th><th>Rechnungsnr.</th><th>Betrag CHF</th><th>Prüfung</th><th>Original</th>${printTab==="gedruckt"?"<th>Gedruckt</th>":"<th>Stempeldatum</th>"}</tr></thead>
+        <tbody>${list.map(inv=>{
+          const p = proj(inv.projectId);
+          const hasImg = (inv.bildSeiten||0) > 0;
+          const selectable = printTab==="neu" || hasImg;
+          return `<tr>
+            <td><input type="checkbox" data-psel="${inv.id}" style="width:auto;" ${printSel.has(inv.id)?"checked":""} ${selectable?"":"disabled title='Original fehlt – PDF anhängen'"}></td>
+            <td>${escapeHtml((toDateSafe(inv.createdAt)||new Date()).toLocaleDateString("de-CH"))}</td>
+            <td>${escapeHtml(inv.lieferant||"—")}</td>
+            <td style="cursor:pointer;" data-popen="${inv.id}">${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
+            <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
+            <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
+            <td style="cursor:pointer;" data-popen="${inv.id}">${findingsPill(inv)}</td>
+            <td>${hasImg ? `<span class="hchip ok">✓ ${inv.bildSeiten} S.</span>` : `<button class="small" data-pattach="${inv.id}">PDF anhängen</button>`}</td>
+            ${printTab==="gedruckt"
+              ? `<td class="muted" style="font-size:12px;">${escapeHtml(inv.gedrucktAm||"")}</td>`
+              : `<td><input type="date" data-pdate="${inv.id}" value="${isoDate(eingangsDatum(inv))}" style="width:140px;padding:5px 6px;font-size:12.5px;"></td>`}
+          </tr>`;
+        }).join("")}</tbody>
+      </table></div></div>
+      ${printTab==="neu" ? `<p class="muted" style="font-size:12px;">„Markierte freigeben“ gibt nur Rechnungen ohne Fehler im Prüfbericht frei – Rechnungen mit Fehlern bitte einzeln prüfen (Klick auf die Zeile).</p>` : ""}
+      ${printTab==="bereit" ? `<p class="muted" style="font-size:12px;">Rechnungen, die vor dieser Funktion eingelesen wurden, haben kein gespeichertes Original – einmal „PDF anhängen“, dann sind sie druckbar. Neu eingelesene Rechnungen werden automatisch gespeichert.</p>` : ""}`
+    : `<div class="empty">${printTab==="bereit" ? "Keine freigegebenen Rechnungen zum Drucken. Rechnungen im Tab „1 · Neu“ prüfen und freigeben." : printTab==="neu" ? "Keine neuen Rechnungen." : "Keine Einträge."}</div>`}`;
+
+  mainEl.querySelectorAll("[data-ptab]").forEach(b=>b.addEventListener("click", ()=>{ printTab = b.dataset.ptab; printSel.clear(); renderPrintCenter(); }));
+  const all = document.getElementById("pSelAll");
+  if(all){
+    const selectable = list.filter(inv => printTab==="neu" || (inv.bildSeiten||0) > 0);
+    all.checked = selectable.length > 0 && selectable.every(i=>printSel.has(i.id));
+    all.addEventListener("change", ()=>{ selectable.forEach(i=> all.checked ? printSel.add(i.id) : printSel.delete(i.id)); renderPrintCenter(); });
+  }
+  mainEl.querySelectorAll("[data-psel]").forEach(cb=>cb.addEventListener("change", ()=>{ cb.checked ? printSel.add(cb.dataset.psel) : printSel.delete(cb.dataset.psel); renderPrintCenter(); }));
+  mainEl.querySelectorAll("[data-popen]").forEach(td=>td.addEventListener("click", ()=> openLink({ type:"invoice", id: td.dataset.popen })));
+  mainEl.querySelectorAll("[data-pattach]").forEach(b=>b.addEventListener("click", ()=>{ const inv = DB.invoices.find(i=>i.id===b.dataset.pattach); if(inv) attachOriginalPdf(inv, renderPrintCenter); }));
+  mainEl.querySelectorAll("[data-pdate]").forEach(inp=>inp.addEventListener("change", ()=>{
+    const inv = DB.invoices.find(i=>i.id===inp.dataset.pdate); if(!inv) return;
+    inv.eingangsdatum = inp.value || "";
+    window.fb.setDocMerge("invoices", inv.id, { eingangsdatum: inv.eingangsdatum });
+  }));
+  const ap = document.getElementById("pApprove");
+  if(ap) ap.addEventListener("click", async ()=>{
+    const sel = list.filter(i=>printSel.has(i.id));
+    const ok = sel.filter(i=>!checkInvoice(i).some(f=>f.level==="danger"));
+    const bad = sel.length - ok.length;
+    if(!ok.length){ toast("Alle markierten Rechnungen haben Fehler – bitte einzeln prüfen."); return; }
+    if(!confirm(`${ok.length} Rechnung(en) freigeben?${bad?`\n${bad} Rechnung(en) mit Fehlern werden übersprungen.`:""}`)) return;
+    for(const inv of ok){
+      inv.pruefung = { status:"ok", kommentar:(inv.pruefung&&inv.pruefung.kommentar)||"", by: currentUser.email, at: new Date().toLocaleString("de-CH") };
+      await saveInvoice(inv);
+    }
+    printSel.clear();
+    toast(`${ok.length} Rechnung(en) freigegeben – jetzt im Tab „2 · Freigegeben“.`);
+    renderPrintCenter();
+  });
+  const pp = document.getElementById("pPrint");
+  if(pp) pp.addEventListener("click", ()=> openPrintPreview(list.filter(i=>printSel.has(i.id))));
+}
+
+async function openPrintPreview(invs){
+  if(!invs.length) return;
+  closePrintPreview();
+  const root = document.createElement("div");
+  root.id = "printRoot";
+  root.innerHTML = `
+    <div class="ptoolbar noprint">
+      <b>Druckvorschau – ${invs.length} Rechnung(en)</b>
+      <span class="muted" style="font-size:12.5px;">Stempel lässt sich mit der Maus verschieben (wird pro Rechnung gespeichert).</span>
+      <span style="flex:1;"></span>
+      <button id="ppAll">Position der 1. Rechnung für alle übernehmen</button>
+      <button class="primary" id="ppPrint" disabled>🖨️ Drucken</button>
+      <button id="ppClose">Schliessen</button>
+    </div>
+    <div id="ppPages"><div class="muted noprint" style="padding:30px;text-align:center;">Originale werden geladen…</div></div>`;
+  document.body.appendChild(root);
+  document.body.classList.add("printing");
+  document.getElementById("ppClose").addEventListener("click", closePrintPreview);
+
+  const pagesEl = document.getElementById("ppPages");
+  let html = "";
+  for(const inv of invs){
+    let imgs = [];
+    try{ imgs = await loadInvoiceImages(inv.id); }catch(err){ showDbError("rechnungsbilder", err); }
+    if(!imgs.length){ html += `<div class="noprint muted" style="padding:16px;">⚠ ${escapeHtml(inv.lieferant||"")} ${escapeHtml(inv.rechnungsnr||"")}: Original fehlt – übersprungen.</div>`; continue; }
+    const pos = inv.stempelPos || STAMP_DEFAULT_POS;
+    imgs.forEach((im, k)=>{
+      html += `<div class="ppage" data-inv="${inv.id}">
+        <img src="${im.data}" alt="">
+        ${k===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv))}</div>` : ""}
+      </div>`;
+    });
+  }
+  pagesEl.innerHTML = html || `<div class="empty">Keine druckbaren Rechnungen.</div>`;
+  document.getElementById("ppPrint").disabled = !pagesEl.querySelector(".ppage");
+
+  // Stempel verschieben
+  pagesEl.querySelectorAll(".pstamp").forEach(st=>{
+    st.addEventListener("pointerdown", (e)=>{
+      e.preventDefault();
+      const page = st.parentElement, r = page.getBoundingClientRect(), sr = st.getBoundingClientRect();
+      const offX = e.clientX - sr.left, offY = e.clientY - sr.top;
+      st.setPointerCapture(e.pointerId);
+      const move = (ev)=>{
+        const x = Math.min(100 - STAMP_WIDTH_PCT, Math.max(0, (ev.clientX - offX - r.left) / r.width * 100));
+        const y = Math.min(96, Math.max(0, (ev.clientY - offY - r.top) / r.height * 100));
+        st.style.left = x + "%"; st.style.top = y + "%";
+      };
+      const up = ()=>{
+        st.removeEventListener("pointermove", move); st.removeEventListener("pointerup", up);
+        const inv = DB.invoices.find(i=>i.id===st.dataset.stamp); if(!inv) return;
+        inv.stempelPos = { x: roundNum(parseFloat(st.style.left)), y: roundNum(parseFloat(st.style.top)) };
+        window.fb.setDocMerge("invoices", inv.id, { stempelPos: inv.stempelPos });
+      };
+      st.addEventListener("pointermove", move); st.addEventListener("pointerup", up);
+    });
+  });
+  document.getElementById("ppAll").addEventListener("click", ()=>{
+    const first = pagesEl.querySelector(".pstamp"); if(!first) return;
+    const pos = { x: roundNum(parseFloat(first.style.left)), y: roundNum(parseFloat(first.style.top)) };
+    pagesEl.querySelectorAll(".pstamp").forEach(st=>{
+      st.style.left = pos.x + "%"; st.style.top = pos.y + "%";
+      const inv = DB.invoices.find(i=>i.id===st.dataset.stamp);
+      if(inv){ inv.stempelPos = pos; window.fb.setDocMerge("invoices", inv.id, { stempelPos: pos }); }
+    });
+    toast("Position für alle übernommen.");
+  });
+  document.getElementById("ppPrint").addEventListener("click", async ()=>{
+    window.print();
+    const printed = invs.filter(inv => pagesEl.querySelector(`.ppage[data-inv="${inv.id}"]`));
+    setTimeout(async ()=>{
+      if(!confirm(`Wurden alle ${printed.length} Rechnung(en) korrekt gedruckt?\nDann werden sie als „Gedruckt“ abgelegt.`)) return;
+      const stamp = new Date().toLocaleString("de-CH");
+      for(const inv of printed){
+        inv.gedrucktAm = stamp; inv.gedrucktVon = currentUser.email;
+        await window.fb.setDocMerge("invoices", inv.id, { gedrucktAm: stamp, gedrucktVon: currentUser.email, eingangsdatum: inv.eingangsdatum || isoDate(eingangsDatum(inv)) });
+      }
+      printSel.clear();
+      closePrintPreview();
+      toast(`${printed.length} Rechnung(en) als gedruckt abgelegt.`);
+      if(currentView==="print") renderPrintCenter();
+    }, 400);
+  });
+}
+function closePrintPreview(){
+  const r = document.getElementById("printRoot"); if(r) r.remove();
+  document.body.classList.remove("printing");
 }
 
 /* ============================= HELPERS ============================= */
