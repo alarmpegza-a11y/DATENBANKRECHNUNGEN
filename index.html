@@ -90,9 +90,13 @@
   .num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum";}
   .app{display:flex;min-height:100vh;}
   .sidebar{
-    width:220px;flex-shrink:0;background:var(--accent);color:#fff;
+    width:230px;flex-shrink:0;background:var(--accent);color:#fff;
     display:flex;flex-direction:column;padding:20px 0;
+    position:sticky;top:0;height:100vh;overflow-y:auto;
   }
+  .navsec{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;opacity:.5;padding:14px 20px 4px 20px;font-weight:600;}
+  .navbtn .step{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,.18);font-size:11px;font-weight:700;flex:0 0 20px;}
+  .navbtn.active .step{background:#fff;color:var(--accent);}
   .sidebar .brand{
     padding:0 20px 20px 20px;font-weight:700;font-size:15px;letter-spacing:0.02em;
     border-bottom:1px solid rgba(255,255,255,0.15);margin-bottom:12px;
@@ -106,7 +110,7 @@
   .navbtn:hover{background:rgba(255,255,255,0.08);}
   .navbtn.active{background:rgba(255,255,255,0.12);color:#fff;border-left-color:#fff;font-weight:600;}
   .navbtn .badge{margin-left:auto;background:rgba(255,255,255,0.18);border-radius:10px;padding:1px 7px;font-size:11px;}
-  .main{flex:1;padding:28px 36px;max-width:1180px;}
+  .main{flex:1;min-width:0;padding:24px 32px 40px 32px;max-width:1700px;}
   h1{font-size:20px;margin:0 0 4px 0;letter-spacing:-0.01em;}
   h2{font-size:16px;margin:0 0 14px 0;}
   .subtitle{color:var(--text-dim);font-size:13px;margin:0 0 24px 0;}
@@ -220,6 +224,23 @@
   details.okdetails summary{cursor:pointer;font-size:12.5px;color:var(--ok);margin-top:6px;}
   button.st-ok{background:var(--ok);border-color:var(--ok);color:#fff;}
   button.st-bad{background:var(--danger);border-color:var(--danger);color:#fff;}
+  .home-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:22px;}
+  .stepcard{background:#fff;border:1px solid var(--border);border-radius:12px;padding:20px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px;cursor:pointer;transition:.12s;position:relative;}
+  .stepcard:hover{border-color:var(--accent);transform:translateY(-1px);}
+  .stepcard .sn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;font-weight:700;}
+  .stepcard .big{font-size:30px;font-weight:700;line-height:1;}
+  .stepcard .lbl{font-weight:700;font-size:15px;}
+  .stepcard .desc{color:var(--text-dim);font-size:12.5px;line-height:1.45;}
+  .stepcard.attn{border-color:#f3c7c4;background:#fffaf9;}
+  .stepcard.attn .big{color:var(--danger);}
+  .stepcard .go{margin-top:auto;font-weight:600;color:var(--accent);font-size:13px;}
+  .phead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin:6px 0 4px 0;}
+  .phead h1{font-size:22px;}
+  .ptabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:14px 0 18px 0;flex-wrap:wrap;}
+  .ptabs .tab{font-size:14px;padding:10px 16px;}
+  .ptabs .tab .tdot{display:inline-block;margin:0 0 0 6px;}
+  details.help{font-size:12.5px;color:var(--text-dim);margin:8px 0 0 0;}
+  details.help summary{cursor:pointer;color:var(--accent);font-weight:600;}
   .nbadge{margin-left:auto;display:none;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:#e5302a;color:#fff;font-size:11.5px;font-weight:700;line-height:1;box-shadow:0 0 0 2px rgba(255,255,255,.15);}
   .tab .nbadge{margin-left:6px;}
   .tdot{width:10px;height:10px;border-radius:50%;background:#e5302a;flex:0 0 10px;margin-top:4px;}
@@ -274,24 +295,29 @@
     body.printing .ppage:last-child{page-break-after:auto;break-after:auto;}
     body.printing .pstamp{outline:none;}
   }
-  @media (max-width:800px){ .app{flex-direction:column;} .sidebar{width:100%;} .main{padding:18px;} .row{flex-wrap:wrap;} }
+  @media (max-width:800px){ .app{flex-direction:column;} .sidebar{width:100%;height:auto;position:static;} .main{padding:18px;} .row{flex-wrap:wrap;} }
 </style>
 </head>
 <body>
 <div class="app">
   <div class="sidebar">
     <div class="brand">PE Rechnungskontrolle<small>Subunternehmer-Abgleich</small></div>
-    <button class="navbtn active" data-view="upload">📄 Neue Rechnung</button>
-    <button class="navbtn" data-view="messages">💬 Nachrichten <span class="nbadge" id="msgBadge"></span></button>
+    <button class="navbtn active" data-view="home">🏠 Übersicht</button>
+    <div class="navsec">Arbeitsablauf</div>
+    <button class="navbtn" data-view="upload"><span class="step">1</span> Hochladen</button>
+    <button class="navbtn" data-view="check"><span class="step">2</span> Prüfen <span class="nbadge" id="checkBadge"></span></button>
+    <button class="navbtn" data-view="print"><span class="step">3</span> Drucken <span class="nbadge" id="printBadge"></span></button>
+    <div class="navsec">Daten</div>
     <button class="navbtn" data-view="projects">🏗️ Aufträge <span class="nbadge" id="projBadge"></span></button>
     <button class="navbtn" data-view="invoices">🧾 Alle Rechnungen <span class="nbadge" id="reviewBadge"></span></button>
-    <button class="navbtn" data-view="print">🖨️ Stempeln &amp; Drucken <span class="nbadge" id="printBadge"></span></button>
     <button class="navbtn" data-view="suppliers">🏢 Subunternehmer</button>
-    <button class="navbtn" data-view="settings">⚙️ Einstellungen &amp; Preise</button>
-    <button class="navbtn" id="navAdmin" data-view="admin" style="display:none;">👤 Benutzerverwaltung <span class="nbadge" id="pendingBadge"></span></button>
+    <button class="navbtn" data-view="messages">💬 Nachrichten <span class="nbadge" id="msgBadge"></span></button>
+    <div class="navsec">Verwaltung</div>
+    <button class="navbtn" data-view="settings">💰 Preise &amp; Einstellungen</button>
+    <button class="navbtn" id="navAdmin" data-view="admin" style="display:none;">👤 Benutzer <span class="nbadge" id="pendingBadge"></span></button>
     <div style="margin-top:auto;padding:14px 20px 0 20px;">
       <div id="currentUserBox" style="color:#fff;margin-bottom:10px;"></div>
-      <button id="resetAllBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.75);font-size:12px;">🗑️ Alle Daten löschen (Admin)</button>
+      <button id="resetAllBtn" style="display:none !important;width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.75);font-size:12px;">🗑️ Alle Daten löschen (Admin)</button>
     </div>
   </div>
   <div class="main" id="main"></div>
@@ -337,7 +363,7 @@ let currentProfile = null;  // { email, role, permissions } aus Firestore users/
 let unsubProjects = null, unsubInvoices = null, unsubProfile = null, unsubUsers = null, unsubSubs = null, unsubSettings = null, unsubMsgIn = null, unsubMsgOut = null;
 let seenMsgIds = null;
 
-let currentView = "upload";
+let currentView = "home";
 let currentProjectId = null;
 let currentSupplierName = null;
 let navStack = [];
@@ -620,7 +646,7 @@ function updateSidebarForUser(){
     navigator.clipboard.writeText(currentUser.uid).then(()=> toast("UID kopiert."));
   });
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
-  document.getElementById("resetAllBtn").style.display = isAdmin() ? "" : "none";
+  // "Alle Daten löschen" liegt jetzt unter Preise & Einstellungen (nur Admin)
 }
 
 /* ============================= PDF -> TEXT (hybrid: Text-Layer oder OCR) ============================= */
@@ -1229,7 +1255,7 @@ let lastRenderedView = null;
 let pendingSnapshotRender = false;
 
 function updateBadges(){
-  document.querySelectorAll(".navbtn").forEach(b=>b.classList.toggle("active", b.dataset.view===currentView || (currentView==="subPrices" && b.dataset.view==="settings")));
+  document.querySelectorAll(".navbtn").forEach(b=>b.classList.toggle("active", b.dataset.view===currentView || (currentView==="subPrices" && b.dataset.view==="settings") || (currentView==="supplierDetail" && b.dataset.view==="suppliers") || (currentView==="projectDetail" && b.dataset.view==="projects")));
   if(!currentUser || !isApproved()) return;
   const nProj = computeProjectTodos().length;
   const nInv = computeInvoiceTodos().length;
@@ -1238,6 +1264,7 @@ function updateBadges(){
   setBadge("reviewBadge", nInv);
   setBadge("msgBadge", nMsg);
   setBadge("printBadge", readyToPrintCount());
+  setBadge("checkBadge", DB.invoices.filter(i=>invPrintState(i)==="neu").length);
   if(isAdmin()) setBadge("pendingBadge", (allUsers||[]).filter(u=>u.role!=="admin" && !u.approved && isFirmenMail(u.email)).length);
   const total = nProj + nInv + nMsg;
   document.title = (total ? `(${total}) ` : "") + "PE Rechnungskontrolle";
@@ -1246,6 +1273,7 @@ function updateBadges(){
 function render(){
   pendingSnapshotRender = false;
   updateBadges();
+  if(currentView!=="check" && currentView!=="print" && printTab==="neu") printTab = "bereit";
   if(currentView==="upload"){
     // Upload-Seite nicht neu aufbauen, solange sie offen ist -- sonst verschwinden die eben erfassten Karten
     if(!(lastRenderedView==="upload" && document.getElementById("reviewArea"))) renderUpload();
@@ -1258,7 +1286,9 @@ function render(){
   else if(currentView==="settings") renderSettings();
   else if(currentView==="subPrices") renderSubPrices(currentSupplierName);
   else if(currentView==="messages") renderMessages();
-  else if(currentView==="print") renderPrintCenter();
+  else if(currentView==="print"){ if(printTab==="neu") printTab = "bereit"; renderPrintCenter(); }
+  else if(currentView==="check"){ printTab = "neu"; renderPrintCenter(); }
+  else if(currentView==="home") renderHome();
   else if(currentView==="admin") renderAdmin();
   lastRenderedView = currentView;
 }
@@ -1288,8 +1318,8 @@ function getSuppliers(){
 
 function renderUpload(){
   mainEl.innerHTML = `
-    <h1>Rechnungen &amp; Auftragsbestätigungen erfassen</h1>
-    <p class="subtitle">PDF hochladen — Rechnungen der Subunternehmer <b>und</b> PE-Auftragsbestätigungen (AB) werden automatisch erkannt. Mehrere Rechnungen pro Datei werden getrennt, ABs dem passenden Auftrag (Baustelle) zugeordnet. Gescannte PDFs werden per OCR gelesen.</p>
+    <h1>① Hochladen</h1>
+    <p class="subtitle">Rechnungen der Subunternehmer <b>und</b> unsere Auftragsbestätigungen (AB) als PDF hineinziehen – auch mehrere auf einmal. Die App erkennt Lieferant, Objekt, Haus und Beträge selbst. Danach weiter mit <b>② Prüfen</b>.</p>
     <div class="card">
       <div class="drop" id="dropzone">
         <div style="font-size:28px;margin-bottom:8px;">📄</div>
@@ -1896,7 +1926,7 @@ function notifyIfNeedsReview(inv){
 }
 
 function countOverBudget(p){
-  return projectControlRows(p).filter(r => r.soll && r.ist.menge > r.soll.menge * (1 + getSettings().mengenTolProzent/100) + 1e-9).length;
+  return projectControlRows(p).filter(r => r.soll && r.ist.menge > 0 && r.ist.menge > Math.max(0, r.soll.menge) * (1 + getSettings().mengenTolProzent/100) + 1e-9).length;
 }
 
 function aggregateByCategory(invoices){
@@ -1913,6 +1943,7 @@ function aggregateByCategory(invoices){
 }
 
 const expandedABs = new Set();
+const projTabFor = {}; // pro Auftrag gewaehlter Tab: overview | invoices | ab | edit
 const selectedHaus = {};
 
 function projectControlRows(p, haus){
@@ -1977,15 +2008,31 @@ function renderProjectDetail(projectId){
   let sumBudget = 0, sumIst = 0, sumErloes = 0, anyBudget = false, anyErloes = false;
   rows.forEach(r=>{ if(r.budget!=null){ sumBudget += r.budget; anyBudget = true; } sumIst += r.ist.chf; if(r.erloes!=null){ sumErloes += r.erloes; anyErloes = true; } });
 
+  if(expandedInvoiceId && invs.some(i=>i.id===expandedInvoiceId) && !projTabFor[p.id]) projTabFor[p.id] = "invoices";
+  const ptab = projTabFor[p.id] || "overview";
+  const abMissing = !abs.length && !p.ohneAB && !(invs.length && invs.every(invOhneAB));
   mainEl.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-      <button class="backlink" id="backBtn">← Zurück</button>
+    <button class="backlink" id="backBtn">← Zurück zu den Aufträgen</button>
+    <div class="phead">
+      <div>
+        <h1>🏗️ ${escapeHtml(p.name)}</h1>
+        <div class="muted" style="font-size:13px;">${escapeHtml(p.address && p.address!==p.name ? p.address : "")}${p.auftragsnummer ? ` · Auftragsnr. ${escapeHtml(p.auftragsnummer)}` : ""}
+          ${abs.length ? `<span class="pill neutral" style="margin-left:6px;">📑 AB vorhanden</span>` : abMissing ? `<span class="pill warn" style="margin-left:6px;">AB fehlt</span>` : `<span class="pill neutral" style="margin-left:6px;">ohne AB ✓</span>`}
+          ${houses.map(h=>`<span class="hchip ${houseNeedsAB(p,h)?"bad":"ok"}">${escapeHtml(h)}</span>`).join("")}
+        </div>
+      </div>
       <button class="small" id="shareProjBtn">📤 Auftrag teilen</button>
+    </div>
+    <div class="ptabs">
+      <button class="tab ${ptab==="overview"?"active":""}" data-ptabp="overview">📊 Übersicht</button>
+      <button class="tab ${ptab==="invoices"?"active":""}" data-ptabp="invoices">🧾 Rechnungen (${invs.length})${invs.some(i=>invPrintState(i)==="neu" && checkInvoice(i).some(f=>f.level==="danger")) ? `<span class="tdot"></span>` : ""}</button>
+      <button class="tab ${ptab==="ab"?"active":""}" data-ptabp="ab">📑 AB &amp; Häuser${abMissing || houses.some(h=>houseNeedsAB(p,h)) ? `<span class="tdot"></span>` : ""}</button>
+      <button class="tab ${ptab==="edit"?"active":""}" data-ptabp="edit">⚙️ Bearbeiten</button>
     </div>
     ${myTodos.length ? `<div class="todobanner"><h2><span class="nbadge" style="display:inline-flex;margin:0;">${myTodos.length}</span> Zu erledigen bei diesem Auftrag</h2><div id="todoSlot">${todosHtml(myTodos)}</div></div>` : ""}
 
-    <div class="card">
-      <div class="section-title" style="margin-top:0;">Auftrag / Objekt — Name &amp; Adresse (bei Bedarf korrigieren)</div>
+    <div class="card" data-sec="edit">
+      <div class="section-title" style="margin-top:0;">Name &amp; Adresse des Objekts (bei Bedarf korrigieren)</div>
       <div class="row">
         <label class="field"><span>Name des Auftrags</span><input type="text" id="editProjName" value="${escapeAttr(p.name)}"></label>
         <label class="field"><span>Adresse / Objekt</span><input type="text" id="editProjAddress" value="${escapeAttr(p.address||"")}"></label>
@@ -2003,19 +2050,19 @@ function renderProjectDetail(projectId){
       </div>
     </div>
 
-    <div class="kpis">
+    <div class="kpis" data-sec="overview">
       <div class="kpi"><div class="kl">Auftragswert AB (exkl. MwSt)</div><div class="kv num">${abs.length ? "CHF "+fmt(auftragswert) : "—"}</div></div>
       <div class="kpi"><div class="kl">Sub verrechnet (Positionen netto)</div><div class="kv num">CHF ${fmt(subNetto)}</div></div>
       <div class="kpi"><div class="kl">Budget Sub (Soll × Preise)</div><div class="kv num">${anyBudget ? "CHF "+fmt(sumBudget) : "—"}</div></div>
       <div class="kpi"><div class="kl">Prüfung offen</div><div class="kv">${offen} / ${invs.length}</div></div>
     </div>
 
-    <div class="card">
+    <div class="card" data-sec="ab">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
         <h2 style="margin:0;">📑 Auftragsbestätigung${abs.length>1?"en":""}</h2>
         <div style="display:flex;gap:6px;"><button class="small" id="addHausBtn">+ Haus</button><button class="small primary" id="abUploadBtn">${abs.length ? "+ Weitere AB / Revision hochladen" : "AB hochladen"}</button></div>
       </div>
-      <p class="muted" style="font-size:12px;margin:6px 0 0 0;">Eine AB gilt für alle Subunternehmer dieses Objekts. Hat das Objekt mehrere Häuser, ordne jede AB dem richtigen Haus zu (oder „ganzes Objekt“).</p>
+      <p class="muted" style="font-size:12.5px;margin:6px 0 0 0;">Eine AB gilt für <b>alle Subunternehmer</b> dieses Objekts. Bei mehreren Häusern: bei jeder AB „Gilt für“ das richtige Haus wählen.</p>
       ${houses.length ? `
         <div class="tablewrap" style="margin-top:12px;"><table>
           <thead><tr><th>Haus</th><th>AB</th><th>Rechnungen</th><th>ohne Haus-Zuordnung</th></tr></thead>
@@ -2067,7 +2114,7 @@ function renderProjectDetail(projectId){
       ${leitfaden.length ? `<div class="muted" style="font-size:12px;margin-top:10px;">⏱ Leitfadenzeit laut AB: ${leitfaden.map(x=>`${escapeHtml(x.artikel)} ${fmtQty(x.leitfadenzeitH)} h`).join(" · ")}</div>` : ""}
     </div>
 
-    <div class="card">
+    <div class="card" data-sec="overview">
       <h2>Kontrolle pro Leistung${selH ? ` – ${escapeHtml(selH)}` : ""}</h2>
       ${houses.length ? `<div class="tabs" style="margin-top:-4px;"><button class="tab ${!selH?"active":""}" data-htab="">Ganzes Objekt</button>${houses.map(h=>`<button class="tab ${selH===h?"active":""}" data-htab="${escapeAttr(h)}">${escapeHtml(h)}${houseNeedsAB(p,h)?` <span class="tdot" style="margin:0 0 0 6px;"></span>`:""}</button>`).join("")}</div>
         ${selH && !abs.some(a=>a.haus===selH) ? `<div class="fd warn" style="margin-bottom:12px;"><span class="fdi">⚠</span><span>Für ${escapeHtml(selH)} ist keine eigene AB hinterlegt – Soll-Mengen gibt es hier nur, wenn eine AB diesem Haus zugeordnet ist.</span></div>` : ""}` : ""}
@@ -2078,7 +2125,7 @@ function renderProjectDetail(projectId){
         <tbody>${rows.map(r=>{
           const u = catUnit(r.cat);
           const S = getSettings();
-          const over = r.soll && r.ist.menge > r.soll.menge * (1 + S.mengenTolProzent/100) + 1e-9;
+          const over = r.soll && r.ist.menge > 0 && r.ist.menge > Math.max(0, r.soll.menge) * (1 + S.mengenTolProzent/100) + 1e-9;
           const pct = r.soll && r.soll.menge>0 ? Math.min(100, r.ist.menge / r.soll.menge * 100) : (r.ist.menge>0 ? 100 : 0);
           const rest = r.soll ? r.soll.menge - r.ist.menge : null;
           const overBudget = r.budget!=null && r.ist.chf > r.budget + 0.5;
@@ -2099,14 +2146,14 @@ function renderProjectDetail(projectId){
           <tr class="sumrow"><td colspan="5"><b>Total</b></td><td class="num"><b>${anyBudget?fmt(sumBudget):"—"}</b></td><td class="num"><b>${fmt(sumIst)}</b></td><td class="num"><b>${anyErloes?fmt(sumErloes):"—"}</b></td><td class="num"><b>${anyErloes?fmt(sumErloes-sumIst):"—"}</b></td><td></td></tr>
         </tbody>
       </table></div>
-      <p class="muted" style="font-size:12px;margin:10px 0 0 0;">Ist = alle Rechnungen dieses Auftrags ausser beanstandete. Budget = Soll-Menge × vereinbarter Preis des Subs. Erlös = Nettobetrag der zugeordneten AB-Positionen. ✎ = Soll manuell überschreiben.</p>`
+      <details class="help"><summary>ℹ️ Was bedeuten die Spalten?</summary><p style="margin:6px 0 0 0;"><b>Soll</b> = Menge laut AB · <b>Ist</b> = von den Subunternehmern verrechnet (ohne beanstandete Rechnungen) · <b>Budget Sub</b> = Soll × vereinbarter Preis · <b>Erlös AB</b> = was wir dem Kunden verrechnen · <b>Marge</b> = Erlös − verrechnet · <b>✎</b> = Soll von Hand ändern.</p></details>`
       : `<div class="empty" style="padding:24px;">Noch keine Soll- oder Ist-Werte. AB hochladen oder Rechnungen erfassen.</div>`}
       <div style="margin-top:10px;display:flex;gap:6px;align-items:center;">
         <select id="addSollCat" style="width:auto;font-size:12px;"><option value="">Soll für weitere Leistung setzen…</option>${catOpts}</select>
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-sec="invoices">
       <h2>Rechnungen zu diesem Auftrag (${invs.length}) — Total CHF ${formatCHF(totalCHF)}</h2>
       ${invs.length ? `
       <div class="tablewrap"><table>
@@ -2138,6 +2185,9 @@ function renderProjectDetail(projectId){
   `;
 
   document.getElementById("backBtn").addEventListener("click", ()=>{ goBack("projects"); });
+  // Tabs: nur den gewaehlten Bereich zeigen
+  mainEl.querySelectorAll("[data-sec]").forEach(el=>{ el.style.display = el.dataset.sec===ptab ? "" : "none"; });
+  mainEl.querySelectorAll("[data-ptabp]").forEach(b=>b.addEventListener("click", ()=>{ projTabFor[p.id] = b.dataset.ptabp; renderProjectDetail(projectId); }));
   document.getElementById("shareProjBtn").addEventListener("click", ()=> openShareDialog({ type:"project", id:p.id, label:p.name }, myTodos.length ? myTodos.map(t=>t.share||t.text).join("\n") : ""));
   const tdSlot = document.getElementById("todoSlot");
   if(tdSlot) wireTodos(tdSlot, myTodos, ()=>render());
@@ -2268,7 +2318,7 @@ function renderProjectDetail(projectId){
     saveProject(p);
     renderProjectDetail(projectId);
   };
-  mainEl.querySelectorAll("[data-openunassigned]").forEach(a=> a.addEventListener("click", (e)=>{ e.preventDefault(); expandedInvoiceId = a.dataset.openunassigned; renderProjectDetail(projectId); const el = document.getElementById("editPanel-"+expandedInvoiceId); if(el) el.scrollIntoView({behavior:"smooth", block:"center"}); }));
+  mainEl.querySelectorAll("[data-openunassigned]").forEach(a=> a.addEventListener("click", (e)=>{ e.preventDefault(); expandedInvoiceId = a.dataset.openunassigned; projTabFor[p.id] = "invoices"; renderProjectDetail(projectId); const el = document.getElementById("editPanel-"+expandedInvoiceId); if(el) el.scrollIntoView({behavior:"smooth", block:"center"}); }));
   mainEl.querySelectorAll("[data-sollset]").forEach(btn=> btn.addEventListener("click", ()=> setManualSoll(btn.dataset.sollset)));
   const addSoll = document.getElementById("addSollCat");
   addSoll.addEventListener("change", ()=>{ if(addSoll.value) setManualSoll(addSoll.value); addSoll.value = ""; });
@@ -2286,6 +2336,7 @@ function renderProjectDetail(projectId){
   mainEl.querySelectorAll("[data-edit]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       expandedInvoiceId = (expandedInvoiceId === btn.dataset.edit) ? null : btn.dataset.edit;
+      projTabFor[p.id] = "invoices";
       renderProjectDetail(projectId);
     });
   });
@@ -3059,7 +3110,7 @@ function checkInvoice(inv){
           if(inklLine) f.push({ level:"warn", text:`${catLabel(cat)}${hTxt}: laut AB inklusive („${shortText(inklLine,60)}“), aber ohne Menge in der AB – Soll im Auftrag manuell setzen (✎), damit die Menge geprüft wird.` });
           else f.push({ level:"warn", text:`${catLabel(cat)}${hTxt}: in der AB nicht enthalten (kein Soll) – Nachtrag oder falsche Zuordnung?` });
         }
-      } else if(ist > soll.menge * (1 + S.mengenTolProzent/100) + 1e-9){
+      } else if(ist > 0 && ist > Math.max(0, soll.menge) * (1 + S.mengenTolProzent/100) + 1e-9){
         f.push({ level:"danger", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} ${u} verrechnet, Soll (${soll.quelle}) ${fmtQty(soll.menge)} ${u} → ${fmtQty(ist - soll.menge)} ${u} zu viel.` });
       } else {
         f.push({ level:"ok", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} von ${fmtQty(soll.menge)} ${u} (${soll.quelle}).` });
@@ -3467,6 +3518,10 @@ function renderSettings(){
         </div>`;
       }).join("") : `<div class="empty">Noch keine Subunternehmer. Lege einen an oder lade eine Rechnung hoch.</div>`}
     </div>`;
+  if(isAdmin()){
+    mainEl.insertAdjacentHTML("beforeend", `<div class="card" style="border-color:#f3c7c4;"><h2>Gefahrenbereich (nur Admin)</h2><p class="muted" style="font-size:12.5px;">Löscht alle Aufträge und Rechnungen unwiderruflich.</p><button class="danger" id="resetAllProxy">🗑️ Alle Daten löschen</button></div>`);
+    document.getElementById("resetAllProxy").addEventListener("click", ()=> document.getElementById("resetAllBtn").click());
+  }
   mainEl.querySelectorAll("[data-set]").forEach(inp=>{
     inp.addEventListener("change", async ()=>{
       if(!hasPerm("editPreise")) return;
@@ -3735,6 +3790,7 @@ function todosHtml(todos, compact){
 function wireTodos(container, todos, rerender){
   container.querySelectorAll("[data-todoopen]").forEach(b=>b.addEventListener("click", ()=>{
     const t = todos[+b.dataset.todoopen];
+    projTabFor[t.projectId] = t.kind==="ab" ? "ab" : t.kind==="haus" ? "invoices" : "overview";
     navigateTo("projectDetail", { projectId: t.projectId });
   }));
   container.querySelectorAll("[data-todoshare]").forEach(b=>b.addEventListener("click", ()=>{
@@ -3911,7 +3967,7 @@ function openLink(link){
   if(link.type==="invoice"){
     const inv = DB.invoices.find(i=>i.id===link.id);
     if(!inv) return false;
-    navStack = []; expandedInvoiceId = inv.id; currentProjectId = inv.projectId; currentView = "projectDetail"; render();
+    navStack = []; expandedInvoiceId = inv.id; currentProjectId = inv.projectId; projTabFor[inv.projectId] = "invoices"; currentView = "projectDetail"; render();
     setTimeout(()=>{ const el = document.getElementById("editPanel-"+inv.id); if(el) el.scrollIntoView({ behavior:"smooth", block:"center" }); }, 120);
     return true;
   }
@@ -4374,14 +4430,14 @@ function renderPrintCenter(){
   const printable = list.filter(hasOriginal);
 
   mainEl.innerHTML = `
-    <h1>🖨️ Stempeln &amp; Drucken</h1>
-    <p class="subtitle">Ablauf: <b>Neu</b> → prüfen &amp; <b>freigeben</b> → hier <b>mit Eingangsstempel drucken</b> → Barcode-Sticker aufkleben. Nach dem Drucken wird die gespeicherte PDF automatisch gelöscht.</p>
-    <div class="tabs">
-      ${tabBtn("neu","1 · Neu – noch prüfen",false)}
-      ${tabBtn("bereit","2 · Freigegeben – bereit zum Drucken",true)}
-      ${tabBtn("gedruckt","3 · Gedruckt",false)}
+    ${printTab==="neu"
+      ? `<h1>② Prüfen</h1><p class="subtitle">Neu eingelesene Rechnungen. <b>Klick auf eine Zeile</b> öffnet den Prüfbericht. Rechnungen ohne Fehler kannst du markieren und <b>gesammelt freigeben</b> – danach erscheinen sie unter ③ Drucken.</p>`
+      : `<h1>③ Drucken</h1><p class="subtitle">Freigegebene Rechnungen sind schon markiert. Ein Klick auf <b>„Drucken“</b> – alle werden mit Eingangsstempel gedruckt. Danach nur noch Barcode-Sticker aufkleben. Die gespeicherten PDFs werden nach dem Drucken gelöscht.</p>`}
+    ${printTab==="neu" ? "" : `<div class="tabs">
+      ${tabBtn("bereit","Bereit zum Drucken",true)}
+      ${tabBtn("gedruckt","Gedruckt (Archiv)",false)}
       ${tabBtn("beanstandet","Beanstandet",false)}
-    </div>
+    </div>`}
     ${missing.length && printTab!=="gedruckt" ? `
       <div class="drop" id="bulkDrop" style="padding:18px;margin-bottom:14px;">
         <b>${missing.length} Rechnung(en) ohne gespeichertes Original</b> (vor der Druckfunktion eingelesen)
@@ -4477,8 +4533,8 @@ function renderPrintCenter(){
       await saveInvoice(inv);
     }
     printSel.clear();
-    printTab = "bereit"; printDeselected.clear();
-    toast(`${ok.length} Rechnung(en) freigegeben – bereit zum Drucken.`);
+    printDeselected.clear();
+    toast(`${ok.length} Rechnung(en) freigegeben – jetzt unter ③ Drucken.`);
     renderPrintCenter();
   });
   const pp = document.getElementById("pPrint");
@@ -4613,6 +4669,50 @@ async function openPrintPreview(invs){
 function closePrintPreview(){
   const r = document.getElementById("printRoot"); if(r) r.remove();
   document.body.classList.remove("printing");
+}
+
+/* ============================= STARTSEITE ============================= */
+function renderHome(){
+  const neu = DB.invoices.filter(i=>invPrintState(i)==="neu");
+  const neuFehler = neu.filter(i=>checkInvoice(i).some(f=>f.level==="danger")).length;
+  const bereit = DB.invoices.filter(i=>invPrintState(i)==="bereit");
+  const todos = computeProjectTodos();
+  const unread = unreadMessages();
+  const name = currentUser ? nameFromEmail(currentUser.email).split(" ")[0] : "";
+  const card = (n, view, title, big, desc, attn, go) => `
+    <div class="stepcard ${attn?"attn":""}" data-go="${view}">
+      <div style="display:flex;align-items:center;gap:10px;">${n ? `<span class="sn">${n}</span>` : ""}<span class="lbl">${title}</span></div>
+      <div class="big">${big}</div>
+      <div class="desc">${desc}</div>
+      <div class="go">${go} →</div>
+    </div>`;
+  mainEl.innerHTML = `
+    <h1>Guten Tag${name ? " " + escapeHtml(name) : ""} 👋</h1>
+    <p class="subtitle">So funktioniert es: <b>① Hochladen</b> → <b>② Prüfen &amp; freigeben</b> → <b>③ Drucken</b>. Die App vergleicht jede Rechnung automatisch mit der AB und den vereinbarten Preisen.</p>
+    <div class="home-grid">
+      ${card(1, "upload", "Hochladen", "📄", "Rechnungen und Auftragsbestätigungen (PDF) hineinziehen. Alles wird automatisch erkannt und zugeordnet.", false, "Rechnungen hochladen")}
+      ${card(2, "check", "Prüfen", neu.length, neu.length ? `${neu.length} neue Rechnung(en)${neuFehler ? ` – <b style="color:var(--danger)">${neuFehler} mit Fehlern</b>` : " – keine Fehler gefunden"}.` : "Keine neuen Rechnungen.", neuFehler>0, "Jetzt prüfen")}
+      ${card(3, "print", "Drucken", bereit.length, bereit.length ? `${bereit.length} freigegebene Rechnung(en) warten auf den Druck mit Stempel.` : "Nichts zu drucken.", false, "Jetzt drucken")}
+    </div>
+    <div class="row" style="align-items:stretch;flex-wrap:wrap;">
+      <div class="card" style="flex:2;min-width:320px;">
+        <h2>🔴 Zu erledigen (${todos.length})</h2>
+        ${todos.length ? `<div id="homeTodos">${todosHtml(todos.slice(0,8), true)}</div>${todos.length>8 ? `<button class="small" data-go="projects" style="margin-top:10px;">Alle ${todos.length} anzeigen →</button>` : ""}` : `<div class="muted">✓ Alles erledigt – alle Aufträge haben eine AB und sind sauber zugeordnet.</div>`}
+      </div>
+      <div class="card" style="flex:1;min-width:260px;">
+        <h2>💬 Nachrichten</h2>
+        ${unread.length ? unread.slice(0,4).map(m=>`<div class="todo" style="cursor:pointer;margin-bottom:6px;" data-go="messages"><span class="tdot"></span><div><b>${escapeHtml(nameFromEmail(m.fromEmail))}</b><div class="muted" style="font-size:12px;">${escapeHtml(shortText(m.text, 80))}</div></div></div>`).join("") : `<div class="muted">Keine ungelesenen Nachrichten.</div>`}
+        <div style="margin-top:14px;" class="muted">
+          <div>🏗️ ${DB.projects.length} Aufträge · 🧾 ${DB.invoices.length} Rechnungen · 🏢 ${getSuppliers().length} Subunternehmer</div>
+        </div>
+      </div>
+    </div>`;
+  mainEl.querySelectorAll("[data-go]").forEach(el=>el.addEventListener("click", (e)=>{
+    if(e.target.closest("button[data-todoopen],button[data-todoshare],button[data-todomerge],button[data-todonodup]")) return;
+    navStack = []; currentView = el.dataset.go; render();
+  }));
+  const ht = document.getElementById("homeTodos");
+  if(ht) wireTodos(ht, todos.slice(0,8), renderHome);
 }
 
 /* ============================= HELPERS ============================= */
