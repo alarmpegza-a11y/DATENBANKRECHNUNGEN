@@ -249,7 +249,17 @@
   table select.hsel{padding:4px 6px;font-size:12px;min-width:100px;}
   #printRoot{position:fixed;inset:0;background:#e9ebef;z-index:2000;overflow:auto;}
   .ptoolbar{position:sticky;top:0;z-index:2;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff;border-bottom:1px solid var(--border);padding:10px 18px;}
-  #ppPages{padding:20px 0 60px 0;}
+  #ppPages{padding:20px 0 60px 0;margin-left:290px;}
+  .pindex{position:fixed;top:58px;left:0;bottom:0;width:270px;overflow:auto;background:#fff;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;gap:4px;z-index:1;}
+  .pindex a{display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border-radius:6px;color:var(--text);text-decoration:none;font-size:12.5px;line-height:1.3;}
+  .pindex a:hover{background:var(--surface);}
+  .pindex .ptxt{flex:1;}
+  .pnum{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:10px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;padding:0 5px;}
+  .pst{font-weight:700;}
+  .pst.ok{color:var(--ok);} .pst.bad{color:var(--danger);}
+  .pinvhead{width:min(820px,94vw);margin:8px auto 10px auto;font-weight:600;font-size:14px;display:flex;gap:8px;align-items:center;scroll-margin-top:70px;}
+  .ploading{display:flex;align-items:center;justify-content:center;color:var(--text-dim);}
+  @media (max-width:1100px){ #ppPages{margin-left:0;} .pindex{display:none;} }
   .ppage{position:relative;width:min(820px,94vw);aspect-ratio:210/297;margin:0 auto 22px auto;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.15);overflow:hidden;}
   .ppage img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
   .pstamp{position:absolute;cursor:grab;touch-action:none;outline:1px dashed rgba(30,90,200,.55);outline-offset:4px;}
@@ -259,7 +269,7 @@
     body.printing > *:not(#printRoot){display:none !important;}
     body.printing #printRoot{position:static;background:#fff;overflow:visible;}
     body.printing .noprint{display:none !important;}
-    body.printing #ppPages{padding:0;}
+    body.printing #ppPages{padding:0;margin:0;}
     body.printing .ppage{width:210mm;height:297mm;aspect-ratio:auto;margin:0;box-shadow:none;page-break-after:always;break-after:page;}
     body.printing .ppage:last-child{page-break-after:auto;break-after:auto;}
     body.printing .pstamp{outline:none;}
@@ -1540,13 +1550,26 @@ function mengeSummary(invs){
   return keys.map(k=>`${k}: ${roundNum(agg[k].menge)} ${agg[k].einheit||""}`).join(" · ");
 }
 
+const lastSearch = {};
 function addSearchBox(container, placeholder, onFilter){
   const box = document.createElement("div");
   box.style.marginBottom = "14px";
-  box.innerHTML = `<input type="text" placeholder="${escapeAttr(placeholder)}" style="max-width:340px;">`;
+  box.innerHTML = `<input type="search" placeholder="🔍 ${escapeAttr(placeholder)}" style="max-width:420px;">`;
   container.appendChild(box);
   const input = box.querySelector("input");
-  input.addEventListener("input", ()=> onFilter(input.value.trim().toLowerCase()));
+  // Mehrere Woerter = alle muessen vorkommen ("froh altendorf 7060")
+  const apply = ()=>{
+    const q = input.value.trim().toLowerCase();
+    lastSearch[placeholder] = q;
+    const words = q.split(/\s+/).filter(Boolean);
+    // eigene Filterung ueber data-search aller Elemente im Hauptbereich
+    const items = mainEl.querySelectorAll("[data-search]");
+    if(items.length){
+      items.forEach(el=>{ const t = el.dataset.search || ""; el.style.display = words.every(w=>t.includes(w) || t.replace(/'/g,"").includes(w.replace(/'/g,""))) ? "" : "none"; });
+    } else onFilter(q);
+  };
+  input.addEventListener("input", apply);
+  if(lastSearch[placeholder]){ input.value = lastSearch[placeholder]; setTimeout(apply, 0); }
   return input;
 }
 
@@ -2286,7 +2309,7 @@ function renderInvoices(){
         <tbody id="invTableBody">
           ${sorted.map(inv=>{
             const p = DB.projects.find(x=>x.id===inv.projectId);
-            const search = [(inv.lieferant||""),(p?p.name:""),(inv.rechnungsnr||"")].join(" ").toLowerCase();
+            const search = invSearchText(inv);
             return `<tr data-search="${escapeAttr(search)}" class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.lieferant||"—")}</td>
@@ -3806,11 +3829,13 @@ function tryDeepLink(){
 }
 
 let messagesTab = null;
+let messagesQuery = "";
 function renderMessages(){
-  const projTodos = computeProjectTodos();
-  const invTodos = computeInvoiceTodos();
-  const inbox = (DB.msgsIn||[]).slice().sort((a,b)=>(toDateSafe(b.createdAt)||new Date())-(toDateSafe(a.createdAt)||new Date()));
-  const sent = (DB.msgsOut||[]).slice().sort((a,b)=>(toDateSafe(b.createdAt)||new Date())-(toDateSafe(a.createdAt)||new Date()));
+  const projTodos = computeProjectTodos().filter(t => matchesQuery([t.text, t.hint].join(" ").toLowerCase(), messagesQuery));
+  const invTodos = computeInvoiceTodos().filter(x => matchesQuery((invSearchText(x.inv) + " " + x.why).toLowerCase(), messagesQuery));
+  const mq = m => matchesQuery([m.text, m.fromEmail, m.toEmail, nameFromEmail(m.fromEmail), nameFromEmail(m.toEmail), m.link && m.link.label].filter(Boolean).join(" ").toLowerCase(), messagesQuery);
+  const inbox = (DB.msgsIn||[]).filter(mq).slice().sort((a,b)=>(toDateSafe(b.createdAt)||new Date())-(toDateSafe(a.createdAt)||new Date()));
+  const sent = (DB.msgsOut||[]).filter(mq).slice().sort((a,b)=>(toDateSafe(b.createdAt)||new Date())-(toDateSafe(a.createdAt)||new Date()));
   const unread = inbox.filter(m=>!m.read).length;
   const openIn = inbox.filter(m=>!m.erledigt).length;
   if(!messagesTab) messagesTab = unread ? "inbox" : (projTodos.length || invTodos.length ? "tasks" : "inbox");
@@ -3839,6 +3864,7 @@ function renderMessages(){
       <button class="tab ${messagesTab==="tasks"?"active":""}" data-mtab="tasks">Aufgaben ${projTodos.length+invTodos.length?`<span class="nbadge" style="display:inline-flex;">${projTodos.length+invTodos.length}</span>`:""}</button>
       <button class="tab ${messagesTab==="sent"?"active":""}" data-mtab="sent">Gesendet <span class="muted">(${sent.length})</span></button>
     </div>
+    <input type="search" id="mSearch" value="${escapeAttr(messagesQuery)}" placeholder="🔍 Nachrichten &amp; Aufgaben durchsuchen …" style="max-width:420px;margin-bottom:14px;">
     <div id="mtabBody"></div>`;
   const body = document.getElementById("mtabBody");
   if(messagesTab==="inbox"){
@@ -3866,6 +3892,8 @@ function renderMessages(){
     }));
   }
   mainEl.querySelectorAll("[data-mtab]").forEach(b=>b.addEventListener("click", ()=>{ messagesTab = b.dataset.mtab; renderMessages(); }));
+  const ms = document.getElementById("mSearch"); let msT = null;
+  ms.addEventListener("input", ()=>{ clearTimeout(msT); msT = setTimeout(()=>{ messagesQuery = ms.value.trim(); const pos = ms.selectionStart; renderMessages(); const n = document.getElementById("mSearch"); if(n){ n.focus(); try{ n.setSelectionRange(pos,pos); }catch(e){} } }, 200); });
   body.querySelectorAll("[data-openmsg]").forEach(b=>b.addEventListener("click", ()=>{
     const list = b.dataset.out==="1" ? DB.msgsOut : DB.msgsIn;
     const m = (list||[]).find(x=>x.id===b.dataset.openmsg); if(!m) return;
@@ -4120,12 +4148,25 @@ function attachOriginalPdf(inv, after){
 let printTab = "bereit";
 const printSel = new Set();
 const printDeselected = new Set(); // vom Benutzer bewusst abgewählt
+let printQuery = "";
+function invSearchText(inv){
+  const p = DB.projects.find(x=>x.id===inv.projectId);
+  const d = toDateSafe(inv.createdAt);
+  return [inv.lieferant, inv.rechnungsnr, inv.datum, inv.haus, inv.objekt, p && p.name, p && p.address, p && p.auftragsnummer,
+    inv.total!=null ? formatCHF(+inv.total) : "", inv.total!=null ? String(inv.total) : "",
+    d ? d.toLocaleDateString("de-CH") : "", inv.gedrucktAm, inv.gedrucktVon, inv.pruefung && inv.pruefung.kommentar]
+    .filter(Boolean).join(" ").toLowerCase();
+}
+function matchesQuery(text, q){
+  if(!q) return true;
+  return q.toLowerCase().split(/\s+/).filter(Boolean).every(w => text.includes(w) || text.replace(/'/g,"").includes(w.replace(/'/g,"")));
+}
 
 function renderPrintCenter(){
   const groups = { neu:[], bereit:[], gedruckt:[], beanstandet:[] };
   DB.invoices.forEach(inv=> groups[invPrintState(inv)].push(inv));
   Object.values(groups).forEach(g=>g.sort((a,b)=>(toDateSafe(b.createdAt)||0)-(toDateSafe(a.createdAt)||0)));
-  const list = groups[printTab] || [];
+  const list = (groups[printTab] || []).filter(inv => matchesQuery(invSearchText(inv), printQuery));
   // Freigegebene Rechnungen sind beim Öffnen automatisch alle markiert
   if(printTab==="bereit") list.filter(i=>hasOriginal(i) && !printDeselected.has(i.id)).forEach(i=>printSel.add(i.id));
   Array.from(printSel).forEach(id=>{ if(!list.some(i=>i.id===id)) printSel.delete(id); });
@@ -4149,6 +4190,10 @@ function renderPrintCenter(){
         <div style="font-size:12.5px;margin-top:4px;">Alle PDFs <b>gleichzeitig</b> hierher ziehen oder klicken – die App ordnet sie automatisch der richtigen Rechnung zu (Lieferant + Rechnungsnr. bzw. Betrag).</div>
         <div id="bulkStatus" class="muted" style="font-size:12.5px;margin-top:6px;"></div>
       </div>` : ""}
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      <input type="search" id="pSearch" value="${escapeAttr(printQuery)}" placeholder="🔍 Suchen: Lieferant, Objekt, Rechnungsnr., Betrag, Datum, Haus …" style="max-width:420px;">
+      ${printQuery ? `<span class="muted" style="font-size:13px;">${list.length} Treffer in diesem Tab</span><button class="small" id="pSearchClear">✕ Suche löschen</button>` : ""}
+    </div>
     ${list.length ? `
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
         <label style="display:flex;gap:6px;align-items:center;font-size:13px;"><input type="checkbox" id="pSelAll" style="width:auto;"> Alle markieren</label>
@@ -4181,7 +4226,20 @@ function renderPrintCenter(){
       </table></div></div>
       ${printTab==="neu" ? `<p class="muted" style="font-size:12px;">„Markierte freigeben“ gibt nur Rechnungen ohne Fehler frei – Rechnungen mit Fehlern einzeln prüfen (Klick auf die Zeile).</p>` : ""}
       ${printTab==="gedruckt" ? `<p class="muted" style="font-size:12px;">Nach dem Drucken wird die PDF gelöscht, um Speicher zu sparen. Nochmals drucken geht nur, wenn das Original noch vorhanden ist.</p>` : ""}`
-    : `<div class="empty">${printTab==="bereit" ? "Keine freigegebenen Rechnungen zum Drucken." : printTab==="neu" ? "Keine neuen Rechnungen." : "Keine Einträge."}</div>`}`;
+    : `<div class="empty">${printQuery ? `Keine Treffer für „${escapeHtml(printQuery)}“ in diesem Tab.` : printTab==="bereit" ? "Keine freigegebenen Rechnungen zum Drucken." : printTab==="neu" ? "Keine neuen Rechnungen." : "Keine Einträge."}</div>`}`;
+  const ps = document.getElementById("pSearch");
+  let psTimer = null;
+  ps.addEventListener("input", ()=>{
+    clearTimeout(psTimer);
+    psTimer = setTimeout(()=>{
+      printQuery = ps.value.trim();
+      const pos = ps.selectionStart;
+      renderPrintCenter();
+      const n = document.getElementById("pSearch"); if(n){ n.focus(); try{ n.setSelectionRange(pos, pos); }catch(e){} }
+    }, 200);
+  });
+  const psc = document.getElementById("pSearchClear");
+  if(psc) psc.addEventListener("click", ()=>{ printQuery = ""; renderPrintCenter(); });
 
   mainEl.querySelectorAll("[data-ptab]").forEach(b=>b.addEventListener("click", ()=>{ printTab = b.dataset.ptab; printSel.clear(); printDeselected.clear(); renderPrintCenter(); }));
   const all = document.getElementById("pSelAll");
@@ -4234,6 +4292,7 @@ async function openPrintPreview(invs){
   closePrintPreview();
   const root = document.createElement("div");
   root.id = "printRoot";
+  const label = inv => { const p = DB.projects.find(x=>x.id===inv.projectId); return `${inv.lieferant||"?"} · ${inv.rechnungsnr||"ohne Nr."}${p?" · "+p.name:""}${inv.haus?" · "+inv.haus:""}`; };
   root.innerHTML = `
     <div class="ptoolbar noprint">
       <b>Druckvorschau – ${invs.length} Rechnung(en)</b>
@@ -4243,33 +4302,26 @@ async function openPrintPreview(invs){
       <button class="primary" id="ppPrint" disabled>🖨️ Drucken</button>
       <button id="ppClose">Schliessen</button>
     </div>
-    <div id="ppPages"></div>`;
+    <div class="pindex noprint">
+      <b style="font-size:12.5px;">Markierte Rechnungen</b>
+      ${invs.map((inv,i)=>`<a href="#" data-pjump="${inv.id}" id="pidx-${inv.id}"><span class="pnum">${i+1}</span><span class="ptxt">${escapeHtml(label(inv))}</span><span class="pst" id="pst-${inv.id}">⏳</span></a>`).join("")}
+    </div>
+    <div id="ppPages">${invs.map((inv,i)=>`
+      <div class="pinvhead noprint" id="phead-${inv.id}"><span class="pnum">${i+1}</span> ${escapeHtml(label(inv))} <span class="muted" id="pmsg-${inv.id}">– wird geladen…</span></div>
+      <div class="pinvbody" id="pbody-${inv.id}"><div class="ppage ploading"><div>⏳ Original wird geladen…</div></div></div>`).join("")}
+    </div>`;
   document.body.appendChild(root);
   document.body.classList.add("printing");
   document.getElementById("ppClose").addEventListener("click", closePrintPreview);
+  root.querySelectorAll("[data-pjump]").forEach(a=>a.addEventListener("click", e=>{
+    e.preventDefault();
+    const el = document.getElementById("phead-"+a.dataset.pjump);
+    if(el) el.scrollIntoView({ behavior:"smooth", block:"start" });
+  }));
   const pagesEl = document.getElementById("ppPages");
   const info = document.getElementById("ppInfo");
 
-  let k = 0;
-  for(const inv of invs){
-    k++;
-    info.textContent = `Originale werden geladen… ${k}/${invs.length}`;
-    let imgs = [];
-    try{ imgs = await loadInvoicePageImages(inv); }
-    catch(err){ pagesEl.insertAdjacentHTML("beforeend", `<div class="noprint flag" style="padding:16px;text-align:center;">⚠ ${escapeHtml(inv.lieferant||"")} ${escapeHtml(inv.rechnungsnr||"")}: ${escapeHtml(err.message||"Original nicht ladbar")} – übersprungen.</div>`); continue; }
-    if(!imgs.length) continue;
-    const pos = inv.stempelPos || STAMP_DEFAULT_POS;
-    pagesEl.insertAdjacentHTML("beforeend", imgs.map((src, n)=>`
-      <div class="ppage" data-inv="${inv.id}">
-        <img src="${src}" alt="">
-        ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv))}</div>` : ""}
-      </div>`).join(""));
-  }
-  info.textContent = "Stempel lässt sich mit der Maus verschieben (wird pro Rechnung gespeichert).";
-  document.getElementById("ppPrint").disabled = !pagesEl.querySelector(".ppage");
-  if(!pagesEl.querySelector(".ppage")) pagesEl.insertAdjacentHTML("beforeend", `<div class="empty">Keine druckbaren Rechnungen.</div>`);
-
-  pagesEl.querySelectorAll(".pstamp").forEach(st=>{
+  const wireStamp = (st)=>{
     st.addEventListener("pointerdown", (e)=>{
       e.preventDefault();
       const page = st.parentElement, r = page.getBoundingClientRect(), sr = st.getBoundingClientRect();
@@ -4288,7 +4340,42 @@ async function openPrintPreview(invs){
       };
       st.addEventListener("pointermove", move); st.addEventListener("pointerup", up);
     });
-  });
+  };
+
+  // alle Rechnungen parallel laden (max. 3 gleichzeitig), Reihenfolge bleibt wie markiert
+  let done = 0, okCount = 0;
+  const failed = [];
+  const loadOne = async (inv)=>{
+    const body = document.getElementById("pbody-"+inv.id);
+    const msg = document.getElementById("pmsg-"+inv.id);
+    const st = document.getElementById("pst-"+inv.id);
+    try{
+      const imgs = await loadInvoicePageImages(inv);
+      if(!imgs.length) throw new Error("kein Original gespeichert");
+      const pos = inv.stempelPos || STAMP_DEFAULT_POS;
+      body.innerHTML = imgs.map((src, n)=>`
+        <div class="ppage" data-inv="${inv.id}">
+          <img src="${src}" alt="">
+          ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv))}</div>` : ""}
+        </div>`).join("");
+      body.querySelectorAll(".pstamp").forEach(wireStamp);
+      msg.textContent = `– ${imgs.length} Seite(n), Stempel verschiebbar`;
+      st.textContent = "✓"; st.className = "pst ok";
+      okCount++;
+    }catch(err){
+      body.innerHTML = "";
+      msg.innerHTML = `– <span class="flag">${escapeHtml(err.message||"Original nicht ladbar")} → wird nicht gedruckt</span>`;
+      st.textContent = "✗"; st.className = "pst bad";
+      failed.push(inv);
+    }
+    done++;
+    info.textContent = done < invs.length ? `Originale werden geladen… ${done}/${invs.length}` : `${okCount} von ${invs.length} Rechnung(en) bereit – Stempel lässt sich auf jeder Rechnung mit der Maus verschieben.`;
+  };
+  const queue = invs.slice();
+  await Promise.all([0,1,2].map(async ()=>{ while(queue.length){ await loadOne(queue.shift()); } }));
+  document.getElementById("ppPrint").disabled = okCount === 0;
+  if(failed.length) toast(`${failed.length} Rechnung(en) ohne Original – werden nicht gedruckt.`);
+
   document.getElementById("ppAll").addEventListener("click", ()=>{
     const first = pagesEl.querySelector(".pstamp"); if(!first) return;
     const pos = { x: roundNum(parseFloat(first.style.left)), y: roundNum(parseFloat(first.style.top)) };
@@ -4311,7 +4398,6 @@ async function openPrintPreview(invs){
         inv.gedrucktAm = stamp; inv.gedrucktVon = currentUser.email;
         await window.fb.setDocMerge("invoices", inv.id, { gedrucktAm: stamp, gedrucktVon: currentUser.email, eingangsdatum: inv.eingangsdatum || isoDate(eingangsDatum(inv)) });
       }
-      // Original-PDFs löschen (sofern keine andere, noch nicht gedruckte Rechnung dieselbe Datei braucht)
       for(const fid of files){
         const stillNeeded = DB.invoices.some(i => i.pdfId===fid && !i.gedrucktAm && !printed.some(p=>p.id===i.id));
         if(stillNeeded) continue;
