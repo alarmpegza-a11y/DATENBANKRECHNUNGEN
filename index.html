@@ -404,6 +404,7 @@ function startDataListeners(){
     DB.projects = snap.docs.map(d=>({ id: d.id, ...d.data() }));
     dataLoaded.projects = true;
     if(!abMigrationDone) setTimeout(migrateABs, 0);
+    setTimeout(normalizeSupplierNames, 500);
     renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
@@ -628,6 +629,20 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs
 
 const OCR_SCALE = 4.0; // ~288dpi Rendering -> deutlich bessere OCR-Genauigkeit als Standardaufloesung
 let ocrWorkerPromise = null;
+// Anzahl typischer OCR-Fehler in Zahlen (Buchstaben mitten in Zahlen, "6',53L.20", "0.2s", "2O24")
+function ocrGarbageScore(text){
+  let score = 0;
+  const toks = String(text||"").split(/\s+/);
+  for(const t of toks){
+    if(/\d['’`][,.]\d/.test(t)) { score++; continue; }                         // 6',531.20
+    const digits = (t.match(/\d/g)||[]).length;
+    if(digits < 2) continue;
+    if(/^(CH|DE|AT|LI)\d{2}/i.test(t) || /^CHE-?\d/i.test(t)) continue;       // IBAN / MWST
+    if(/\d[x×]\d/i.test(t) || /^\d+(mm|cm|m|m2|m3|kg|h)$/i.test(t)) continue;  // 1x18mm, 30mm
+    if(/\d[LlIOoSsg]|[LlIOoSsg]\d/.test(t.replace(/^(RE|NR|AB|A)[-.]?/i,""))) score++;
+  }
+  return score;
+}
 function getOcrWorker(){
   if(!ocrWorkerPromise){
     ocrWorkerPromise = Tesseract.createWorker("deu", 1, { logger: () => {} });
@@ -680,11 +695,17 @@ async function extractPagesFromPDF(file, onProgress){
     const content = await page.getTextContent();
     const totalChars = content.items.reduce((s,it) => s + (it.str||"").length, 0);
 
+    let textLines = null;
     if(totalChars > 15){
-      // Fall A: PDF hat eine echte Textebene (kein Scan) -> schnell & praezise
       const pts = content.items.map(it => ({ str: it.str, x: it.transform[4], y: -it.transform[5], width: it.width || 0 }));
-      const lines = reconstructLines(pts, 3);
-      pages.push({ pageNum: i, text: lines.join("\n"), source: "text" });
+      textLines = reconstructLines(pts, 3);
+    }
+    // Viele Scanner legen eine eigene, oft fehlerhafte Texterkennung ins PDF ("6',53L.20", "2O24L76I2").
+    // Ist diese unzuverlaessig, liest die App die Seite selbst neu (OCR).
+    const garbage = textLines ? ocrGarbageScore(textLines.join("\n")) : 0;
+    if(textLines && garbage < 3){
+      // Fall A: PDF hat eine echte, saubere Textebene -> schnell & praezise
+      pages.push({ pageNum: i, text: textLines.join("\n"), source: "text" });
       if(onProgress) onProgress(i, pdf.numPages, "text");
     } else {
       // Fall B: gescanntes Dokument, keine Textebene -> OCR noetig
@@ -800,9 +821,10 @@ function parseInvoiceText(text){
     if(fallbackLine) result.lieferant = fallbackLine;
   }
 
-  // Anzeigename vereinheitlichen, falls ein bekannter Sub erkannt wurde
+  // Anzeigename vereinheitlichen, falls ein bekannter Sub erkannt wurde (auch "Azzinnari F U BS Brandschutz" -> FUBS)
+  const compactLief = compactName(result.lieferant);
   for(const s of KNOWN_SUPPLIERS){
-    if(result.lieferant.toLowerCase().includes(s.hint)){ result.lieferant = s.name; break; }
+    if(compactLief.includes(compactName(s.hint))){ result.lieferant = s.name; break; }
   }
   // In den Einstellungen gepflegte Subunternehmer + Aliase haben Vorrang
   const userSub = matchSubInText(text, result.lieferant);
@@ -933,9 +955,11 @@ function parseInvoiceText(text){
     result.items.push({ id: uid("it"), category: cat.key, label: line.slice(0,90), menge, einheit, preis, ep });
   });
 
-  const totalM3 = text.match(/Total\s*m3\s*([\d'.,]+)/i);
-  if(totalM3 && !result.items.some(it=>it.category==="Ausflockung")){
-    result.items.push({ id: uid("it"), category: "Ausflockung", label: "Total m³ (Ausmassblatt)", menge: parseSwissNumber(totalM3[1]), einheit: "m³", preis: null, ep: null });
+  // Ausmassblaetter: "Total m3" aller Blaetter zusammenzaehlen (Blatt 1 + Blatt 2 …)
+  const m3vals = [...text.matchAll(/Total\s*m[3³]\s*:?\s*([\d'’.,]+\d)/gi)].map(m=>parseSwissNumber(m[1])).filter(v=>v!=null && v>0);
+  if(m3vals.length && !result.items.some(it=>it.category==="Ausflockung")){
+    const sumM3 = roundNum(m3vals.reduce((a,b)=>a+b,0));
+    result.items.push({ id: uid("it"), category: "Ausflockung", label: `Total m³ (Ausmassblatt${m3vals.length>1?` ${m3vals.length} Blätter: ${m3vals.join(" + ")}`:""})`, menge: sumM3, einheit: "m³", preis: null, ep: null });
   }
 
   // Nicht erkannte Zeilen: zuerst ueber die Preisliste des Subs zuordnen (Bezeichnung/Suchbegriffe),
@@ -1036,9 +1060,9 @@ function findTotal(rawLines){
     }
   }
   // Schwache Variante: "Total 1'234.50" (Betrag mit 2 Dezimalen auf derselben Zeile)
-  let last = null;
-  rawLines.forEach(l=>{ const m = l.match(new RegExp("\\bTotal\\b[^\\d\\n]{0,20}" + amt.source, "i")); if(m) last = parseSwissNumber(m[1]); });
-  return last;
+  let maxT = null;
+  rawLines.forEach(l=>{ const m = l.match(new RegExp("\\bTotal\\b[^\\d\\n]{0,20}" + amt.source, "i")); if(m){ const v = parseSwissNumber(m[1]); if(v!=null && (maxT==null || v > maxT)) maxT = v; } });
+  return maxT;
 }
 
 function sanitizeObjekt(s){
@@ -1070,7 +1094,7 @@ function normalizeUnit(u){
 }
 function parseSwissNumber(s){
   if(s===undefined||s===null) return null;
-  s = String(s).replace(/'/g,"").replace(/\s/g,"");
+  s = String(s).replace(/['’`´]/g,"").replace(/\s/g,"");
   if(/,\d{1,2}$/.test(s) && !s.includes(".")) s = s.replace(",",".");
   else s = s.replace(/,/g,"");
   const n = parseFloat(s);
@@ -1180,8 +1204,12 @@ function findMatchingProject(parsed){
   if(!parsed.objekt && !parsed.auftragsnummer) return null;
   const objLower = (parsed.objekt||"").toLowerCase();
   if(parsed.auftragsnummer){
+    const an = String(parsed.auftragsnummer).replace(/[^0-9A-Za-z]/g,"");
     const byNum = DB.projects.find(p => p.auftragsnummer && p.auftragsnummer === parsed.auftragsnummer);
     if(byNum) return byNum;
+    // Subunternehmer schreiben oft unsere AB-Nummer als "Auftragsnr." auf die Rechnung (z.B. 202417612)
+    const byAB = an.length >= 6 && DB.projects.find(p => (p.abs||[]).some(a => a.nr === an || String(a.anr||"").replace(/[^0-9A-Za-z]/g,"") === an));
+    if(byAB) return byAB;
   }
   if(objLower){
     let best = null, bestScore = 0;
@@ -1343,7 +1371,9 @@ async function handleFiles(fileList){
           if(!hasOriginal(existing) && !existing.gedrucktAm){
             const pid = await getPdfId();
             if(pid) await attachPdfToInvoice(existing, pid, g.pages);
-            dupInfo.push(`${existing.lieferant} ${existing.rechnungsnr||""}: war schon erfasst – Original ergänzt`);
+            parsed._rawText = g.allText;
+            const fixed = await refreshFromParsed(existing, parsed);
+            dupInfo.push(`${existing.lieferant} ${existing.rechnungsnr||""}: war schon erfasst – Original ergänzt${fixed.length ? ` (korrigiert: ${fixed.filter(f=>f!=="rawText").join(", ")})` : ""}`);
           } else {
             dupInfo.push(`${existing.lieferant} ${existing.rechnungsnr||""}: bereits erfasst – nicht doppelt gespeichert`);
           }
@@ -1385,7 +1415,8 @@ async function appendReviewCard(parsed){
     datum: parsed.datum || "",
     total: parsed.total,
     objekt: parsed.objekt || "",
-    haus: hausFromText(parsed.objekt) || hausFromText(String(parsed._rawText||"").split("\n").slice(0,45).join("\n")),
+    haus: hausFromText(parsed.objekt) || hausFromText(String(parsed._rawText||"").split("\n").slice(0,45).join("\n"))
+      || (((DB.projects.find(p=>p.id===projectId)||{}).abs||[]).find(a => a.haus && parsed.auftragsnummer && a.nr === String(parsed.auftragsnummer).replace(/[^0-9A-Za-z]/g,""))||{}).haus || "",
     rawText: String(parsed._rawText||"").slice(0, 30000),
     filename: parsed._filename || "",
     items: items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: (it.ep!==undefined ? it.ep : null) })),
@@ -2496,21 +2527,22 @@ function displayLabel(s){
 function getSubFor(name){
   if(!name) return null;
   const n = String(name).toLowerCase().trim();
-  return (DB.subs||[]).find(s => (s.name||"").toLowerCase().trim()===n || (s.aliases||[]).some(a=>String(a).toLowerCase().trim()===n)) || null;
+  const c = String(name).toLowerCase().replace(/[^a-z0-9äöü]/g,"");
+  return (DB.subs||[]).find(s => (s.name||"").toLowerCase().trim()===n || (s.aliases||[]).some(a=>String(a).toLowerCase().trim()===n))
+      || (c.length >= 5 ? (DB.subs||[]).find(s => [s.name, ...(s.aliases||[])].some(a => String(a||"").toLowerCase().replace(/[^a-z0-9äöü]/g,"") === c)) : null)
+      || null;
 }
 
 // Vom Benutzer gepflegte Firmennamen/Aliase im Rechnungskopf suchen (hat Vorrang vor der automatischen Erkennung)
+function compactName(s){ return String(s||"").toLowerCase().replace(/\b(gmbh|ag|sa|sàrl|klg)\b/g,"").replace(/[^a-z0-9äöü]/g,""); }
 function matchSubInText(text, currentName){
-  const cur = String(currentName||"").toLowerCase();
-  const head = String(text||"").split("\n").slice(0,30).join("\n").toLowerCase();
-  for(const s of (DB.subs||[])){
-    const terms = [s.name, ...(s.aliases||[])].map(t=>String(t||"").toLowerCase().trim()).filter(t=>t.length>=4);
-    if(terms.some(t => cur && (cur===t || cur.includes(t)))) return s;
-  }
-  for(const s of (DB.subs||[])){
-    const terms = [s.name, ...(s.aliases||[])].map(t=>String(t||"").toLowerCase().trim()).filter(t=>t.length>=4);
-    if(terms.some(t => head.includes(t))) return s;
-  }
+  const cur = compactName(currentName);
+  const all = compactName(text);
+  const head = compactName(String(text||"").split("\n").slice(0,30).join(" "));
+  const termsOf = s => [s.name, ...(s.aliases||[])].map(compactName).filter(t=>t.length>=4);
+  for(const s of (DB.subs||[])) if(termsOf(s).some(t => cur && (cur===t || cur.includes(t)))) return s;
+  for(const s of (DB.subs||[])) if(termsOf(s).some(t => head.includes(t))) return s;
+  for(const s of (DB.subs||[])) if(termsOf(s).some(t => t.length>=8 && all.includes(t))) return s; // z.B. im QR-Zahlteil
   return null;
 }
 
@@ -2629,6 +2661,16 @@ function findTarif(sub, inv, it){
 const AB_PARSER_VERSION = 3;
 // Bereits gespeicherte ABs mit dem aktuellen Leser neu auswerten (Rohtext ist gespeichert -> kein erneuter Upload noetig)
 let abMigrationDone = false;
+let supplierFixDone = false;
+async function normalizeSupplierNames(){
+  if(supplierFixDone || !(DB.subs||[]).length) return;
+  supplierFixDone = true;
+  for(const inv of DB.invoices){
+    if(getSubFor(inv.lieferant)) continue;
+    const s = matchSubInText("", inv.lieferant);
+    if(s && s.name !== inv.lieferant){ inv.lieferant = s.name; try{ await window.fb.setDocMerge("invoices", inv.id, { lieferant: s.name }); }catch(e){} }
+  }
+}
 async function migrateABs(){
   if(abMigrationDone) return;
   abMigrationDone = true;
@@ -3176,13 +3218,32 @@ function houseNo(s, street){
   return m ? m[1] : null;
 }
 // 0 = anderes Objekt, 1 = unsicher, >=2 = gleiches Objekt
+function deumlaut(t){ return String(t).replace(/ä/g,"a").replace(/ö/g,"o").replace(/ü/g,"u").replace(/ae/g,"a").replace(/oe/g,"o").replace(/ue/g,"u"); }
+// genau ein abweichender Buchstabe, und zwar ein Vokal (typischer OCR-Fehler: ü -> i/u). "Kirch" vs "Birch" zaehlt NICHT.
+function editDist1(a, b){
+  if(a === b) return true;
+  if(a.length !== b.length) return false;
+  let diff = 0;
+  for(let i=0;i<a.length;i++){
+    if(a[i] === b[i]) continue;
+    if(++diff > 1) return false;
+    if(!/[aeiouy]/.test(a[i]) || !/[aeiouy]/.test(b[i])) return false;
+  }
+  return true;
+}
+function tokEq(x, y){
+  if(x === y) return true;
+  const a = deumlaut(x), b = deumlaut(y);
+  if(a === b) return true;
+  return a.length >= 7 && b.length >= 7 && editDist1(a, b);
+}
 function scoreAddress(a, b){
   const ta = addrTokens(a), tb = addrTokens(b);
   if(!ta.length || !tb.length) return 0;
-  const overlap = ta.filter(t=>tb.includes(t));
+  const overlap = ta.filter(t=>tb.some(u=>tokEq(t,u)));
   const sa = ta.find(t=>STREET_RE.test(t)), sb = tb.find(t=>STREET_RE.test(t));
   if(sa && sb){
-    if(sa !== sb) return 0;                       // verschiedene Strassen = verschiedene Objekte
+    if(!tokEq(sa, sb)) return 0;                  // verschiedene Strassen = verschiedene Objekte
     const na = houseNo(a, sa), nb = houseNo(b, sb);
     if(na && nb && na !== nb) return 1;           // gleiche Strasse, andere Hausnummer -> unsicher
     return 2 + (overlap.length - 1) * 0.5 + (na && nb ? 0.5 : 0);
@@ -4091,8 +4152,10 @@ async function loadInvoicePageImages(inv){
 /* ---------- Bereits erfasste Rechnung wiedererkennen (kein Duplikat, nur Original ergänzen) ---------- */
 function sameSupplier(a, b){
   if(!a || !b) return false;
-  const sa = getSubFor(a), sb = getSubFor(b);
+  const sa = getSubFor(a) || matchSubInText("", a), sb = getSubFor(b) || matchSubInText("", b);
   if(sa && sb) return sa.id === sb.id;
+  const ca = compactName(a), cb = compactName(b);
+  if(ca && cb && (ca.includes(cb) || cb.includes(ca))) return true;
   const na = String(a).toLowerCase().replace(/\b(gmbh|ag|sa|sàrl)\b/g,"").trim();
   const nb = String(b).toLowerCase().replace(/\b(gmbh|ag|sa|sàrl)\b/g,"").trim();
   return na === nb || (na.split(/\s+/)[0] && na.split(/\s+/)[0] === nb.split(/\s+/)[0]);
@@ -4100,15 +4163,42 @@ function sameSupplier(a, b){
 function findExistingInvoice(parsed){
   const nr = cleanRnr(parsed.rechnungsnr).toLowerCase();
   const sameSup = DB.invoices.filter(i => sameSupplier(i.lieferant, parsed.lieferant));
+  // Widerspruch = sicher eine ANDERE Rechnung (anderer Betrag oder anderes Objekt)
+  const contradicts = i => {
+    if(num(i.total)!=null && parsed.total!=null && Math.abs(+i.total - +parsed.total) > 0.01) return true;
+    const oi = i.objekt || (DB.projects.find(p=>p.id===i.projectId)||{}).address || "";
+    if(oi && parsed.objekt && scoreAddress(stripHaus(oi), stripHaus(parsed.objekt)) === 0) return true;
+    return false;
+  };
   if(nr){
-    const byNr = sameSup.find(i => cleanRnr(i.rechnungsnr).toLowerCase() === nr);
+    const byNr = sameSup.find(i => cleanRnr(i.rechnungsnr).toLowerCase() === nr && !contradicts(i));
     if(byNr) return byNr;
   }
   if(parsed.total!=null){
-    const byTotal = sameSup.filter(i => !hasOriginal(i) && num(i.total)!=null && Math.abs(+i.total - +parsed.total) < 0.01);
+    const byTotal = sameSup.filter(i => !hasOriginal(i) && num(i.total)!=null && Math.abs(+i.total - +parsed.total) < 0.01 && !contradicts(i));
     if(byTotal.length === 1) return byTotal[0];
   }
+  // gleiches Objekt + gleiches Datum, alte Rechnung ohne Original (z.B. Nummer/Betrag frueher falsch gelesen)
+  if(parsed.objekt && parsed.datum){
+    const byObj = sameSup.filter(i => !hasOriginal(i) && i.datum===parsed.datum && !contradicts(i)
+      && scoreAddress(stripHaus(i.objekt || (DB.projects.find(p=>p.id===i.projectId)||{}).address || ""), stripHaus(parsed.objekt)) >= 2);
+    if(byObj.length === 1) return byObj[0];
+  }
   return null;
+}
+// Beim Ergaenzen des Originals frueher falsch gelesene Werte korrigieren
+async function refreshFromParsed(inv, parsed){
+  const upd = {};
+  if(parsed.lieferant && compactName(parsed.lieferant)!==compactName(inv.lieferant) && getSubFor(parsed.lieferant) && !getSubFor(inv.lieferant)) upd.lieferant = parsed.lieferant;
+  if(num(inv.total)==null && parsed.total!=null) upd.total = parsed.total;
+  if(parsed.rechnungsnr && cleanRnr(parsed.rechnungsnr)!==cleanRnr(inv.rechnungsnr)){
+    const clash = DB.invoices.some(o => o.id!==inv.id && sameSupplier(o.lieferant, inv.lieferant) && cleanRnr(o.rechnungsnr)===cleanRnr(inv.rechnungsnr));
+    if(!inv.rechnungsnr || clash) upd.rechnungsnr = parsed.rechnungsnr;
+  }
+  if(!inv.objekt && parsed.objekt) upd.objekt = parsed.objekt;
+  if(parsed._rawText && !inv.rawText) upd.rawText = String(parsed._rawText).slice(0, 30000);
+  if(Object.keys(upd).length){ Object.assign(inv, upd); await window.fb.setDocMerge("invoices", inv.id, upd); }
+  return Object.keys(upd);
 }
 async function attachPdfToInvoice(inv, pdfId, pages){
   const old = inv.pdfId;
@@ -4128,12 +4218,13 @@ async function bulkAttachOriginals(files, statusEl){
       const hits = [];
       groups.forEach(g=>{
         const parsed = parseInvoiceText(g.allText);
+        parsed._rawText = g.allText;
         const ex = findExistingInvoice(parsed);
-        if(ex) hits.push({ inv: ex, pages: g.pages }); else misses.push(`${file.name}${groups.length>1?` (S. ${g.pages.join(",")})`:""}`);
+        if(ex) hits.push({ inv: ex, pages: g.pages, parsed }); else misses.push(`${file.name}${groups.length>1?` (S. ${g.pages.join(",")})`:""}`);
       });
       if(hits.length){
         const pdfId = await storePdfFile(file);
-        if(pdfId) for(const h of hits){ await attachPdfToInvoice(h.inv, pdfId, h.pages); ok++; }
+        if(pdfId) for(const h of hits){ await attachPdfToInvoice(h.inv, pdfId, h.pages); await refreshFromParsed(h.inv, h.parsed); ok++; }
       }
     }catch(err){ console.error(err); misses.push(file.name); }
   }
