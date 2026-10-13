@@ -1836,7 +1836,7 @@ function renderProjects(){
         <div class="pmeta">
           <div class="muted" style="font-size:12px;">${invs.length} Rechnung(en)</div>
         </div>
-        ${(p.abs||[]).length ? `<span class="pill neutral" title="Auftragsbestätigung hinterlegt">📑 AB</span>` : `<span class="pill warn" title="Ohne AB keine Mengenkontrolle">keine AB</span>`}
+        ${(p.abs||[]).length ? `<span class="pill neutral" title="Auftragsbestätigung hinterlegt">📑 AB</span>` : (p.ohneAB || (invs.length && invs.every(invOhneAB))) ? `<span class="pill neutral" title="Keine AB vorhanden – bestätigt">ohne AB ✓</span>` : `<span class="pill warn" title="Ohne AB keine Mengenkontrolle">keine AB</span>`}
         ${(()=>{ const bad = invs.filter(i=>!(i.pruefung && i.pruefung.status) || i.pruefung.status==="offen").filter(i=>checkInvoice(i).some(x=>x.level==="danger")).length; return bad ? `<span class="pill danger">✗ ${bad} Rechn. mit Fehlern</span>` : ""; })()}
         ${needsReview ? `<span class="pill warn">⚠ Prüfen nötig</span>` : (overCount>0 ? `<span class="pill danger">⚠ ${overCount} über Soll</span>` : `<span class="pill ok">im Soll</span>`)}
         <button class="small" data-shareproj="${p.id}" title="Teilen" style="margin-left:6px;">📤</button>
@@ -2062,7 +2062,8 @@ function renderProjectDetail(projectId){
               <div><div class="section-title" style="margin-top:0;color:var(--danger);">Exklusive / nicht enthalten</div><ul class="abl">${(ab.exkl||[]).map(x=>`<li>${escapeHtml(x)}</li>`).join("") || "<li class='muted'>—</li>"}</ul></div>
             </div>` : ""}
         </div>`;
-      }).join("") : `<div class="drop" id="abDrop" style="margin-top:12px;padding:22px;"><b>Noch keine AB hinterlegt.</b><div style="font-size:12px;margin-top:4px;">PDF hierher ziehen oder klicken. Ohne AB können Mengen und Leistungsumfang nicht geprüft werden.</div></div>`}
+      }).join("") : `<div class="drop" id="abDrop" style="margin-top:12px;padding:22px;"><b>${p.ohneAB ? "Keine AB vorhanden (bestätigt)." : "Noch keine AB hinterlegt."}</b><div style="font-size:12px;margin-top:4px;">PDF hierher ziehen oder klicken. Ohne AB können Mengen und Leistungsumfang nicht geprüft werden.</div></div>
+        <div style="margin-top:8px;"><button class="small ${p.ohneAB ? "st-ok" : ""}" id="projOhneAB">${p.ohneAB ? "✓ Keine AB vorhanden (ganzes Objekt) – rückgängig" : "🚫 Keine AB vorhanden! (für das ganze Objekt)"}</button></div>`}
       ${leitfaden.length ? `<div class="muted" style="font-size:12px;margin-top:10px;">⏱ Leitfadenzeit laut AB: ${leitfaden.map(x=>`${escapeHtml(x.artikel)} ${fmtQty(x.leitfadenzeitH)} h`).join(" · ")}</div>` : ""}
     </div>
 
@@ -2212,6 +2213,13 @@ function renderProjectDetail(projectId){
     }catch(err){ console.error(err); toast("Fehler beim Lesen der AB: " + (err.message||err)); }
   };
   document.getElementById("abUploadBtn").addEventListener("click", ()=> pickABFile(doABUpload));
+  const poa = document.getElementById("projOhneAB");
+  if(poa) poa.addEventListener("click", async ()=>{
+    p.ohneAB = !p.ohneAB;
+    await saveProject(p);
+    toast(p.ohneAB ? "Objekt ohne AB – keine AB-Meldungen mehr." : "Markierung entfernt.");
+    renderProjectDetail(projectId);
+  });
   const abDrop = document.getElementById("abDrop");
   if(abDrop){
     abDrop.addEventListener("click", ()=> pickABFile(doABUpload));
@@ -2968,7 +2976,9 @@ function checkInvoice(inv){
   const houses = p ? projectHouses(p) : [];
   const invHaus = inv.haus || "";
   let scopeHaus; // undefined = ganzes Objekt
-  if(p && (houses.length > 1 || allAbs.some(a=>a.haus))){
+  const ohneAB = invOhneAB(inv);
+  if(ohneAB) f.push({ level:"ok", text:`Keine AB vorhanden – bestätigt${inv.ohneAB && inv.ohneABvon ? ` von ${inv.ohneABvon}` : (!inv.ohneAB ? " (für das ganze Objekt)" : "")}. Preise werden trotzdem geprüft.` });
+  if(p && !ohneAB && (houses.length > 1 || allAbs.some(a=>a.haus))){
     if(!invHaus){
       f.push({ level:"warn", text:`Objekt hat mehrere Häuser (${houses.join(", ")}) – diese Rechnung ist keinem Haus zugeordnet. Bitte Haus wählen, sonst ist keine Kontrolle pro Haus möglich.` });
     } else if(allAbs.some(a=>a.haus===invHaus)){
@@ -3043,7 +3053,7 @@ function checkInvoice(inv){
       const soll = getSoll(p, cat, scopeHaus);
       const u = catUnit(cat);
       if(!soll){
-        if(abs.length && !["Sonstiges","Regie"].includes(cat)){
+        if(abs.length && !ohneAB && !["Sonstiges","Regie"].includes(cat)){
           const kws = [catLabel(cat).toLowerCase(), ...((catDef(cat)||{}).keywords||[])].map(k=>k.trim()).filter(k=>k.length>=4);
           const inklLine = abs.flatMap(a=>a.inkl||[]).find(l => kws.some(k => l.toLowerCase().includes(k)));
           if(inklLine) f.push({ level:"warn", text:`${catLabel(cat)}${hTxt}: laut AB inklusive („${shortText(inklLine,60)}“), aber ohne Menge in der AB – Soll im Auftrag manuell setzen (✎), damit die Menge geprüft wird.` });
@@ -3055,7 +3065,7 @@ function checkInvoice(inv){
         f.push({ level:"ok", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} von ${fmtQty(soll.menge)} ${u} (${soll.quelle}).` });
       }
     });
-    if(!abs.length) f.push({ level:"info", text:"Für diesen Auftrag ist keine AB hinterlegt – Mengen und Leistungsumfang können nicht gegen den Auftrag geprüft werden." });
+    if(!abs.length && !ohneAB) f.push({ level:"info", text:"Für diesen Auftrag ist keine AB hinterlegt – Mengen und Leistungsumfang können nicht gegen den Auftrag geprüft werden." });
   }
   return f;
 }
@@ -3113,6 +3123,7 @@ function renderPruefPanel(el, getInv){
           <button class="small ${st==="beanstandet"?"st-bad":"danger"}" data-ps="beanstandet">✗ Beanstanden</button>
           <button class="small" data-ps="offen" ${st==="offen"?"disabled":""}>↺ Offen</button>
           <button class="small" data-copybean>📋 Beanstandung kopieren</button>
+          <button class="small ${inv.ohneAB ? "st-ok" : ""}" data-ohneab title="Für diese Rechnung gibt es keine AB (z.B. Regie, Reparatur) – AB-Meldungen ausblenden">${inv.ohneAB ? "✓ Keine AB vorhanden" : "🚫 Keine AB vorhanden!"}</button>
         </div>
       </div>
     </div>`;
@@ -3135,6 +3146,16 @@ function renderPruefPanel(el, getInv){
       renderPruefPanel(el, getInv);
       toast(next==="ok" ? "Rechnung freigegeben." : next==="beanstandet" ? "Rechnung beanstandet – zählt nicht mehr ins Ist." : "Status zurückgesetzt.");
     });
+  });
+  el.querySelector("[data-ohneab]").addEventListener("click", async ()=>{
+    const i = getInv(); if(!i) return;
+    const next = !i.ohneAB;
+    i.ohneAB = next;
+    i.ohneABvon = next ? `${initialsFor(currentUser.email)} ${shortDate(new Date())}` : "";
+    await window.fb.setDocMerge("invoices", i.id, { ohneAB: next, ohneABvon: i.ohneABvon });
+    renderPruefPanel(el, getInv);
+    updateBadges();
+    toast(next ? "Markiert: keine AB vorhanden – AB-Meldungen ausgeblendet." : "Markierung entfernt – AB wird wieder erwartet.");
   });
   el.querySelector("[data-copybean]").addEventListener("click", ()=>{
     const i = getInv(); if(!i) return;
@@ -3623,6 +3644,13 @@ function projectHouses(p){
   DB.invoices.forEach(i=>{ if(i.projectId===p.id && i.haus) set.add(i.haus); });
   return Array.from(set).sort(hausSort);
 }
+// "Keine AB vorhanden" bestaetigt: pro Rechnung oder fuer das ganze Objekt
+function invOhneAB(inv){
+  if(!inv) return false;
+  if(inv.ohneAB) return true;
+  const p = DB.projects.find(x=>x.id===inv.projectId);
+  return !!(p && p.ohneAB);
+}
 function houseNeedsAB(p, h){
   const abs = p.abs || [];
   return !abs.some(a=>a.haus===h) && !abs.some(a=>!a.haus);
@@ -3645,15 +3673,18 @@ function computeProjectTodos(){
     const invs = DB.invoices.filter(i=>i.projectId===p.id);
     const abs = p.abs || [];
     const houses = projectHouses(p);
-    if(!abs.length){
+    const relevant = invs.filter(i=>!invOhneAB(i));
+    if(p.ohneAB || (invs.length && !relevant.length)){
+      // "Keine AB vorhanden" bestaetigt -> keine Meldungen zu AB/Haeusern
+    } else if(!abs.length){
       t.push({ kind:"ab", projectId:p.id, text:`AB fehlt – ${p.name}`, hint:"Ohne AB keine Mengen- und Leistungskontrolle.", share:`Bitte für das Objekt „${p.name}“ die Auftragsbestätigung (AB) im Tool hochladen.` });
     } else {
-      houses.filter(h=>houseNeedsAB(p, h)).forEach(h=>{
+      houses.filter(h=>houseNeedsAB(p, h) && (!invs.some(i=>i.haus===h) || relevant.some(i=>i.haus===h))).forEach(h=>{
         t.push({ kind:"ab", projectId:p.id, text:`AB fehlt für ${h} – ${p.name}`, hint:"Für dieses Haus ist keine eigene AB hinterlegt.", share:`Bitte für „${p.name}“, ${h}, die Auftragsbestätigung (AB) im Tool hochladen.` });
       });
     }
-    if(houses.length > 1 || abs.some(a=>a.haus)){
-      const n = invs.filter(i=>!i.haus).length;
+    if(!p.ohneAB && (houses.length > 1 || abs.some(a=>a.haus))){
+      const n = relevant.filter(i=>!i.haus).length;
       if(n) t.push({ kind:"haus", projectId:p.id, text:`${n} Rechnung(en) ohne Haus – ${p.name}`, hint:`Objekt hat ${houses.length} Häuser (${houses.join(", ")}). Jede Rechnung muss einem Haus zugeordnet sein.`, share:`Bitte bei „${p.name}“ die Rechnungen den richtigen Häusern zuordnen.` });
     }
   });
