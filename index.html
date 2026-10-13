@@ -374,6 +374,7 @@ function startDataListeners(){
   unsubProjects = window.fb.watchCollection("projects", (snap)=>{
     DB.projects = snap.docs.map(d=>({ id: d.id, ...d.data() }));
     dataLoaded.projects = true;
+    if(!abMigrationDone) setTimeout(migrateABs, 0);
     renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
@@ -418,6 +419,7 @@ function stopDataListeners(){
   if(unsubSettings){ unsubSettings(); unsubSettings=null; }
   if(unsubMsgIn){ unsubMsgIn(); unsubMsgIn=null; }
   if(unsubMsgOut){ unsubMsgOut(); unsubMsgOut=null; }
+  abMigrationDone = false;
   seenMsgIds = null;
   dataLoaded = { projects:false, invoices:false };
   if(unsubProfile){ unsubProfile(); unsubProfile=null; }
@@ -758,11 +760,9 @@ function parseInvoiceText(text){
   const userSub = matchSubInText(text, result.lieferant);
   if(userSub) result.lieferant = userSub.name;
 
-  // --- Rechnungsnummer ---
-  let m = text.match(/Rechnung\s*(?:s-?Nr\.?|Nr\.?)?\.?\s*[:\-]?\s*([A-Za-z0-9.\-\/]{3,})/i);
-  if(m) result.rechnungsnr = m[1].trim();
-  m = text.match(/Rechnung\s+(RE-\d+)/i);
-  if(m) result.rechnungsnr = m[1];
+  // --- Rechnungsnummer (gelerntes Muster des Subs > beschriftete Nummer > Nummer unter Kopfzeile) ---
+  let m;
+  result.rechnungsnr = findRechnungsnr(text, result.lieferant);
 
   // --- Datum ---
   m = text.match(/Datum:?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i);
@@ -945,6 +945,94 @@ function parseSwissNumber(s){
   else s = s.replace(/,/g,"");
   const n = parseFloat(s);
   return isNaN(n) ? null : n;
+}
+
+/* ============================= RECHNUNGSNUMMER ============================= */
+
+const RNR_VAL = "([A-Z]{0,4}[-\\s]?\\d[\\dA-Z.\\-\\/]{2,})";
+function rnrValid(v){
+  v = String(v||"").trim();
+  const digits = v.replace(/\D/g,"");
+  if(digits.length < 3 || v.length > 25) return false;
+  if(/^\d{1,2}\.\d{1,2}\.\d{2,4}$/.test(v)) return false;           // Datum
+  if(/^CHE[-\s]?\d/i.test(v) || /^CH\d{2}/i.test(v)) return false;    // MWST / IBAN
+  if(/^0\d{2}[\s\/]?\d{3}/.test(v)) return false;                      // Telefon
+  return true;
+}
+function cleanRnr(v){ return String(v||"").trim().replace(/[.,:;]+$/,"").replace(/\s+/g,""); }
+function escRe(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+function rnrCandidates(text, lieferant){
+  const lines = String(text||"").split("\n").map(l=>l.trim()).filter(Boolean);
+  const out = [];
+  const excluded = new Set();
+  // beschriftete Fremdnummern (Kunden-Nr., Auftrag, MWST …) nie als Rechnungsnr. nehmen
+  const exRe = new RegExp("(?:Kunden|Kd|Auftrags?|Bestell|Projekt|Objekt|Referenz|Ref|Lieferschein|Offerte|MWST|UID|Konto|Tel(?:efon)?)\\s*[-.]?\\s*(?:Nr|Nummer|No)?\\.?\\s*[:#]?\\s*" + RNR_VAL, "gi");
+  for(const mm of text.matchAll(exRe)) excluded.add(cleanRnr(mm[1]).toLowerCase());
+  const add = (v, how)=>{ v = cleanRnr(v); if(rnrValid(v) && !excluded.has(v.toLowerCase()) && !out.some(o=>o.v===v)) out.push({ v, how }); };
+
+  // 1) vom Benutzer gelerntes Muster dieses Subunternehmers
+  const sub = getSubFor(lieferant);
+  const L = sub && sub.rnrMuster;
+  if(L && L.prefix){
+    for(const mm of text.matchAll(new RegExp(escRe(L.prefix) + "\\s*[:#]?\\s*" + RNR_VAL, "gi"))) add(mm[1], "gelernt");
+  }
+  if(L && L.header){
+    const norm = s => s.toLowerCase().replace(/\s+/g," ").trim();
+    const i = lines.findIndex(l => norm(l) === norm(L.header));
+    if(i > -1 && lines[i+1]){ const tok = lines[i+1].split(/\s+/)[L.idx||0]; if(tok) add(tok, "gelernt"); }
+  }
+  // 2) beschriftete Rechnungsnummer
+  for(const mm of text.matchAll(new RegExp("Rechnungs?\\s*[-.]?\\s*(?:Nr|Nummer|No)\\.?\\s*[:#]?\\s*" + RNR_VAL, "gi"))) add(mm[1], "Rechnung Nr.");
+  for(const mm of text.matchAll(new RegExp("\\bRechnung\\s*[:#]?\\s+" + RNR_VAL, "gi"))) add(mm[1], "Rechnung");
+  for(const mm of text.matchAll(new RegExp("\\b(?:Beleg|Faktura|Invoice|Rg)\\s*[-.]?\\s*(?:Nr|Nummer|No)\\.?\\s*[:#]?\\s*" + RNR_VAL, "gi"))) add(mm[1], "Beleg");
+  // 3) Nummer in der Zeile unter einer Kopfzeile "Rechnung Nr. | Datum | …"
+  lines.forEach((l, i)=>{
+    if(!/\brechnung(s?\s*[-.]?\s*(nr|nummer))?\b/i.test(l) || !lines[i+1]) return;
+    if(new RegExp("rechnung\\S*\\s*[-.:#]?\\s*(?:nr|nummer)?\\.?\\s*[:#]?\\s*\\d","i").test(l)) return; // Nummer steht schon in derselben Zeile
+    const heads = l.split(/\s{2,}|\s(?=[A-ZÄÖÜ])/);
+    const raw = lines[i+1].split(/\s+/);
+    const hi = heads.findIndex(h=>/rechnung/i.test(h));
+    if(hi < 0) return;
+    const cand = raw[hi];
+    if(cand && rnrValid(cleanRnr(cand))) add(cand, "unter Kopfzeile");
+  });
+  return out;
+}
+function findRechnungsnr(text, lieferant){
+  const c = rnrCandidates(text, lieferant);
+  if(!c.length) return "";
+  if(c[0].how === "gelernt") return c[0].v;
+  // Nummer, die beim selben Sub schon auf einer ANDEREN Rechnung (anderes Objekt) vorkommt, ist meist eine Kunden-/Referenznummer
+  const lief = String(lieferant||"").toLowerCase();
+  const usedElsewhere = v => (DB.invoices||[]).some(o => String(o.lieferant||"").toLowerCase()===lief && String(o.rechnungsnr||"").toLowerCase()===v.toLowerCase());
+  const fresh = c.find(x => !usedElsewhere(x.v));
+  return (fresh || c[0]).v;
+}
+
+// Korrigiert der Benutzer eine Rechnungsnr., merkt sich das Tool, wo sie bei diesem Sub steht
+async function learnRechnungsnr(inv){
+  const v = cleanRnr(inv.rechnungsnr);
+  const raw = String(inv.rawText||"");
+  if(!v || !raw || !inv.lieferant) return;
+  const lines = raw.split("\n").map(l=>l.trim()).filter(Boolean);
+  const i = lines.findIndex(l => l.replace(/\s+/g,"").includes(v));
+  if(i < 0) return;
+  const line = lines[i];
+  const pos = line.search(new RegExp(v.split("").map(escRe).join("\\s*")));
+  const before = pos > 0 ? line.slice(0, pos) : "";
+  const pm = before.match(/([A-Za-zÄÖÜäöü][A-Za-zÄÖÜäöü.\-\s]{1,30}?)\s*[:#]?\s*$/);
+  let muster;
+  if(pm && /[A-Za-zÄÖÜäöü]{2,}/.test(pm[1])) muster = { prefix: pm[1].trim() };
+  else if(i > 0) muster = { header: lines[i-1], idx: Math.max(0, line.split(/\s+/).findIndex(t => cleanRnr(t)===v)) };
+  if(!muster) return;
+  let sub = getSubFor(inv.lieferant);
+  const data = sub ? cleanSubForSave(sub) : { name: inv.lieferant, aliases: [], kontakt:"", notizen:"", tarife: [] };
+  data.rnrMuster = muster;
+  try{
+    await window.fb.setDoc("subunternehmer", sub ? sub.id : slugify(inv.lieferant), data);
+    toast(`Gemerkt: Bei ${inv.lieferant} steht die Rechnungsnr. ${muster.prefix ? `nach „${muster.prefix}“` : "unter der Kopfzeile"}.`);
+  }catch(err){ console.warn("Rechnungsnr.-Muster nicht gespeichert (Berechtigung „Preise bearbeiten“ nötig)", err); }
 }
 
 /* ============================= AUFTRAG MATCHING ============================= */
@@ -1142,7 +1230,8 @@ async function appendReviewCard(parsed){
     datum: parsed.datum || "",
     total: parsed.total,
     objekt: parsed.objekt || "",
-    haus: hausFromText(parsed.objekt),
+    haus: hausFromText(parsed.objekt) || hausFromText(String(parsed._rawText||"").split("\n").slice(0,45).join("\n")),
+    rawText: String(parsed._rawText||"").slice(0, 30000),
     filename: parsed._filename || "",
     items: items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: (it.ep!==undefined ? it.ep : null) })),
   };
@@ -1234,6 +1323,7 @@ async function appendReviewCard(parsed){
   wrap.querySelectorAll("[data-f]").forEach(inp=>{
     if(inp.tagName==="SELECT") return;
     inp.addEventListener("change", ()=> setTimeout(()=>{
+      if(inp.dataset.f==="rechnungsnr"){ const i = findInvoice(); if(i){ if(!i.rawText) i.rawText = String(parsed._rawText||"").slice(0,30000); learnRechnungsnr(i); } }
       if(inp.dataset.f==="lieferant") renderItemsTable(wrap.querySelector(".itemsSlot"), findInvoice, refreshPruef);
       refreshPruef();
     }, 0));
@@ -1734,7 +1824,7 @@ function renderProjectDetail(projectId){
         const open = expandedABs.has(p.id+"|"+ab.nr);
         return `<div class="abbox">
           <div class="abhead">
-            <div><b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}
+            <div><b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}${ab.haus?` · <span class="hchip ok">${escapeHtml(ab.haus)}</span>`:""}${ab.los?` <span class="muted">Los ${escapeHtml(ab.los)}</span>`:""}
               <div class="muted" style="font-size:12px;">Kunde: ${escapeHtml(ab.kunde||"—")}${ab.kontakt?" ("+escapeHtml(ab.kontakt)+")":""} · Offerte ${escapeHtml(ab.offertdatum||"—")} · ${ab.einheiten!=null?ab.einheiten+" Einheiten · ":""}CHF ${fmt(ab.auftragswert)} exkl. MwSt · eingelesen ${escapeHtml(ab.importedAt||"")}</div>
             </div>
             <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">
@@ -1753,7 +1843,7 @@ function renderProjectDetail(projectId){
                   <td><b>${escapeHtml(pos.artikel)}</b> <span class="muted">${escapeHtml(pos.gruppe||"")}</span><div class="muted" style="font-size:12px;white-space:pre-line;">${escapeHtml(shortText(pos.beschreibung, 160))}</div></td>
                   <td class="num" style="white-space:nowrap;">${fmtQty(pos.menge)} ${escapeHtml(pos.einheit)}</td>
                   <td class="num">${fmt(pos.ep)}</td>
-                  <td class="num">${fmt(pos.betrag)}${pos.rabatt?`<div class="muted" style="font-size:11px;">−${pos.rabatt}%</div>`:""}</td>
+                  <td class="num">${fmt(pos.betrag)}${pos.betragAnteilig?`<div class="muted" style="font-size:11px;">anteilig aus Gruppe</div>`:""}${pos.rabatt?`<div class="muted" style="font-size:11px;">−${pos.rabatt}%</div>`:""}</td>
                   <td style="min-width:170px;"><select data-abpos="${escapeAttr(ab.nr)}|${escapeAttr(pos.pos)}"><option value="">— nicht Sub-relevant —</option>${catOpts}</select>
                     ${pos.material?`<div class="muted" style="font-size:11px;margin-top:2px;">Material: ${escapeHtml(pos.material)}</div>`:""}</td>
                 </tr>`).join("")}</tbody>
@@ -2005,6 +2095,7 @@ function renderInvoiceEditPanel(panel, invoiceId){
       <div class="section-title">Positionen</div>
       <div class="itemsSlot"></div>
       <div class="pruefSlot" style="margin-top:14px;"></div>
+      ${inv.rawText ? `<details style="margin-top:10px;"><summary class="muted" style="cursor:pointer;font-size:12px;">Rohtext der Rechnung anzeigen</summary><textarea class="raw" readonly style="width:100%;margin-top:6px;">${escapeHtml(inv.rawText)}</textarea></details>` : ""}
     </div>
   `;
   const pruefSlot = panel.querySelector(".pruefSlot");
@@ -2020,6 +2111,7 @@ function renderInvoiceEditPanel(panel, invoiceId){
       const i = getInv(); if(!i) return;
       if(inp.dataset.ef==="haus"){ i.haus = normHaus(inp.value); inp.value = i.haus; }
       saveInvoice(i);
+      if(inp.dataset.ef==="rechnungsnr") learnRechnungsnr(i);
       if(inp.dataset.ef==="lieferant") renderItemsTable(itemsSlot, getInv, refresh);
       refresh();
     });
@@ -2343,6 +2435,37 @@ function findTarif(sub, inv, it){
 
 /* ============================= AUFTRAGSBESTAETIGUNG (AB) LESEN ============================= */
 
+const AB_PARSER_VERSION = 3;
+// Bereits gespeicherte ABs mit dem aktuellen Leser neu auswerten (Rohtext ist gespeichert -> kein erneuter Upload noetig)
+let abMigrationDone = false;
+async function migrateABs(){
+  if(abMigrationDone) return;
+  abMigrationDone = true;
+  for(const p of DB.projects){
+    let changed = false;
+    const abs = (p.abs||[]).map(old=>{
+      if(!old.rawText || (old.parserVersion||0) >= AB_PARSER_VERSION) return old;
+      const ab = parseABText(old.rawText);
+      ab.rawText = old.rawText; ab.filename = old.filename || ""; ab.importedAt = old.importedAt || ""; ab.importedBy = old.importedBy || "";
+      ab.parserVersion = AB_PARSER_VERSION;
+      if(!ab.haus) ab.haus = hausFromText(String(old.filename||"").replace(/_+/g," "));
+      if(old.haus) ab.haus = old.haus; // manuelle Haus-Zuordnung behalten
+      ab.positionen.forEach(np=>{
+        const op = (old.positionen||[]).find(o=>o.pos===np.pos && o.artikel===np.artikel);
+        if(op && op.categoryManual){ np.category = op.category; np.categoryManual = true; }
+      });
+      changed = true;
+      return ab;
+    });
+    if(changed){
+      p.abs = abs;
+      const hs = abs.map(a=>a.haus).filter(Boolean);
+      if(hs.length) p.haeuser = Array.from(new Set([...(p.haeuser||[]), ...hs]));
+      try{ await saveProject(p); }catch(err){ console.warn("AB-Aktualisierung fehlgeschlagen", err); }
+    }
+  }
+}
+
 function isABText(text){
   return /Auftragsbest[äa]tigung\s+\d{5,}\s*\/\s*A-\d+/i.test(text) && /pe[\s-]?fabrikation/i.test(text);
 }
@@ -2390,13 +2513,18 @@ function parseABText(text){
   m = text.match(/Bestellung vom\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.bestelldatum = m[1];
   m = text.match(/Offert-Datum\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.offertdatum = m[1];
   m = text.match(/f[üu]r\s+(\d+)\s+Einheiten/i); if(m) ab.einheiten = +m[1];
+  m = text.match(/Bestell-Nr\s*:\s*(.+?)(?:\s+Versandart|\n|$)/i); ab.bestellnr = m ? m[1].trim() : "";
+  m = ab.bestellnr.match(/\bLos\s*(\d+)/i) || text.match(/\bLos\s+(\d+)\b/i); ab.los = m ? m[1] : "";
+  const hausLine = lines.slice(0, 40).find(l => /^(haus|gebäude|block|trakt)\s+[0-9a-z]{1,4}$/i.test(l));
+  ab.haus = hausFromText(ab.baustelle) || hausFromText(ab.bestellnr) || hausFromText(hausLine || "");
   m = text.match(/exkl\.?\s*MwSt\s+([\d']+\.\d{2})/i); if(m) ab.auftragswert = parseSwissNumber(m[1]);
   m = text.match(/Gesamtbetrag\s+inkl\.?\s*MwSt\s+([\d']+\.\d{2})/i); if(m) ab.totalInklMwst = parseSwissNumber(m[1]);
 
   // Inkl./Exkl.-Vermerke (auch "... | exkl. ..." innerhalb einer Zeile) und "nicht enthalten"-Saetze
   lines.forEach((line, idx)=>{
     if(/^(inkl|exkl)\.?\s/i.test(line)){
-      line.split(/\s*\|\s*|\s+(?=exkl\.)/i).map(s=>s.trim()).filter(Boolean).forEach(part=>{
+      line.split(/\s*\|\s*|\s+I\s+(?=exkl)|\s+(?=exkl\.)/i).map(s=>s.trim()).filter(Boolean).forEach(part=>{
+        part = part.replace(/\s+[I|]\s*$/, "").trim();
         if(/^exkl/i.test(part)) ab.exkl.push(part);
         else if(/^inkl/i.test(part)) ab.inkl.push(part);
       });
@@ -2411,6 +2539,9 @@ function parseABText(text){
 
   // Positionen: "003 Element 16.000 ST 810.93/1 12'974.90" + Beschreibungszeilen
   const posRe = /^(\d{3})\s+(.+?)\s+(-?[\d']+\.\d{1,3})\s+(ST|STK|M2|M3|M|LM|H|STD|PA|PAU|PSCH|KG|L)\s+(-?[\d']+\.\d{2})\/(\d+)\s+(-?[\d']+\.\d{2})$/i;
+  // Pauschal-ABs: Position nur mit Menge, Preis steht in der Gruppensumme ("027 AUSFS 83.000 M3")
+  const posRe2 = /^(\d{3})\s+(.+?)\s+(-?[\d']+\.\d{1,3})\s+(ST|STK|M2|M3|M|LM|H|STD|PA|PAU|PSCH|KG|L)$/i;
+  const blocks = []; let blockStart = 0;
   const noise = [/^PE Fabrikations AG$/i, /^Feldmoosstrasse/i, /^www\./i, /^Tel\.\s/i, /^Fax\s/i, /^Auftragsbest[äa]tigung\s+\d+/i, /^Mwst-Nr/i, /^-$/];
   let started = false, group = "", cur = null;
   for(const line of lines){
@@ -2418,7 +2549,13 @@ function parseABText(text){
     if(!started) continue;
     if(/^Übertrag/i.test(line)){ cur = null; continue; }
     if(noise.some(r=>r.test(line))) continue;
-    if(/^Summe von/i.test(line)){ cur = null; continue; }
+    if(/^Summe von/i.test(line)){
+      const sm = line.match(/(-?[\d']+\.\d{2})\s*$/);
+      blocks.push({ from: blockStart, to: ab.positionen.length, sum: sm ? parseSwissNumber(sm[1]) : null });
+      blockStart = ab.positionen.length;
+      cur = null; continue;
+    }
+    if(/^-\s*[A-ZÄÖÜ][A-ZÄÖÜ\s\/]*-?$/.test(line)){ cur = null; continue; } // Zwischentitel wie "-TRENNWAND-"
     if(/^(Porto\/Verpackung|Gesamtbetrag|Zahlungskonditionen|Es freut uns)/i.test(line)){ cur = null; started = false; continue; }
     const pm = line.match(posRe);
     if(pm){
@@ -2426,6 +2563,13 @@ function parseABText(text){
       cur = { pos: pm[1], artikel: pm[2].trim(), menge: parseSwissNumber(pm[3]), einheit: normalizeABUnit(pm[4]),
               ep: roundNum(parseSwissNumber(pm[5]) / per), betrag: parseSwissNumber(pm[7]), rabatt: null,
               gruppe: group, beschreibung: [] };
+      ab.positionen.push(cur);
+      continue;
+    }
+    const pm2 = line.match(posRe2);
+    if(pm2){
+      cur = { pos: pm2[1], artikel: pm2[2].trim(), menge: parseSwissNumber(pm2[3]), einheit: normalizeABUnit(pm2[4]),
+              ep: null, betrag: null, rabatt: null, gruppe: group, beschreibung: [] };
       ab.positionen.push(cur);
       continue;
     }
@@ -2449,10 +2593,28 @@ function parseABText(text){
     const lf = beschreibung.match(/Leitfadenzeit[^\n]*?(\d+(?:[.,]\d+)?)\s*h\b/i);
     out.leitfadenzeitH = lf ? parseSwissNumber(lf[1]) : null;
     if(out.menge===null) out.menge = 0;
-    if(out.betrag===null) out.betrag = 0;
     if(out.ep===null || isNaN(out.ep)) out.ep = null;
+    out.betragAnteilig = false;
     return out;
   });
+  // Gruppensumme auf Positionen ohne eigenen Preis verteilen (fuer Erloes/Marge)
+  blocks.forEach(b=>{
+    if(b.sum==null) return;
+    const ps = ab.positionen.slice(b.from, b.to);
+    const unpriced = ps.filter(p=>p.betrag===null);
+    if(!unpriced.length) return;
+    const rest = b.sum - ps.filter(p=>p.betrag!==null).reduce((s,p)=>s+p.betrag,0);
+    let targets = unpriced.filter(p=>p.category && !["Anfahrt","Entsorgung"].includes(p.category));
+    if(!targets.length) targets = unpriced;
+    const sameUnit = targets.every(t=>t.einheit===targets[0].einheit);
+    const tot = sameUnit ? targets.reduce((s,t)=>s+(t.menge||0),0) : targets.length;
+    targets.forEach(t=>{
+      t.betrag = roundNum(rest * (sameUnit && tot ? (t.menge||0)/tot : 1/targets.length));
+      t.betragAnteilig = true;
+      if(t.menge) t.ep = roundNum(t.betrag / t.menge);
+    });
+  });
+  ab.positionen.forEach(p=>{ if(p.betrag===null) p.betrag = 0; });
   return ab;
 }
 
@@ -2639,7 +2801,12 @@ function checkInvoice(inv){
       const soll = getSoll(p, cat, scopeHaus);
       const u = catUnit(cat);
       if(!soll){
-        if(abs.length && !["Sonstiges","Regie"].includes(cat)) f.push({ level:"warn", text:`${catLabel(cat)}${hTxt}: in der AB nicht enthalten (kein Soll) – Nachtrag oder falsche Zuordnung?` });
+        if(abs.length && !["Sonstiges","Regie"].includes(cat)){
+          const kws = [catLabel(cat).toLowerCase(), ...((catDef(cat)||{}).keywords||[])].map(k=>k.trim()).filter(k=>k.length>=4);
+          const inklLine = abs.flatMap(a=>a.inkl||[]).find(l => kws.some(k => l.toLowerCase().includes(k)));
+          if(inklLine) f.push({ level:"warn", text:`${catLabel(cat)}${hTxt}: laut AB inklusive („${shortText(inklLine,60)}“), aber ohne Menge in der AB – Soll im Auftrag manuell setzen (✎), damit die Menge geprüft wird.` });
+          else f.push({ level:"warn", text:`${catLabel(cat)}${hTxt}: in der AB nicht enthalten (kein Soll) – Nachtrag oder falsche Zuordnung?` });
+        }
       } else if(ist > soll.menge * (1 + S.mengenTolProzent/100) + 1e-9){
         f.push({ level:"danger", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} ${u} verrechnet, Soll (${soll.quelle}) ${fmtQty(soll.menge)} ${u} → ${fmtQty(ist - soll.menge)} ${u} zu viel.` });
       } else {
@@ -2877,7 +3044,8 @@ function abFromPages(pages, filename){
   ab.importedAt = new Date().toLocaleString("de-CH");
   ab.importedBy = currentUser ? currentUser.email : "";
   ab.rawText = fullText.slice(0, 60000);
-  ab.haus = hausFromText(ab.baustelle);
+  ab.parserVersion = AB_PARSER_VERSION;
+  if(!ab.haus) ab.haus = hausFromText(String(filename||"").replace(/[_]+/g," "));
   return ab;
 }
 
@@ -2909,7 +3077,7 @@ function appendABCard(ab, res){
       <div class="row">
         <div><div class="muted" style="font-size:11.5px;">Baustelle</div><b>${escapeHtml(ab.baustelle||"—")}</b></div>
         <div><div class="muted" style="font-size:11.5px;">Kunde</div>${escapeHtml(ab.kunde||"—")}</div>
-        <div><div class="muted" style="font-size:11.5px;">Haus</div>${escapeHtml(ab.haus || "ganzes Objekt")}</div>
+        <div><div class="muted" style="font-size:11.5px;">Haus</div><b>${escapeHtml(ab.haus || "ganzes Objekt")}</b>${ab.los?` · Los ${escapeHtml(ab.los)}`:""}</div>
         <div><div class="muted" style="font-size:11.5px;">Einheiten</div>${ab.einheiten!=null?ab.einheiten:"—"}</div>
         <div><div class="muted" style="font-size:11.5px;">Auftragswert exkl. MwSt</div><span class="num">CHF ${fmt(ab.auftragswert)}</span></div>
       </div>
@@ -2971,6 +3139,7 @@ function cleanSubForSave(s){
     kontakt: s.kontakt || "", notizen: s.notizen || "",
     tarife: (s.tarife||[]).map(t=>({ id:t.id||uid("tf"), category:t.category||"Sonstiges", bezeichnung:t.bezeichnung||"", material:t.material||"",
       einheit:t.einheit||"", preis: num(t.preis), gueltigAb:t.gueltigAb||"", keywords:t.keywords||"" })),
+    rnrMuster: s.rnrMuster || null,
     updatedAt: new Date().toISOString(), updatedBy: currentUser ? currentUser.email : "",
   };
 }
