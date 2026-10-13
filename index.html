@@ -14,7 +14,7 @@
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
     getFirestore, collection, doc, setDoc, addDoc, updateDoc, deleteDoc,
-    onSnapshot, getDoc, serverTimestamp
+    onSnapshot, getDoc, serverTimestamp, query, where
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -45,6 +45,7 @@
     },
     watchUserDoc: (uid, cb, onErr) => onSnapshot(doc(dbFs, "users", uid), cb, onErr),
     watchCollection: (name, cb, onErr) => onSnapshot(collection(dbFs, name), cb, onErr),
+    watchQuery: (name, field, value, cb, onErr) => onSnapshot(query(collection(dbFs, name), where(field, "==", value)), cb, onErr),
 
     setDoc: (col, id, data) => setDoc(doc(dbFs, col, id), data),
     setDocMerge: (col, id, data) => setDoc(doc(dbFs, col, id), data, { merge: true }),
@@ -218,6 +219,33 @@
   details.okdetails summary{cursor:pointer;font-size:12.5px;color:var(--ok);margin-top:6px;}
   button.st-ok{background:var(--ok);border-color:var(--ok);color:#fff;}
   button.st-bad{background:var(--danger);border-color:var(--danger);color:#fff;}
+  .nbadge{margin-left:auto;display:none;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:#e5302a;color:#fff;font-size:11.5px;font-weight:700;line-height:1;box-shadow:0 0 0 2px rgba(255,255,255,.15);}
+  .tab .nbadge{margin-left:6px;}
+  .tdot{width:10px;height:10px;border-radius:50%;background:#e5302a;flex:0 0 10px;margin-top:4px;}
+  .todolist{display:flex;flex-direction:column;gap:8px;}
+  .todo{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid #f3c7c4;background:#fff7f6;border-radius:8px;font-size:13px;}
+  .todobanner{border:1px solid #f3c7c4;background:#fff7f6;border-radius:var(--radius);padding:14px 16px;margin-bottom:18px;}
+  .todobanner h2{display:flex;align-items:center;gap:8px;color:var(--danger);}
+  .tabs{display:flex;gap:6px;border-bottom:1px solid var(--border);margin-bottom:16px;flex-wrap:wrap;}
+  .tab{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;padding:9px 12px;font-weight:600;color:var(--text-dim);display:inline-flex;align-items:center;}
+  .tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+  .tab:hover{background:var(--surface);}
+  .msg{border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:#fff;}
+  .msg.unread{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+  .msg.done{opacity:.6;}
+  .msghead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+  .msgtext{margin:6px 0;white-space:pre-wrap;font-size:13.5px;}
+  .msglink{background:var(--accent-light);border-color:var(--accent-light);color:var(--accent);font-weight:600;text-align:left;}
+  .modal-overlay{position:fixed;inset:0;background:rgba(15,20,30,.45);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;}
+  .modal{background:#fff;border-radius:10px;padding:22px;max-width:520px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.25);}
+  .sharelink{background:var(--surface);border-radius:6px;padding:8px 10px;font-size:13px;margin-bottom:14px;}
+  a.btnlink{display:inline-block;padding:8px 14px;border-radius:6px;border:1px solid var(--border);color:var(--text);text-decoration:none;font-size:13px;font-weight:500;}
+  a.btnlink.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .hchip{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:10px;margin:2px 4px 0 0;}
+  .hchip.ok{background:var(--ok-bg);color:var(--ok);}
+  .hchip.bad{background:var(--danger-bg);color:var(--danger);}
+  .projdot{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:10px;background:#e5302a;color:#fff;font-size:11px;font-weight:700;padding:0 6px;margin-right:6px;vertical-align:middle;}
+  table select.hsel{padding:4px 6px;font-size:12px;min-width:100px;}
   @media (max-width:800px){ .app{flex-direction:column;} .sidebar{width:100%;} .main{padding:18px;} .row{flex-wrap:wrap;} }
 </style>
 </head>
@@ -226,11 +254,12 @@
   <div class="sidebar">
     <div class="brand">PE Rechnungskontrolle<small>Subunternehmer-Abgleich</small></div>
     <button class="navbtn active" data-view="upload">📄 Neue Rechnung</button>
-    <button class="navbtn" data-view="suppliers">🏢 Subunternehmer <span class="badge" id="supCount">0</span></button>
-    <button class="navbtn" data-view="projects">🏗️ Aufträge <span class="badge" id="projCount">0</span></button>
-    <button class="navbtn" data-view="invoices">🧾 Alle Rechnungen <span class="badge" id="invCount">0</span><span class="badge" id="reviewBadge" style="background:var(--danger);display:none;">0</span></button>
+    <button class="navbtn" data-view="messages">💬 Nachrichten <span class="nbadge" id="msgBadge"></span></button>
+    <button class="navbtn" data-view="projects">🏗️ Aufträge <span class="nbadge" id="projBadge"></span></button>
+    <button class="navbtn" data-view="invoices">🧾 Alle Rechnungen <span class="nbadge" id="reviewBadge"></span></button>
+    <button class="navbtn" data-view="suppliers">🏢 Subunternehmer</button>
     <button class="navbtn" data-view="settings">⚙️ Einstellungen &amp; Preise</button>
-    <button class="navbtn" id="navAdmin" data-view="admin" style="display:none;">👤 Benutzerverwaltung <span class="badge" id="pendingBadge" style="background:var(--danger);display:none;">0</span></button>
+    <button class="navbtn" id="navAdmin" data-view="admin" style="display:none;">👤 Benutzerverwaltung <span class="nbadge" id="pendingBadge"></span></button>
     <div style="margin-top:auto;padding:14px 20px 0 20px;">
       <div id="currentUserBox" style="color:#fff;margin-bottom:10px;"></div>
       <button id="resetAllBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.75);font-size:12px;">🗑️ Alle Daten löschen (Admin)</button>
@@ -272,11 +301,12 @@ const KNOWN_SUPPLIERS = [
 
 const DEFAULT_PERMISSIONS = { deleteAuftraege: false, deleteSubunternehmer: false, deleteAnyRechnung: false, editPreise: false };
 
-let DB = { projects: [], invoices: [], subs: [], settings: {}, categories: DEFAULT_CATEGORIES.slice() };
+let DB = { projects: [], invoices: [], subs: [], settings: {}, msgsIn: [], msgsOut: [], categories: DEFAULT_CATEGORIES.slice() };
 let allUsers = []; // fuer die Benutzerverwaltung (Admin)
 let currentUser = null;     // { uid, email } von Firebase Auth
 let currentProfile = null;  // { email, role, permissions } aus Firestore users/{uid}
-let unsubProjects = null, unsubInvoices = null, unsubProfile = null, unsubUsers = null, unsubSubs = null, unsubSettings = null;
+let unsubProjects = null, unsubInvoices = null, unsubProfile = null, unsubUsers = null, unsubSubs = null, unsubSettings = null, unsubMsgIn = null, unsubMsgOut = null;
+let seenMsgIds = null;
 
 let currentView = "upload";
 let currentProjectId = null;
@@ -309,7 +339,7 @@ function uid(prefix){ return prefix + "_" + Date.now().toString(36) + Math.rando
 
 function isAdmin(){ return !!(currentProfile && currentProfile.role === "admin"); }
 function hasPerm(key){ return isAdmin() || !!(currentProfile && currentProfile.permissions && currentProfile.permissions[key]); }
-function isApproved(){ return isAdmin() || !!(currentProfile && currentProfile.approved === true); }
+function isApproved(){ return isAdmin() || !!(currentProfile && currentProfile.approved === true && currentUser && String(currentUser.email||"").toLowerCase().endsWith("@pe-fabrikation.ch")); }
 
 function toDateSafe(v){
   if(!v) return null;
@@ -343,16 +373,38 @@ function startDataListeners(){
   if(unsubSettings) unsubSettings();
   unsubProjects = window.fb.watchCollection("projects", (snap)=>{
     DB.projects = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+    dataLoaded.projects = true;
     renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
     DB.invoices = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+    dataLoaded.invoices = true;
     renderFromSnapshot();
   }, (err)=> showDbError("invoices", err));
   unsubSubs = window.fb.watchCollection("subunternehmer", (snap)=>{
     DB.subs = snap.docs.map(d=>({ id: d.id, ...d.data() }));
     renderFromSnapshot();
   }, (err)=> showDbError("subunternehmer", err));
+  if(unsubMsgIn) unsubMsgIn();
+  if(unsubMsgOut) unsubMsgOut();
+  unsubMsgIn = window.fb.watchQuery("nachrichten", "toUid", currentUser.uid, (snap)=>{
+    DB.msgsIn = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+    // Desktop-Hinweis bei neuer Nachricht
+    if(seenMsgIds){
+      DB.msgsIn.filter(m=>!m.read && !seenMsgIds.has(m.id)).forEach(m=>{
+        toast(`💬 Neue Nachricht von ${nameFromEmail(m.fromEmail)}`);
+        if(typeof Notification!=="undefined" && Notification.permission==="granted"){
+          try{ new Notification("💬 " + nameFromEmail(m.fromEmail), { body: (m.text||"") + (m.link ? "\n" + m.link.label : ""), tag: m.id }); }catch(e){}
+        }
+      });
+    }
+    seenMsgIds = new Set(DB.msgsIn.map(m=>m.id));
+    renderFromSnapshot();
+  }, (err)=> showDbError("nachrichten (Firestore-Regeln aktualisieren)", err));
+  unsubMsgOut = window.fb.watchQuery("nachrichten", "fromUid", currentUser.uid, (snap)=>{
+    DB.msgsOut = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+    renderFromSnapshot();
+  }, (err)=> showDbError("nachrichten", err));
   unsubSettings = window.fb.watchCollection("einstellungen", (snap)=>{
     const g = snap.docs.find(d=>d.id==="global");
     DB.settings = g ? g.data() : {};
@@ -364,9 +416,13 @@ function stopDataListeners(){
   if(unsubInvoices){ unsubInvoices(); unsubInvoices=null; }
   if(unsubSubs){ unsubSubs(); unsubSubs=null; }
   if(unsubSettings){ unsubSettings(); unsubSettings=null; }
+  if(unsubMsgIn){ unsubMsgIn(); unsubMsgIn=null; }
+  if(unsubMsgOut){ unsubMsgOut(); unsubMsgOut=null; }
+  seenMsgIds = null;
+  dataLoaded = { projects:false, invoices:false };
   if(unsubProfile){ unsubProfile(); unsubProfile=null; }
   if(unsubUsers){ unsubUsers(); unsubUsers=null; }
-  DB.projects = []; DB.invoices = []; DB.subs = []; DB.settings = {}; allUsers = [];
+  DB.projects = []; DB.invoices = []; DB.subs = []; DB.settings = {}; DB.msgsIn = []; DB.msgsOut = []; allUsers = [];
 }
 
 async function saveProject(p){
@@ -401,7 +457,7 @@ function renderAuthScreen(mode){
       <h1 style="margin-bottom:4px;">PE Rechnungskontrolle</h1>
       <p class="subtitle">${isSignup ? "Konto erstellen" : "Anmelden"}</p>
       <form id="authForm">
-        <label class="field"><span>E-Mail</span><input type="email" id="authEmail" name="username" autocomplete="username" required></label>
+        <label class="field"><span>E-Mail</span><input type="email" id="authEmail" name="username" autocomplete="username" placeholder="vorname.nachname@pe-fabrikation.ch" required></label>
         <label class="field"><span>Passwort</span><input type="password" id="authPw" name="password" autocomplete="${isSignup?'new-password':'current-password'}" required></label>
         <div id="authError" class="flag" style="margin-bottom:10px;font-size:13px;"></div>
         <button type="submit" class="primary" id="authSubmit" style="width:100%;margin-bottom:10px;">${isSignup ? "Konto erstellen" : "Anmelden"}</button>
@@ -417,6 +473,7 @@ function renderAuthScreen(mode){
     const errEl = document.getElementById("authError");
     errEl.textContent = "";
     if(!email || !pw){ errEl.textContent = "Bitte E-Mail und Passwort eingeben."; return; }
+    if(isSignup && !email.toLowerCase().endsWith("@pe-fabrikation.ch")){ errEl.textContent = "Registrierung nur mit der Geschäftsadresse @pe-fabrikation.ch möglich."; return; }
     try{
       if(isSignup){
         const cred = await window.fb.signup(email, pw);
@@ -469,17 +526,12 @@ function initAuth(){
       const pendingRoot = document.getElementById("pendingRoot");
       if(pendingRoot) pendingRoot.remove();
       updateSidebarForUser();
-      if(isAdmin() && !unsubUsers){
+      if(!unsubUsers){
         unsubUsers = window.fb.watchCollection("users", (usnap)=>{
           allUsers = usnap.docs.map(d=>({ id: d.id, ...d.data() }));
-          const pendingBadge = document.getElementById("pendingBadge");
-          const pendingCount = allUsers.filter(u=>u.role!=="admin" && !u.approved).length;
-          if(pendingBadge){
-            pendingBadge.textContent = pendingCount;
-            pendingBadge.style.display = pendingCount > 0 ? "" : "none";
-          }
+          updateBadges();
           if(currentView==="admin") render();
-        }, (err)=> showDbError("users", err));
+        }, (err)=> showDbError("users (Firestore-Regeln aktualisieren)", err));
       }
       startDataListeners();
       render();
@@ -497,9 +549,13 @@ function renderPendingScreen(){
   root.style.cssText = "max-width:380px;margin:80px auto;padding:0 20px;";
   root.innerHTML = `
     <div class="card" style="text-align:center;">
+      ${String(currentUser.email||"").toLowerCase().endsWith("@pe-fabrikation.ch") ? `
       <div style="font-size:32px;margin-bottom:10px;">⏳</div>
       <h1 style="margin-bottom:4px;">Konto wartet auf Freischaltung</h1>
-      <p class="subtitle">Dein Konto (${escapeHtml(currentUser.email)}) wurde erstellt, muss aber zuerst von einem Admin freigeschaltet werden, bevor du Rechnungen sehen oder hochladen kannst.</p>
+      <p class="subtitle">Dein Konto (${escapeHtml(currentUser.email)}) wurde erstellt, muss aber zuerst von einem Admin freigeschaltet werden, bevor du Rechnungen sehen oder hochladen kannst.</p>` : `
+      <div style="font-size:32px;margin-bottom:10px;">⛔</div>
+      <h1 style="margin-bottom:4px;">Konto gesperrt</h1>
+      <p class="subtitle">Zugelassen sind nur Geschäftsadressen <b>@pe-fabrikation.ch</b>. Das Konto ${escapeHtml(currentUser.email)} ist gesperrt.</p>`}
       <button id="pendingLogout" style="width:100%;">Abmelden</button>
     </div>
   `;
@@ -929,13 +985,16 @@ let pendingSnapshotRender = false;
 
 function updateBadges(){
   document.querySelectorAll(".navbtn").forEach(b=>b.classList.toggle("active", b.dataset.view===currentView || (currentView==="subPrices" && b.dataset.view==="settings")));
-  document.getElementById("projCount").textContent = DB.projects.length;
-  document.getElementById("invCount").textContent = DB.invoices.length;
-  document.getElementById("supCount").textContent = getSuppliers().length;
-  const reviewCount = DB.invoices.filter(invoiceNeedsReview).length;
-  const reviewBadge = document.getElementById("reviewBadge");
-  reviewBadge.textContent = reviewCount;
-  reviewBadge.style.display = reviewCount > 0 ? "" : "none";
+  if(!currentUser || !isApproved()) return;
+  const nProj = computeProjectTodos().length;
+  const nInv = computeInvoiceTodos().length;
+  const nMsg = unreadMessages().length;
+  setBadge("projBadge", nProj);
+  setBadge("reviewBadge", nInv);
+  setBadge("msgBadge", nMsg);
+  if(isAdmin()) setBadge("pendingBadge", (allUsers||[]).filter(u=>u.role!=="admin" && !u.approved && isFirmenMail(u.email)).length);
+  const total = nProj + nInv + nMsg;
+  document.title = (total ? `(${total}) ` : "") + "PE Rechnungskontrolle";
 }
 
 function render(){
@@ -952,12 +1011,14 @@ function render(){
   else if(currentView==="supplierDetail") renderSupplierDetail(currentSupplierName);
   else if(currentView==="settings") renderSettings();
   else if(currentView==="subPrices") renderSubPrices(currentSupplierName);
+  else if(currentView==="messages") renderMessages();
   else if(currentView==="admin") renderAdmin();
   lastRenderedView = currentView;
 }
 
 // Datenbank-Updates nicht mitten in eine Eingabe hinein rendern (Fokus/Cursor ginge verloren)
 function renderFromSnapshot(){
+  tryDeepLink();
   const ae = document.activeElement;
   if(ae && mainEl.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)){
     pendingSnapshotRender = true;
@@ -1071,7 +1132,7 @@ async function appendReviewCard(parsed){
     projectId = match.id;
   } else {
     const name = buildProjectName(parsed);
-    projectId = await createProject({ name, address: parsed.objekt||"", auftragsnummer: "", soll: {} });
+    projectId = await createProject({ name: stripHaus(name), address: stripHaus(parsed.objekt||""), auftragsnummer: "", soll: {}, haeuser: [] });
   }
   const items = parsed.items.length ? parsed.items.slice() : [];
   const invoiceData = {
@@ -1080,6 +1141,8 @@ async function appendReviewCard(parsed){
     rechnungsnr: parsed.rechnungsnr || "",
     datum: parsed.datum || "",
     total: parsed.total,
+    objekt: parsed.objekt || "",
+    haus: hausFromText(parsed.objekt),
     filename: parsed._filename || "",
     items: items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: (it.ep!==undefined ? it.ep : null) })),
   };
@@ -1088,13 +1151,7 @@ async function appendReviewCard(parsed){
   // Optimistisch lokal einfuegen, damit die Karte sofort erscheint (onSnapshot bestaetigt gleich danach)
   if(!DB.invoices.some(i=>i.id===invoiceId)) DB.invoices.push(invoice);
 
-  document.getElementById("projCount").textContent = DB.projects.length;
-  document.getElementById("invCount").textContent = DB.invoices.length;
-  document.getElementById("supCount").textContent = getSuppliers().length;
-  const reviewBadge = document.getElementById("reviewBadge");
-  const reviewCount = DB.invoices.filter(invoiceNeedsReview).length;
-  reviewBadge.textContent = reviewCount;
-  reviewBadge.style.display = reviewCount > 0 ? "" : "none";
+  updateBadges();
   notifyIfNeedsReview(invoice);
 
   const projOptions = () => `<option value="">— neuen Auftrag anlegen —</option>` +
@@ -1130,9 +1187,14 @@ async function appendReviewCard(parsed){
         <label class="field"><span>Auftragsnr. Subunternehmer</span><input type="text" data-f="auftragsnummer" value="${escapeAttr(parsed.auftragsnummer)}" disabled></label>
         <label class="field"><span>Rechnungsbetrag CHF</span><input type="text" data-f="total" value="${invoice.total!==null&&invoice.total!==undefined?invoice.total:""}"></label>
       </div>
-      <label class="field"><span>Zugeordneter Auftrag</span>
-        <select class="projectSelect">${projOptions()}</select>
-      </label>
+      <div class="row">
+        <label class="field" style="flex:3;"><span>Zugeordneter Auftrag (Objekt)</span>
+          <select class="projectSelect">${projOptions()}</select>
+        </label>
+        <label class="field" style="flex:1;"><span>Haus</span>
+          <input type="text" class="hausInput" value="${escapeAttr(invoice.haus||"")}" placeholder="z.B. 1, A, Haus 2">
+        </label>
+      </div>
 
       <div class="section-title">Erkannte Positionen — bitte prüfen &amp; korrigieren</div>
       <div class="itemsSlot"></div>
@@ -1145,6 +1207,7 @@ async function appendReviewCard(parsed){
 
       <div style="margin-top:18px;display:flex;gap:10px;">
         <button class="goToProject">Zum Auftrag →</button>
+        <button class="shareInvoice">📤 Teilen</button>
         <button class="danger deleteInvoice">Rechnung löschen</button>
       </div>
   `;
@@ -1188,8 +1251,7 @@ async function appendReviewCard(parsed){
     let newProjectId = e.target.value;
     if(!newProjectId){
       const name = buildProjectName(parsed);
-      newProjectId = await createProject({ name, address: parsed.objekt||"", auftragsnummer: "", soll: {} });
-      document.getElementById("projCount").textContent = DB.projects.length;
+      newProjectId = await createProject({ name: stripHaus(name), address: stripHaus(parsed.objekt||""), auftragsnummer: "", soll: {}, haeuser: [] });
     }
     inv.projectId = newProjectId;
     saveInvoice(inv);
@@ -1197,6 +1259,17 @@ async function appendReviewCard(parsed){
     toast("Auftrag geändert.");
   });
 
+  wrap.querySelector(".hausInput").addEventListener("change", (e)=>{
+    const inv = findInvoice(); if(!inv) return;
+    inv.haus = normHaus(e.target.value);
+    e.target.value = inv.haus;
+    saveInvoice(inv);
+    refreshPruef();
+  });
+  wrap.querySelector(".shareInvoice").addEventListener("click", ()=>{
+    const inv = findInvoice(); if(!inv) return;
+    openShareDialog({ type:"invoice", id:inv.id, label: invoiceLinkLabel(inv) }, "Bitte prüfen.");
+  });
   wrap.querySelector(".goToProject").addEventListener("click", ()=>{
     const inv = findInvoice(); if(!inv) return;
     navigateTo("projectDetail", { projectId: inv.projectId });
@@ -1213,7 +1286,7 @@ async function appendReviewCard(parsed){
     await deleteInvoiceDoc(invoice.id);
     DB.invoices = DB.invoices.filter(i=>i.id!==invoice.id);
     wrap.remove();
-    document.getElementById("invCount").textContent = DB.invoices.length;
+    updateBadges();
     toast("Rechnung gelöscht.");
   });
 }
@@ -1330,7 +1403,7 @@ function renderSupplierDetail(name){
     <button class="backlink" id="backBtn">← Zurück zu Subunternehmern</button>
     <div style="display:flex;justify-content:space-between;align-items:center;">
       <h1>🏢 ${escapeHtml(name)}</h1>
-      <div style="display:flex;gap:6px;"><button class="small primary" id="pricesSupBtn">💰 Preise &amp; Stundenansätze</button><button class="small" id="renameSupBtn">Umbenennen</button></div>
+      <div style="display:flex;gap:6px;"><button class="small" id="shareSupBtn">📤 Teilen</button><button class="small primary" id="pricesSupBtn">💰 Preise &amp; Stundenansätze</button><button class="small" id="renameSupBtn">Umbenennen</button></div>
     </div>
     <p class="subtitle">${projects.length} Auftrag/Aufträge mit Rechnungen von diesem Sub. Klicke einen Auftrag für Soll/Ist-Vergleich.</p>
     <div id="searchSlot"></div>
@@ -1357,6 +1430,7 @@ function renderSupplierDetail(name){
     </div>
   `;
   document.getElementById("backBtn").addEventListener("click", ()=>{ goBack("suppliers"); });
+  document.getElementById("shareSupBtn").addEventListener("click", ()=> openShareDialog({ type:"supplier", id:name, label:name }, ""));
   document.getElementById("pricesSupBtn").addEventListener("click", ()=>{ editingSub = null; navigateTo("subPrices", { supplierName: name }); });
   document.getElementById("renameSupBtn").addEventListener("click", async ()=>{
     const newName = prompt(`Neuen Namen für "${name}" eingeben:`, name);
@@ -1427,10 +1501,13 @@ function renderProjects(){
       <h1>Aufträge</h1>
       <button class="primary" id="abUploadListBtn">📑 AB hochladen</button>
     </div>
-    <p class="subtitle">${DB.projects.length} Auftrag/Aufträge — klicke für Details und Soll/Ist-Vergleich. ABs werden automatisch über die Baustelle zugeordnet.</p>
+    <p class="subtitle">${DB.projects.length} Auftrag/Aufträge — klicke für Details und Soll/Ist-Vergleich. Eine AB gilt für das ganze Objekt bzw. Haus – für alle Subunternehmer.</p>
+    ${(()=>{ const td = computeProjectTodos(); return td.length ? `<div class="todobanner"><h2><span class="nbadge" style="display:inline-flex;margin:0;">${td.length}</span> Zu erledigen</h2><div id="todoSlot">${todosHtml(td, true)}</div></div>` : ""; })()}
     <div id="searchSlot"></div>
     <div id="projList"></div>
   `;
+  const todoSlot = document.getElementById("todoSlot");
+  if(todoSlot) wireTodos(todoSlot, computeProjectTodos(), renderProjects);
   addSearchBox(document.getElementById("searchSlot"), "Auftrag suchen…", (q)=>{
     document.querySelectorAll("#projList .proj-list-item").forEach(el=>{
       el.style.display = el.dataset.search.includes(q) ? "" : "none";
@@ -1448,14 +1525,18 @@ function renderProjects(){
     }catch(err){ console.error(err); toast("Fehler beim Lesen der AB: " + (err.message||err)); }
   }));
   const list = document.getElementById("projList");
+  const allTodos = computeProjectTodos();
   list.innerHTML = DB.projects.map(p=>{
     const invs = DB.invoices.filter(i=>i.projectId===p.id);
     const overCount = countOverBudget(p);
     const needsReview = invs.some(invoiceNeedsReview);
+    const myTodos = allTodos.filter(t=>t.projectId===p.id || t.otherId===p.id);
+    const houses = projectHouses(p);
     return `
-      <div class="proj-list-item" data-id="${p.id}" data-search="${escapeAttr((p.name+" "+(p.address||"")).toLowerCase())}">
-        <div>
-          <div class="pname">${escapeHtml(p.name)}</div>
+      <div class="proj-list-item" data-id="${p.id}" data-search="${escapeAttr((p.name+" "+(p.address||"")+" "+houses.join(" ")).toLowerCase())}">
+        <div style="min-width:0;">
+          <div class="pname">${myTodos.length ? `<span class="projdot" title="${escapeAttr(myTodos.map(t=>t.text).join("\n"))}">${myTodos.length}</span>` : ""}${escapeHtml(p.name)}</div>
+          ${houses.length ? `<div>${houses.map(h=>`<span class="hchip ${houseNeedsAB(p,h)?"bad":"ok"}">${escapeHtml(h)} ${houseNeedsAB(p,h)?"✗ AB":"✓ AB"}</span>`).join("")}</div>` : ""}
           <div class="paddr">${escapeHtml(p.address||"—")} ${p.auftragsnummer?`· Auftragsnr. ${escapeHtml(p.auftragsnummer)}`:""}</div>
           <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
         </div>
@@ -1465,13 +1546,19 @@ function renderProjects(){
         ${(p.abs||[]).length ? `<span class="pill neutral" title="Auftragsbestätigung hinterlegt">📑 AB</span>` : `<span class="pill warn" title="Ohne AB keine Mengenkontrolle">keine AB</span>`}
         ${(()=>{ const bad = invs.filter(i=>!(i.pruefung && i.pruefung.status) || i.pruefung.status==="offen").filter(i=>checkInvoice(i).some(x=>x.level==="danger")).length; return bad ? `<span class="pill danger">✗ ${bad} Rechn. mit Fehlern</span>` : ""; })()}
         ${needsReview ? `<span class="pill warn">⚠ Prüfen nötig</span>` : (overCount>0 ? `<span class="pill danger">⚠ ${overCount} über Soll</span>` : `<span class="pill ok">im Soll</span>`)}
-        ${hasPerm('deleteAuftraege') ? `<button class="small danger" data-delproj="${p.id}" style="margin-left:10px;">Löschen</button>` : ""}
+        <button class="small" data-shareproj="${p.id}" title="Teilen" style="margin-left:6px;">📤</button>
+        ${hasPerm('deleteAuftraege') ? `<button class="small danger" data-delproj="${p.id}" style="margin-left:6px;">Löschen</button>` : ""}
       </div>
     `;
   }).join("");
+  list.querySelectorAll("[data-shareproj]").forEach(b=>b.addEventListener("click", (e)=>{
+    e.stopPropagation();
+    const p = DB.projects.find(x=>x.id===b.dataset.shareproj); if(!p) return;
+    openShareDialog({ type:"project", id:p.id, label:p.name }, (p.abs||[]).length ? "" : "Bitte die AB für dieses Objekt ergänzen.");
+  }));
   list.querySelectorAll(".proj-list-item").forEach(el=>{
     el.addEventListener("click", (e)=>{
-      if(e.target.closest("[data-delproj]")) return;
+      if(e.target.closest("[data-delproj]") || e.target.closest("[data-shareproj]")) return;
       navigateTo("projectDetail", { projectId: el.dataset.id });
     });
   });
@@ -1528,12 +1615,13 @@ function aggregateByCategory(invoices){
 }
 
 const expandedABs = new Set();
+const selectedHaus = {};
 
-function projectControlRows(p){
-  const invs = DB.invoices.filter(i=>i.projectId===p.id && isActiveInvoice(i));
-  const ab = abSoll(p);
+function projectControlRows(p, haus){
+  const invs = DB.invoices.filter(i=>i.projectId===p.id && isActiveInvoice(i) && (haus===undefined || i.haus===haus));
+  const ab = abSoll(p, haus);
   const cats = new Set(Object.keys(ab));
-  Object.keys(p.soll||{}).forEach(k=>{ if(p.soll[k] && num(p.soll[k].menge)!=null) cats.add(k); });
+  if(haus===undefined) Object.keys(p.soll||{}).forEach(k=>{ if(p.soll[k] && num(p.soll[k].menge)!=null) cats.add(k); });
   const ist = {};
   invs.forEach(inv=>(inv.items||[]).forEach(it=>{
     const o = ist[it.category] || (ist[it.category] = { menge:0, chf:0, subs:{} });
@@ -1545,14 +1633,14 @@ function projectControlRows(p){
   cats.delete("Sonstiges");
   const order = (DB.categories||DEFAULT_CATEGORIES).map(c=>c.key);
   return Array.from(cats).sort((a,b)=>order.indexOf(a)-order.indexOf(b)).map(cat=>{
-    const soll = getSoll(p, cat);
+    const soll = getSoll(p, cat, haus);
     const i = ist[cat] || { menge:0, chf:0, subs:{} };
     const mainSubName = (Object.entries(i.subs).sort((a,b)=>b[1]-a[1])[0]||[])[0] || null;
     const sub = mainSubName ? getSubFor(mainSubName) : null;
     let budget = null;
     if(soll && sub){
       const today = { datum: "" };
-      if(soll.quelle==="AB"){
+      if(soll.quelle!=="manuell"){
         let sum = 0, ok = true;
         (ab[cat] ? ab[cat].positionen : []).forEach(pos=>{
           const r = findTarif(sub, today, { category:cat, label: pos.material || pos.beschreibung || pos.artikel, einheit: pos.einheit });
@@ -1574,8 +1662,13 @@ function renderProjectDetail(projectId){
   const invs = DB.invoices.filter(i=>i.projectId===p.id).sort((a,b)=> (parseDateCH(a.datum)||0) - (parseDateCH(b.datum)||0));
   const totalCHF = invs.reduce((s,i)=>s+(num(i.total)||0),0);
   const otherProjects = DB.projects.filter(x=>x.id!==p.id);
-  const rows = projectControlRows(p);
+  const houses = projectHouses(p);
+  if(!(p.id in selectedHaus)) selectedHaus[p.id] = "";
+  if(selectedHaus[p.id] && !houses.includes(selectedHaus[p.id])) selectedHaus[p.id] = "";
+  const selH = selectedHaus[p.id] || undefined;
+  const rows = projectControlRows(p, selH);
   const abs = p.abs || [];
+  const myTodos = computeProjectTodos().filter(t=>t.projectId===p.id || t.otherId===p.id);
   const auftragswert = abs.reduce((s,a)=>s+(num(a.auftragswert)||0),0);
   const subNetto = invs.filter(isActiveInvoice).reduce((s,i)=>s+(i.items||[]).reduce((a,it)=>a+(num(it.preis)||0),0),0);
   const offen = invs.filter(i=>!(i.pruefung && i.pruefung.status && i.pruefung.status!=="offen")).length;
@@ -1586,10 +1679,14 @@ function renderProjectDetail(projectId){
   rows.forEach(r=>{ if(r.budget!=null){ sumBudget += r.budget; anyBudget = true; } sumIst += r.ist.chf; if(r.erloes!=null){ sumErloes += r.erloes; anyErloes = true; } });
 
   mainEl.innerHTML = `
-    <button class="backlink" id="backBtn">← Zurück</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <button class="backlink" id="backBtn">← Zurück</button>
+      <button class="small" id="shareProjBtn">📤 Auftrag teilen</button>
+    </div>
+    ${myTodos.length ? `<div class="todobanner"><h2><span class="nbadge" style="display:inline-flex;margin:0;">${myTodos.length}</span> Zu erledigen bei diesem Auftrag</h2><div id="todoSlot">${todosHtml(myTodos)}</div></div>` : ""}
 
     <div class="card">
-      <div class="section-title" style="margin-top:0;">Auftrag — Name &amp; Adresse (bei Bedarf korrigieren)</div>
+      <div class="section-title" style="margin-top:0;">Auftrag / Objekt — Name &amp; Adresse (bei Bedarf korrigieren)</div>
       <div class="row">
         <label class="field"><span>Name des Auftrags</span><input type="text" id="editProjName" value="${escapeAttr(p.name)}"></label>
         <label class="field"><span>Adresse / Objekt</span><input type="text" id="editProjAddress" value="${escapeAttr(p.address||"")}"></label>
@@ -1617,8 +1714,22 @@ function renderProjectDetail(projectId){
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
         <h2 style="margin:0;">📑 Auftragsbestätigung${abs.length>1?"en":""}</h2>
-        <button class="small primary" id="abUploadBtn">${abs.length ? "+ Weitere AB / Revision hochladen" : "AB hochladen"}</button>
+        <div style="display:flex;gap:6px;"><button class="small" id="addHausBtn">+ Haus</button><button class="small primary" id="abUploadBtn">${abs.length ? "+ Weitere AB / Revision hochladen" : "AB hochladen"}</button></div>
       </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0 0;">Eine AB gilt für alle Subunternehmer dieses Objekts. Hat das Objekt mehrere Häuser, ordne jede AB dem richtigen Haus zu (oder „ganzes Objekt“).</p>
+      ${houses.length ? `
+        <div class="tablewrap" style="margin-top:12px;"><table>
+          <thead><tr><th>Haus</th><th>AB</th><th>Rechnungen</th><th>ohne Haus-Zuordnung</th></tr></thead>
+          <tbody>${houses.map(h=>{
+            const hab = abs.filter(a=>a.haus===h);
+            const hinv = invs.filter(i=>i.haus===h);
+            return `<tr>
+              <td><b>${escapeHtml(h)}</b></td>
+              <td>${hab.length ? `<span class="hchip ok">✓ ${hab.map(a=>escapeHtml(a.nr)).join(", ")}</span>` : abs.some(a=>!a.haus) ? `<span class="hchip ok">✓ AB ganzes Objekt</span>` : `<span class="hchip bad">✗ AB fehlt</span>`}</td>
+              <td>${hinv.length}</td><td></td></tr>`;
+          }).join("")}
+          <tr><td class="muted">—</td><td></td><td></td><td>${invs.filter(i=>!i.haus).length ? `<span class="hchip ${houses.length>1||abs.some(a=>a.haus)?"bad":"ok"}">${invs.filter(i=>!i.haus).length} Rechnung(en)</span>` : "0"}</td></tr>
+          </tbody></table></div>` : ""}
       ${abs.length ? abs.map(ab=>{
         const open = expandedABs.has(p.id+"|"+ab.nr);
         return `<div class="abbox">
@@ -1626,7 +1737,8 @@ function renderProjectDetail(projectId){
             <div><b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}
               <div class="muted" style="font-size:12px;">Kunde: ${escapeHtml(ab.kunde||"—")}${ab.kontakt?" ("+escapeHtml(ab.kontakt)+")":""} · Offerte ${escapeHtml(ab.offertdatum||"—")} · ${ab.einheiten!=null?ab.einheiten+" Einheiten · ":""}CHF ${fmt(ab.auftragswert)} exkl. MwSt · eingelesen ${escapeHtml(ab.importedAt||"")}</div>
             </div>
-            <div style="display:flex;gap:6px;flex-shrink:0;">
+            <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">
+              <select class="hsel" data-abhaus="${escapeAttr(ab.nr)}" title="Gilt für"><option value="">Gilt für: ganzes Objekt</option>${houses.concat(ab.haus && !houses.includes(ab.haus) ? [ab.haus] : []).map(h=>`<option value="${escapeAttr(h)}" ${h===ab.haus?"selected":""}>Gilt für: ${escapeHtml(h)}</option>`).join("")}<option value="__new">+ neues Haus…</option></select>
               <button class="small" data-abtoggle="${escapeAttr(ab.nr)}">${open?"Positionen ▴":"Positionen ▾"}</button>
               <button class="small danger" data-abdel="${escapeAttr(ab.nr)}">Entfernen</button>
             </div>
@@ -1656,7 +1768,9 @@ function renderProjectDetail(projectId){
     </div>
 
     <div class="card">
-      <h2>Kontrolle pro Leistung</h2>
+      <h2>Kontrolle pro Leistung${selH ? ` – ${escapeHtml(selH)}` : ""}</h2>
+      ${houses.length ? `<div class="tabs" style="margin-top:-4px;"><button class="tab ${!selH?"active":""}" data-htab="">Ganzes Objekt</button>${houses.map(h=>`<button class="tab ${selH===h?"active":""}" data-htab="${escapeAttr(h)}">${escapeHtml(h)}${houseNeedsAB(p,h)?` <span class="tdot" style="margin:0 0 0 6px;"></span>`:""}</button>`).join("")}</div>
+        ${selH && !abs.some(a=>a.haus===selH) ? `<div class="fd warn" style="margin-bottom:12px;"><span class="fdi">⚠</span><span>Für ${escapeHtml(selH)} ist keine eigene AB hinterlegt – Soll-Mengen gibt es hier nur, wenn eine AB diesem Haus zugeordnet ist.</span></div>` : ""}` : ""}
       ${(()=>{ const un = invs.filter(i=>(i.items||[]).some(it=>it.category==="Sonstiges")); return un.length ? `<div class="fd warn" style="margin-bottom:12px;"><span class="fdi">⚠</span><span>${un.reduce((s,i)=>s+(i.items||[]).filter(it=>it.category==="Sonstiges").length,0)} Position(en) in ${un.length} Rechnung(en) sind keiner Leistung zugeordnet und fehlen in dieser Kontrolle: ${un.map(i=>`<a href="#" data-openunassigned="${escapeAttr(i.id)}">${escapeHtml(i.rechnungsnr||i.lieferant||"Rechnung")}</a>`).join(", ")} – bitte Kategorie wählen.</span></div>` : ""; })()}
       ${rows.length ? `
       <div class="tablewrap"><table class="ctltable">
@@ -1696,23 +1810,25 @@ function renderProjectDetail(projectId){
       <h2>Rechnungen zu diesem Auftrag (${invs.length}) — Total CHF ${formatCHF(totalCHF)}</h2>
       ${invs.length ? `
       <div class="tablewrap"><table>
-        <thead><tr><th>Datum</th><th>Lieferant</th><th>Rechnungsnr.</th><th>Positionen</th><th>Betrag CHF</th><th>Prüfung</th><th></th></tr></thead>
+        <thead><tr><th>Datum</th><th>Lieferant</th><th>Rechnungsnr.</th><th>Haus</th><th>Positionen</th><th>Betrag CHF</th><th>Prüfung</th><th></th></tr></thead>
         <tbody>
           ${invs.map(inv=>`
             <tr class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td>${escapeHtml(inv.datum||"—")}</td>
               <td>${escapeHtml(inv.lieferant||"—")}</td>
               <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
+              <td><select class="hsel" data-invhaus="${inv.id}" style="${!inv.haus && (houses.length>1 || abs.some(a=>a.haus)) ? "border-color:var(--danger);" : ""}">${hausOptionsHtml(p, inv.haus||"")}</select></td>
               <td>${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Scan prüfen</span> ` : ""}${(inv.items||[]).map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
               <td>${findingsPill(inv)}</td>
               <td style="white-space:nowrap;">
                 <button class="small" data-edit="${inv.id}">${expandedInvoiceId===inv.id?"Schliessen":"Prüfen / Bearbeiten"}</button>
+                <button class="small" data-shareinv="${inv.id}" title="Teilen">📤</button>
                 <button class="small danger" data-del="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin' "}>Löschen</button>
               </td>
             </tr>
             <tr class="editRow" data-editrow="${inv.id}" style="display:${expandedInvoiceId===inv.id?'table-row':'none'};">
-              <td colspan="7"><div id="editPanel-${inv.id}"></div></td>
+              <td colspan="8"><div id="editPanel-${inv.id}"></div></td>
             </tr>
           `).join("")}
         </tbody>
@@ -1722,6 +1838,37 @@ function renderProjectDetail(projectId){
   `;
 
   document.getElementById("backBtn").addEventListener("click", ()=>{ goBack("projects"); });
+  document.getElementById("shareProjBtn").addEventListener("click", ()=> openShareDialog({ type:"project", id:p.id, label:p.name }, myTodos.length ? myTodos.map(t=>t.share||t.text).join("\n") : ""));
+  const tdSlot = document.getElementById("todoSlot");
+  if(tdSlot) wireTodos(tdSlot, myTodos, ()=>render());
+  document.getElementById("addHausBtn").addEventListener("click", ()=>{
+    const h = askNewHaus(); if(!h) return;
+    p.haeuser = Array.from(new Set([...(p.haeuser||[]), h]));
+    saveProject(p); renderProjectDetail(projectId);
+  });
+  mainEl.querySelectorAll("[data-htab]").forEach(b=>b.addEventListener("click", ()=>{ selectedHaus[p.id] = b.dataset.htab; renderProjectDetail(projectId); }));
+  mainEl.querySelectorAll("[data-abhaus]").forEach(sel=>sel.addEventListener("change", async ()=>{
+    const ab = (p.abs||[]).find(a=>a.nr===sel.dataset.abhaus); if(!ab) return;
+    let h = sel.value;
+    if(h==="__new"){ h = askNewHaus(); if(!h){ renderProjectDetail(projectId); return; } }
+    ab.haus = h;
+    if(h) p.haeuser = Array.from(new Set([...(p.haeuser||[]), h]));
+    await saveProject(p);
+    toast(h ? `AB ${ab.nr} gilt jetzt für ${h}.` : `AB ${ab.nr} gilt für das ganze Objekt.`);
+    renderProjectDetail(projectId);
+  }));
+  mainEl.querySelectorAll("[data-invhaus]").forEach(sel=>sel.addEventListener("change", async ()=>{
+    const inv = DB.invoices.find(i=>i.id===sel.dataset.invhaus); if(!inv) return;
+    let h = sel.value;
+    if(h==="__new"){ h = askNewHaus(); if(!h){ renderProjectDetail(projectId); return; } }
+    inv.haus = h;
+    await saveInvoice(inv);
+    renderProjectDetail(projectId);
+  }));
+  mainEl.querySelectorAll("[data-shareinv]").forEach(b=>b.addEventListener("click", ()=>{
+    const inv = DB.invoices.find(i=>i.id===b.dataset.shareinv); if(!inv) return;
+    openShareDialog({ type:"invoice", id:inv.id, label: invoiceLinkLabel(inv) }, "Bitte prüfen.");
+  }));
   document.getElementById("editProjName").addEventListener("change", (e)=>{ p.name = e.target.value; saveProject(p); });
   document.getElementById("editProjAddress").addEventListener("change", (e)=>{ p.address = e.target.value; saveProject(p); });
   document.getElementById("editProjAuftragsnr").addEventListener("change", (e)=>{ p.auftragsnummer = e.target.value; saveProject(p); });
@@ -1732,14 +1879,8 @@ function renderProjectDetail(projectId){
     if(!targetId){ toast("Bitte zuerst einen Auftrag zum Zusammenführen wählen."); return; }
     const target = DB.projects.find(x=>x.id===targetId);
     if(!target) return;
-    if(!confirm(`Alle Rechnungen${abs.length?" und ABs":""} von "${p.name}" zu "${target.name}" verschieben und "${p.name}" löschen?`)) return;
-    for(const inv of DB.invoices.filter(i=>i.projectId===p.id)){ inv.projectId = target.id; await saveInvoice(inv); }
-    if(abs.length){
-      const nrs = new Set(abs.map(a=>a.nr));
-      target.abs = (target.abs||[]).filter(a=>!nrs.has(a.nr)).concat(abs);
-      await saveProject(target);
-    }
-    await deleteProjectDoc(p.id);
+    if(!confirm(`Alle Rechnungen${abs.length?" und ABs":""} von "${p.name}" zu "${target.name}" verschieben und "${p.name}" löschen?\n\nUnterscheiden sich Haus/Hausnummer, wird das automatisch als Haus übernommen.`)) return;
+    await mergeProjects(p, target);
     toast("Aufträge zusammengeführt.");
     currentProjectId = target.id;
     render();
@@ -1858,7 +1999,9 @@ function renderInvoiceEditPanel(panel, invoiceId){
         <label class="field"><span>Rechnungsnr.</span><input type="text" data-ef="rechnungsnr" value="${escapeAttr(inv.rechnungsnr||"")}"></label>
         <label class="field"><span>Datum</span><input type="text" data-ef="datum" value="${escapeAttr(inv.datum||"")}"></label>
         <label class="field"><span>Betrag CHF (Rechnungstotal)</span><input type="number" step="any" data-ef="total" value="${inv.total!=null?inv.total:""}"></label>
+        <label class="field"><span>Haus</span><input type="text" data-ef="haus" value="${escapeAttr(inv.haus||"")}" placeholder="z.B. 1, A"></label>
       </div>
+      ${inv.objekt ? `<div class="muted" style="font-size:12px;margin:-4px 0 8px 0;">Objekt laut Rechnung: ${escapeHtml(inv.objekt)}</div>` : ""}
       <div class="section-title">Positionen</div>
       <div class="itemsSlot"></div>
       <div class="pruefSlot" style="margin-top:14px;"></div>
@@ -1875,6 +2018,7 @@ function renderInvoiceEditPanel(panel, invoiceId){
     });
     inp.addEventListener("change", ()=>{
       const i = getInv(); if(!i) return;
+      if(inp.dataset.ef==="haus"){ i.haus = normHaus(inp.value); inp.value = i.haus; }
       saveInvoice(i);
       if(inp.dataset.ef==="lieferant") renderItemsTable(itemsSlot, getInv, refresh);
       refresh();
@@ -1904,11 +2048,11 @@ function renderInvoices(){
             return `<tr data-search="${escapeAttr(search)}" class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.lieferant||"—")}</td>
-              <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}" data-openinv="${inv.id}">${findingsPill(inv)}</td>
-              <td><button class="small danger" data-delinv="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
+              <td style="white-space:nowrap;"><button class="small" data-shareinvl="${inv.id}" title="Teilen">📤</button> <button class="small danger" data-delinv="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
             </tr>`;
           }).join("")}
         </tbody>
@@ -1926,6 +2070,11 @@ function renderInvoices(){
       navigateTo("projectDetail", { projectId: cell.dataset.goto });
     });
   });
+  mainEl.querySelectorAll("[data-shareinvl]").forEach(b=>b.addEventListener("click", (e)=>{
+    e.stopPropagation();
+    const inv = DB.invoices.find(i=>i.id===b.dataset.shareinvl); if(!inv) return;
+    openShareDialog({ type:"invoice", id:inv.id, label: invoiceLinkLabel(inv) }, "Bitte prüfen.");
+  }));
   mainEl.querySelectorAll("[data-delinv]").forEach(btn=>{
     btn.addEventListener("click", async (e)=>{
       e.stopPropagation();
@@ -1944,7 +2093,7 @@ function renderAdmin(){
     mainEl.innerHTML = `<h1>Benutzerverwaltung</h1><div class="empty">Nur für Admins zugänglich.</div>`;
     return;
   }
-  const pendingCount = allUsers.filter(u=>u.role!=="admin" && !u.approved).length;
+  const pendingCount = allUsers.filter(u=>u.role!=="admin" && !u.approved && isFirmenMail(u.email)).length;
   mainEl.innerHTML = `
     <h1>Benutzerverwaltung</h1>
     <p class="subtitle">${allUsers.length} Benutzer registriert${pendingCount>0 ? ` — <b style="color:var(--danger)">${pendingCount} warten auf Freischaltung</b>` : ""}.</p>
@@ -1956,7 +2105,9 @@ function renderAdmin(){
             <tr data-uid="${u.id}" class="${u.role!=="admin" && !u.approved ? "needs-review" : ""}">
               <td>${escapeHtml(u.email||u.id)}</td>
               <td>
-                ${u.role==="admin"
+                ${u.role!=="admin" && !isFirmenMail(u.email)
+                  ? `<span class="pill danger">⛔ fremde Domain – gesperrt</span>`
+                  : u.role==="admin"
                   ? `<span class="pill ok">Admin</span>`
                   : u.approved
                     ? `<span class="pill ok">✓ freigeschaltet</span> <button class="small danger" data-toggle-approve="${u.id}" data-next="false">Sperren</button>`
@@ -1977,13 +2128,15 @@ function renderAdmin(){
           `).join("")}
         </tbody>
       </table>
-      <p class="subtitle" style="margin-top:14px;">Neu registrierte Mitarbeiter sind gesperrt, bis du sie hier freischaltest. Admins haben automatisch alle Rechte. Freigeschaltete Mitarbeiter dürfen ohne zusätzliche Häkchen nur ihre eigenen Rechnungen der letzten 5 Stunden löschen.</p>
+      <p class="subtitle" style="margin-top:14px;">Nur Adressen @pe-fabrikation.ch können freigeschaltet werden, alle anderen sind automatisch gesperrt. Neu registrierte Mitarbeiter sind gesperrt, bis du sie hier freischaltest. Admins haben automatisch alle Rechte. Freigeschaltete Mitarbeiter dürfen ohne zusätzliche Häkchen nur ihre eigenen Rechnungen der letzten 5 Stunden löschen.</p>
     </div>
   `;
   mainEl.querySelectorAll("[data-toggle-approve]").forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       const targetUid = btn.dataset.toggleApprove;
       const next = btn.dataset.next === "true";
+      const tu = allUsers.find(x=>x.id===targetUid);
+      if(next && tu && !isFirmenMail(tu.email)){ toast("Nur @pe-fabrikation.ch-Adressen können freigeschaltet werden."); return; }
       await window.fb.updateDoc("users", targetUid, { approved: next });
       toast(next ? "Benutzer freigeschaltet." : "Benutzer gesperrt.");
     });
@@ -2303,10 +2456,10 @@ function parseABText(text){
   return ab;
 }
 
-// Soll-Werte aus allen hinterlegten ABs eines Auftrags (Summe pro Kategorie)
-function abSoll(p){
+// Soll-Werte aus den ABs eines Auftrags (Summe pro Kategorie); haus = nur ABs dieses Hauses
+function abSoll(p, haus){
   const out = {};
-  (p && p.abs || []).forEach(ab => (ab.positionen||[]).forEach(pos=>{
+  (p && p.abs || []).filter(ab => haus===undefined || ab.haus===haus).forEach(ab => (ab.positionen||[]).forEach(pos=>{
     if(!pos.category) return;
     const o = out[pos.category] || (out[pos.category] = { menge:0, erloes:0, einheit:pos.einheit, materials:[], positionen:[] });
     o.menge += +pos.menge || 0;
@@ -2316,14 +2469,16 @@ function abSoll(p){
   }));
   return out;
 }
-function getSoll(p, cat){
-  const man = p && p.soll && p.soll[cat];
-  if(man && num(man.menge)!=null) return { menge:+man.menge, quelle:"manuell" };
-  const a = abSoll(p)[cat];
-  if(a) return { menge: roundNum(a.menge), quelle:"AB" };
+function getSoll(p, cat, haus){
+  if(haus===undefined){
+    const man = p && p.soll && p.soll[cat];
+    if(man && num(man.menge)!=null) return { menge:+man.menge, quelle:"manuell" };
+  }
+  const a = abSoll(p, haus)[cat];
+  if(a) return { menge: roundNum(a.menge), quelle: haus ? "AB "+haus : "AB" };
   return null;
 }
-function abMaterials(p){ return (abSoll(p).Beplankung || {}).materials || []; }
+function abMaterials(p, haus){ return (abSoll(p, haus).Beplankung || {}).materials || []; }
 
 function exklTerms(line){
   let head = String(line||"").replace(/^exkl\.?\s*/i,"");
@@ -2405,9 +2560,22 @@ function checkInvoice(inv){
   const hasPrices = sub && (sub.tarife||[]).some(t=>num(t.preis)!=null);
   if(!hasPrices) f.push({ level:"info", text:`Für „${inv.lieferant||"unbekannter Lieferant"}“ sind keine Preise hinterlegt (⚙️ Einstellungen → Subunternehmer & Preise) – Preisprüfung nicht möglich.` });
 
-  const abs = (p && p.abs) || [];
+  const allAbs = (p && p.abs) || [];
+  const houses = p ? projectHouses(p) : [];
+  const invHaus = inv.haus || "";
+  let scopeHaus; // undefined = ganzes Objekt
+  if(p && (houses.length > 1 || allAbs.some(a=>a.haus))){
+    if(!invHaus){
+      f.push({ level:"warn", text:`Objekt hat mehrere Häuser (${houses.join(", ")}) – diese Rechnung ist keinem Haus zugeordnet. Bitte Haus wählen, sonst ist keine Kontrolle pro Haus möglich.` });
+    } else if(allAbs.some(a=>a.haus===invHaus)){
+      scopeHaus = invHaus;
+    } else if(allAbs.length && !allAbs.some(a=>!a.haus)){
+      f.push({ level:"danger", text:`Für ${invHaus} ist keine AB hinterlegt – Mengen und Leistungen dieses Hauses können nicht geprüft werden.` });
+    }
+  }
+  const abs = scopeHaus ? allAbs.filter(a=>a.haus===scopeHaus) : allAbs;
   const exklLines = abs.flatMap(a => a.exkl || []);
-  const mats = abMaterials(p);
+  const mats = abMaterials(p, scopeHaus);
 
   items.forEach(it=>{
     const name = `„${displayLabel(it.label) || catLabel(it.category)}“`;
@@ -2462,19 +2630,20 @@ function checkInvoice(inv){
 
   // --- Mengen kumuliert gegen Soll (AB) ---
   if(p){
-    const projInvs = DB.invoices.filter(o => o.projectId===p.id && (o.id===inv.id || isActiveInvoice(o)));
+    const projInvs = DB.invoices.filter(o => o.projectId===p.id && (o.id===inv.id || isActiveInvoice(o)) && (!scopeHaus || o.haus===scopeHaus));
+    const hTxt = scopeHaus ? ` (${scopeHaus})` : "";
     if(!projInvs.some(o=>o.id===inv.id)) projInvs.push(inv);
     const cats = Array.from(new Set(items.map(it=>it.category).filter(Boolean)));
     cats.forEach(cat=>{
       const ist = projInvs.reduce((s,o)=> s + (o.items||[]).filter(x=>x.category===cat).reduce((a,x)=>a+(num(x.menge)||0),0), 0);
-      const soll = getSoll(p, cat);
+      const soll = getSoll(p, cat, scopeHaus);
       const u = catUnit(cat);
       if(!soll){
-        if(abs.length && !["Sonstiges","Regie"].includes(cat)) f.push({ level:"warn", text:`${catLabel(cat)}: in der AB nicht enthalten (kein Soll) – Nachtrag oder falsche Zuordnung?` });
+        if(abs.length && !["Sonstiges","Regie"].includes(cat)) f.push({ level:"warn", text:`${catLabel(cat)}${hTxt}: in der AB nicht enthalten (kein Soll) – Nachtrag oder falsche Zuordnung?` });
       } else if(ist > soll.menge * (1 + S.mengenTolProzent/100) + 1e-9){
-        f.push({ level:"danger", text:`${catLabel(cat)}: kumuliert ${fmtQty(ist)} ${u} verrechnet, Soll (${soll.quelle}) ${fmtQty(soll.menge)} ${u} → ${fmtQty(ist - soll.menge)} ${u} zu viel.` });
+        f.push({ level:"danger", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} ${u} verrechnet, Soll (${soll.quelle}) ${fmtQty(soll.menge)} ${u} → ${fmtQty(ist - soll.menge)} ${u} zu viel.` });
       } else {
-        f.push({ level:"ok", text:`${catLabel(cat)}: kumuliert ${fmtQty(ist)} von ${fmtQty(soll.menge)} ${u} (${soll.quelle}).` });
+        f.push({ level:"ok", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} von ${fmtQty(soll.menge)} ${u} (${soll.quelle}).` });
       }
     });
     if(!abs.length) f.push({ level:"info", text:"Für diesen Auftrag ist keine AB hinterlegt – Mengen und Leistungsumfang können nicht gegen den Auftrag geprüft werden." });
@@ -2645,7 +2814,7 @@ function addrTokens(s){
     .filter(w => w.length>3 && !/^\d/.test(w) && !ADDR_GENERIC.has(w));
 }
 function houseNo(s, street){
-  const m = String(s||"").toLowerCase().match(new RegExp(street.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + "[\\s,]*(\\d{1,4}[a-z]?)\\b"));
+  const m = String(s||"").toLowerCase().match(new RegExp(street.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + "[\\s,]*(\\d{1,3}[a-z]?)\\b"));
   return m ? m[1] : null;
 }
 // 0 = anderes Objekt, 1 = unsicher, >=2 = gleiches Objekt
@@ -2698,7 +2867,7 @@ async function autoAssignAB(ab){
   if(sameNr){ await attachAB(sameNr.id, ab); return { projectId: sameNr.id, how:"revision" }; }
   const { project, score } = bestProjectForAddress(ab.baustelle);
   if(project && score >= 1){ await attachAB(project.id, ab); return { projectId: project.id, how: score>=2 ? "auto" : "unsicher" }; }
-  const id = await createProject({ name: ab.baustelle || `AB ${ab.nr}`, address: ab.baustelle || "", auftragsnummer: ab.anr || "", soll: {}, abs: [ab] });
+  const id = await createProject({ name: stripHaus(ab.baustelle) || `AB ${ab.nr}`, address: stripHaus(ab.baustelle || ""), auftragsnummer: ab.anr || "", soll: {}, abs: [ab], haeuser: ab.haus ? [ab.haus] : [] });
   return { projectId: id, how:"neu" };
 }
 function abFromPages(pages, filename){
@@ -2708,6 +2877,7 @@ function abFromPages(pages, filename){
   ab.importedAt = new Date().toLocaleString("de-CH");
   ab.importedBy = currentUser ? currentUser.email : "";
   ab.rawText = fullText.slice(0, 60000);
+  ab.haus = hausFromText(ab.baustelle);
   return ab;
 }
 
@@ -2739,6 +2909,7 @@ function appendABCard(ab, res){
       <div class="row">
         <div><div class="muted" style="font-size:11.5px;">Baustelle</div><b>${escapeHtml(ab.baustelle||"—")}</b></div>
         <div><div class="muted" style="font-size:11.5px;">Kunde</div>${escapeHtml(ab.kunde||"—")}</div>
+        <div><div class="muted" style="font-size:11.5px;">Haus</div>${escapeHtml(ab.haus || "ganzes Objekt")}</div>
         <div><div class="muted" style="font-size:11.5px;">Einheiten</div>${ab.einheiten!=null?ab.einheiten:"—"}</div>
         <div><div class="muted" style="font-size:11.5px;">Auftragswert exkl. MwSt</div><span class="num">CHF ${fmt(ab.auftragswert)}</span></div>
       </div>
@@ -2753,7 +2924,7 @@ function appendABCard(ab, res){
       try{
         await detachAB(projectId, ab.nr);
         if(target==="__new"){
-          projectId = await createProject({ name: ab.baustelle || `AB ${ab.nr}`, address: ab.baustelle||"", auftragsnummer: ab.anr||"", soll:{}, abs:[ab] });
+          projectId = await createProject({ name: stripHaus(ab.baustelle) || `AB ${ab.nr}`, address: stripHaus(ab.baustelle||""), auftragsnummer: ab.anr||"", soll:{}, abs:[ab], haeuser: ab.haus ? [ab.haus] : [] });
         } else {
           await attachAB(target, ab);
           projectId = target;
@@ -2991,6 +3162,410 @@ async function renameSubMaster(oldName, newName){
   try{ await window.fb.setDoc("subunternehmer", s.id, cleanSubForSave(copy)); }catch(err){ showDbError("subunternehmer", err); }
 }
 
+/* ============================= HAEUSER (mehrere Haeuser pro Objekt) ============================= */
+
+function normHaus(s){
+  s = String(s||"").trim();
+  if(!s) return "";
+  const m = s.match(/^(haus|gebäude|gebaude|geb\.?|block|trakt|nr\.?)\s*([a-z0-9]{1,4})$/i);
+  if(m){
+    const k = m[1].toLowerCase();
+    const kind = k.startsWith("nr") ? "Nr." : k.startsWith("geb") ? "Gebäude" : k[0].toUpperCase() + k.slice(1);
+    return `${kind} ${m[2].toUpperCase()}`;
+  }
+  if(/^[a-z0-9]{1,3}$/i.test(s)) return "Haus " + s.toUpperCase();
+  return s;
+}
+function hausFromText(s){
+  const m = String(s||"").match(/\b(Haus|Gebäude|Geb\.|Block|Trakt)\s*([0-9]{1,3}[a-z]?|[a-z])\b/i);
+  return m ? normHaus(m[1] + " " + m[2]) : "";
+}
+function stripHaus(s){
+  const t = String(s||"").replace(/[,\s]*\b(Haus|Gebäude|Geb\.|Block|Trakt)(\s*([0-9]{1,3}[a-z]?|[a-z]))?\s*$/i, "").replace(/[,\s]+$/,"").trim();
+  return t || String(s||"").trim();
+}
+function hausSort(a, b){ return String(a).localeCompare(String(b), "de", { numeric:true }); }
+function projectHouses(p){
+  if(!p) return [];
+  const set = new Set();
+  (p.haeuser||[]).forEach(h=>{ if(h) set.add(h); });
+  (p.abs||[]).forEach(a=>{ if(a.haus) set.add(a.haus); });
+  DB.invoices.forEach(i=>{ if(i.projectId===p.id && i.haus) set.add(i.haus); });
+  return Array.from(set).sort(hausSort);
+}
+function houseNeedsAB(p, h){
+  const abs = p.abs || [];
+  return !abs.some(a=>a.haus===h) && !abs.some(a=>!a.haus);
+}
+function hausOptionsHtml(p, current){
+  const hs = projectHouses(p);
+  if(current && !hs.includes(current)) hs.push(current);
+  return `<option value="">— kein Haus —</option>${hs.map(h=>`<option value="${escapeAttr(h)}" ${h===current?"selected":""}>${escapeHtml(h)}</option>`).join("")}<option value="__new">+ neues Haus…</option>`;
+}
+function askNewHaus(){
+  const v = prompt("Bezeichnung des Hauses (z.B. 1, 2, A, B, Haus C, Nr. 12):");
+  return v && v.trim() ? normHaus(v) : null;
+}
+
+/* ============================= AUFGABEN / MITTEILUNGEN ============================= */
+
+function computeProjectTodos(){
+  const t = [];
+  DB.projects.forEach(p=>{
+    const invs = DB.invoices.filter(i=>i.projectId===p.id);
+    const abs = p.abs || [];
+    const houses = projectHouses(p);
+    if(!abs.length){
+      t.push({ kind:"ab", projectId:p.id, text:`AB fehlt – ${p.name}`, hint:"Ohne AB keine Mengen- und Leistungskontrolle.", share:`Bitte für das Objekt „${p.name}“ die Auftragsbestätigung (AB) im Tool hochladen.` });
+    } else {
+      houses.filter(h=>houseNeedsAB(p, h)).forEach(h=>{
+        t.push({ kind:"ab", projectId:p.id, text:`AB fehlt für ${h} – ${p.name}`, hint:"Für dieses Haus ist keine eigene AB hinterlegt.", share:`Bitte für „${p.name}“, ${h}, die Auftragsbestätigung (AB) im Tool hochladen.` });
+      });
+    }
+    if(houses.length > 1 || abs.some(a=>a.haus)){
+      const n = invs.filter(i=>!i.haus).length;
+      if(n) t.push({ kind:"haus", projectId:p.id, text:`${n} Rechnung(en) ohne Haus – ${p.name}`, hint:`Objekt hat ${houses.length} Häuser (${houses.join(", ")}). Jede Rechnung muss einem Haus zugeordnet sein.`, share:`Bitte bei „${p.name}“ die Rechnungen den richtigen Häusern zuordnen.` });
+    }
+  });
+  // moegliche Doppel-Auftraege (gleiche Strasse)
+  for(let i=0;i<DB.projects.length;i++){
+    for(let j=i+1;j<DB.projects.length;j++){
+      const a = DB.projects[i], b = DB.projects[j];
+      if((a.notDup||[]).includes(b.id) || (b.notDup||[]).includes(a.id)) continue;
+      const s = Math.max(scoreAddress(a.address||a.name, b.address||b.name), scoreAddress(a.name, b.name));
+      if(s >= 1) t.push({ kind:"dup", projectId:a.id, otherId:b.id, text:`Gleiches Objekt? „${a.name}“ und „${b.name}“`, hint:"Gleiche Strasse – falls es dasselbe Objekt ist (evtl. andere Häuser): zusammenführen, dann gilt eine AB für alle Subunternehmer.", share:`Bitte prüfen, ob „${a.name}“ und „${b.name}“ dasselbe Objekt sind, und ggf. zusammenführen.` });
+    }
+  }
+  return t;
+}
+function invoiceTodo(inv){
+  if(invoiceNeedsReview(inv)) return "Scan unvollständig / Positionen nicht zugeordnet";
+  const st = inv.pruefung && inv.pruefung.status;
+  if(st && st!=="offen") return null;
+  const d = checkInvoice(inv).filter(x=>x.level==="danger").length;
+  return d ? `${d} Fehler in der Prüfung` : null;
+}
+function computeInvoiceTodos(){
+  return DB.invoices.map(inv=>({ inv, why: invoiceTodo(inv) })).filter(x=>x.why);
+}
+function unreadMessages(){ return (DB.msgsIn||[]).filter(m=>!m.read); }
+
+function setBadge(id, n){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.textContent = n > 99 ? "99+" : String(n);
+  el.style.display = n > 0 ? "inline-flex" : "none";
+}
+
+function todosHtml(todos, compact){
+  if(!todos.length) return "";
+  return `<div class="todolist">${todos.map((t,i)=>`
+    <div class="todo">
+      <span class="tdot"></span>
+      <div style="flex:1;min-width:0;"><b>${escapeHtml(t.text)}</b>${t.hint && !compact ? `<div class="muted" style="font-size:12px;">${escapeHtml(t.hint)}</div>` : ""}</div>
+      <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;">
+        ${t.kind==="dup"
+          ? `<button class="small primary" data-todomerge="${i}">Zusammenführen</button><button class="small" data-todonodup="${i}">Kein Duplikat</button>`
+          : `<button class="small primary" data-todoopen="${i}">${t.kind==="ab"?"AB ergänzen":"Öffnen"}</button>`}
+        <button class="small" data-todoshare="${i}" title="An Mitarbeiter weitergeben">📤 Zuweisen</button>
+      </div>
+    </div>`).join("")}</div>`;
+}
+function wireTodos(container, todos, rerender){
+  container.querySelectorAll("[data-todoopen]").forEach(b=>b.addEventListener("click", ()=>{
+    const t = todos[+b.dataset.todoopen];
+    navigateTo("projectDetail", { projectId: t.projectId });
+  }));
+  container.querySelectorAll("[data-todoshare]").forEach(b=>b.addEventListener("click", ()=>{
+    const t = todos[+b.dataset.todoshare];
+    const p = DB.projects.find(x=>x.id===t.projectId);
+    openShareDialog({ type:"project", id:t.projectId, label: p ? p.name : t.text }, t.share || "");
+  }));
+  container.querySelectorAll("[data-todonodup]").forEach(b=>b.addEventListener("click", async ()=>{
+    const t = todos[+b.dataset.todonodup];
+    const a = DB.projects.find(x=>x.id===t.projectId);
+    if(!a) return;
+    a.notDup = Array.from(new Set([...(a.notDup||[]), t.otherId]));
+    await saveProject(a);
+    toast("Als verschiedene Objekte markiert.");
+    rerender();
+  }));
+  container.querySelectorAll("[data-todomerge]").forEach(b=>b.addEventListener("click", async ()=>{
+    const t = todos[+b.dataset.todomerge];
+    const a = DB.projects.find(x=>x.id===t.projectId), c = DB.projects.find(x=>x.id===t.otherId);
+    if(!a || !c) return;
+    if(!hasPerm("deleteAuftraege")){ toast("Keine Berechtigung zum Zusammenführen."); return; }
+    // Ziel = Auftrag mit AB bzw. mit mehr Rechnungen
+    const score = x => ((x.abs||[]).length ? 1000 : 0) + DB.invoices.filter(i=>i.projectId===x.id).length;
+    const [target, src] = score(a) >= score(c) ? [a, c] : [c, a];
+    if(!confirm(`„${src.name}“ in „${target.name}“ zusammenführen?\n\nRechnungen und ABs werden verschoben. Unterscheiden sich Hausnummer/Haus, wird das automatisch als Haus übernommen.`)) return;
+    await mergeProjects(src, target);
+    toast("Zusammengeführt.");
+    rerender();
+  }));
+}
+
+async function mergeProjects(src, target){
+  const hint = (p, other)=>{
+    let h = hausFromText(p.address) || hausFromText(p.name);
+    if(!h){
+      const st = addrTokens(p.address||p.name).find(t=>STREET_RE.test(t));
+      if(st){
+        const na = houseNo(p.address||p.name, st), nb = houseNo(other.address||other.name, st);
+        if(na && na!==nb) h = "Nr. " + na;
+      }
+    }
+    return h;
+  };
+  const srcHaus = hint(src, target), tgtHaus = hint(target, src);
+  for(const inv of DB.invoices.filter(i=>i.projectId===src.id)){
+    inv.projectId = target.id;
+    if(!inv.haus && srcHaus) inv.haus = srcHaus;
+    await saveInvoice(inv);
+  }
+  if(srcHaus && tgtHaus){
+    for(const inv of DB.invoices.filter(i=>i.projectId===target.id && !i.haus && i.projectId!==src.id)){
+      inv.haus = tgtHaus; await saveInvoice(inv);
+    }
+    target.abs = (target.abs||[]).map(a=> a.haus ? a : { ...a, haus: tgtHaus });
+  }
+  const srcAbs = (src.abs||[]).map(a=> a.haus || !srcHaus ? a : { ...a, haus: srcHaus });
+  const nrs = new Set(srcAbs.map(a=>a.nr));
+  target.abs = (target.abs||[]).filter(a=>!nrs.has(a.nr)).concat(srcAbs);
+  target.haeuser = Array.from(new Set([...(target.haeuser||[]), ...(src.haeuser||[]), srcHaus, tgtHaus].filter(Boolean)));
+  if(srcHaus || tgtHaus){ target.name = stripHaus(target.name); target.address = stripHaus(target.address||""); }
+  await saveProject(target);
+  await deleteProjectDoc(src.id);
+}
+
+/* ============================= NACHRICHTEN & TEILEN ============================= */
+
+const FIRMEN_DOMAIN = "@pe-fabrikation.ch";
+function isFirmenMail(e){ return String(e||"").toLowerCase().trim().endsWith(FIRMEN_DOMAIN); }
+function nameFromEmail(e){
+  const local = String(e||"").split("@")[0];
+  return local.split(/[._-]+/).filter(Boolean).map(w=>w[0].toUpperCase()+w.slice(1)).join(" ") || e;
+}
+function linkTypeLabel(t){ return { project:"Auftrag", invoice:"Rechnung", supplier:"Subunternehmer", subprices:"Preisliste" }[t] || "Eintrag"; }
+function deepLinkUrl(link, msgId){
+  return `${location.origin}${location.pathname}#open=${link.type}:${encodeURIComponent(link.id)}${msgId?`&msg=${msgId}`:""}`;
+}
+function invoiceLinkLabel(inv){
+  const p = DB.projects.find(x=>x.id===inv.projectId);
+  return `Rechnung ${inv.rechnungsnr||"(ohne Nr.)"} · ${inv.lieferant||"?"} · ${p?p.name:"?"}${inv.haus?" · "+inv.haus:""}`;
+}
+
+function closeModal(){ const m = document.getElementById("modalRoot"); if(m) m.remove(); }
+function showModal(html){
+  closeModal();
+  const m = document.createElement("div");
+  m.id = "modalRoot";
+  m.className = "modal-overlay";
+  m.innerHTML = `<div class="modal">${html}</div>`;
+  m.addEventListener("click", e=>{ if(e.target===m) closeModal(); });
+  document.body.appendChild(m);
+  return m;
+}
+
+function openShareDialog(link, presetText, presetToUid){
+  const users = (allUsers||[]).filter(u => u.id!==currentUser.uid && (u.role==="admin" || (u.approved && isFirmenMail(u.email))))
+    .sort((a,b)=>String(a.email).localeCompare(String(b.email)));
+  const m = showModal(`
+    <h2 style="margin-bottom:6px;">📤 Teilen</h2>
+    <div class="sharelink">${escapeHtml(linkTypeLabel(link.type))}: <b>${escapeHtml(link.label)}</b></div>
+    ${users.length ? `
+      <label class="field"><span>An Mitarbeiter</span>
+        <select id="shareTo">${users.map(u=>`<option value="${escapeAttr(u.id)}" ${u.id===presetToUid?"selected":""}>${escapeHtml(nameFromEmail(u.email))} – ${escapeHtml(u.email)}</option>`).join("")}</select>
+      </label>
+      <label class="field"><span>Nachricht</span>
+        <textarea id="shareText" rows="4" placeholder="z.B. Bitte prüfen und die AB ergänzen.">${escapeHtml(presetText||"")}</textarea>
+      </label>
+      <div class="muted" style="font-size:12px;margin-bottom:12px;">Die Nachricht erscheint beim Mitarbeiter unter „Nachrichten“. Danach öffnet sich Outlook mit einer vorbereiteten E-Mail inkl. Direktlink.</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button id="shareCancel">Abbrechen</button>
+        <button class="primary" id="shareSend">Senden &amp; Outlook öffnen</button>
+      </div>`
+    : `<p class="muted">Es gibt noch keine weiteren freigeschalteten Mitarbeiter (@pe-fabrikation.ch).</p><div style="text-align:right;"><button id="shareCancel">Schliessen</button></div>`}
+  `);
+  m.querySelector("#shareCancel").addEventListener("click", closeModal);
+  const sendBtn = m.querySelector("#shareSend");
+  if(!sendBtn) return;
+  setTimeout(()=>{ const ta = m.querySelector("#shareText"); if(ta) ta.focus(); }, 50);
+  sendBtn.addEventListener("click", async ()=>{
+    const to = users.find(u=>u.id===m.querySelector("#shareTo").value);
+    const text = m.querySelector("#shareText").value.trim();
+    if(!to){ toast("Bitte Empfänger wählen."); return; }
+    if(!text){ toast("Bitte einen kurzen Text schreiben."); return; }
+    sendBtn.disabled = true;
+    try{
+      const msgId = await window.fb.addDoc("nachrichten", {
+        fromUid: currentUser.uid, fromEmail: currentUser.email, toUid: to.id, toEmail: to.email,
+        text, link: { type: link.type, id: String(link.id), label: link.label || "" },
+        createdAt: window.fb.serverTimestamp(), read: false, readAt: "", erledigt: false,
+      });
+      const subject = `PE Rechnungskontrolle: ${linkTypeLabel(link.type)} – ${link.label}`.slice(0, 180);
+      const url = deepLinkUrl(link, msgId);
+      const body = [
+        `Hallo ${nameFromEmail(to.email).split(" ")[0]}`, "",
+        text, "",
+        `${linkTypeLabel(link.type)}: ${link.label}`,
+        `Direkt im Tool öffnen: ${url}`, "",
+        "Die Nachricht findest du auch in der PE Rechnungskontrolle unter „Nachrichten“.", "",
+        "Gruss", nameFromEmail(currentUser.email),
+      ].join("\n");
+      const mailto = `mailto:${encodeURIComponent(to.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      const owa = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(to.email)}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      showModal(`
+        <h2>✓ Nachricht gesendet</h2>
+        <p class="subtitle" style="margin-bottom:14px;">${escapeHtml(nameFromEmail(to.email))} sieht sie jetzt unter „Nachrichten“. Outlook wird mit der vorbereiteten E-Mail geöffnet – dort nur noch auf <b>Senden</b> klicken.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+          <a class="btnlink" href="${escapeAttr(owa)}" target="_blank" rel="noopener">Outlook Web öffnen</a>
+          <a class="btnlink primary" id="mailtoAgain" href="${escapeAttr(mailto)}">Outlook (Desktop) öffnen</a>
+          <button id="doneClose">Schliessen</button>
+        </div>`);
+      document.getElementById("doneClose").addEventListener("click", closeModal);
+      window.location.href = mailto;
+    }catch(err){
+      console.error(err);
+      sendBtn.disabled = false;
+      showDbError("nachrichten", err);
+    }
+  });
+}
+
+async function markMsgRead(id){
+  const m = (DB.msgsIn||[]).find(x=>x.id===id);
+  if(m && m.read) return;
+  if(m) m.read = true;
+  else if(!id) return; // noch nicht geladen (Direktlink) -> trotzdem direkt markieren; klappt nur fuer den Empfaenger
+  try{ await window.fb.updateDoc("nachrichten", id, { read: true, readAt: new Date().toLocaleString("de-CH") }); }catch(err){ console.error(err); }
+}
+
+function openLink(link){
+  if(!link) return false;
+  if(link.type==="project"){
+    if(!DB.projects.some(p=>p.id===link.id)) return false;
+    navStack = []; currentProjectId = link.id; currentView = "projectDetail"; render(); return true;
+  }
+  if(link.type==="invoice"){
+    const inv = DB.invoices.find(i=>i.id===link.id);
+    if(!inv) return false;
+    navStack = []; expandedInvoiceId = inv.id; currentProjectId = inv.projectId; currentView = "projectDetail"; render();
+    setTimeout(()=>{ const el = document.getElementById("editPanel-"+inv.id); if(el) el.scrollIntoView({ behavior:"smooth", block:"center" }); }, 120);
+    return true;
+  }
+  if(link.type==="supplier"){
+    navStack = []; currentSupplierName = link.id; currentView = "supplierDetail"; render(); return true;
+  }
+  if(link.type==="subprices"){
+    navStack = []; editingSub = null; currentSupplierName = link.id; currentView = "subPrices"; render(); return true;
+  }
+  return false;
+}
+
+// Direktlink aus der E-Mail (#open=invoice:ID&msg=ID)
+let pendingDeepLink = null;
+let dataLoaded = { projects:false, invoices:false };
+function readDeepLink(){
+  const h = location.hash || "";
+  const m = h.match(/open=([a-z]+):([^&]+)/i);
+  if(m){
+    const mm = h.match(/msg=([^&]+)/);
+    pendingDeepLink = { type: m[1], id: decodeURIComponent(m[2]), msg: mm ? mm[1] : null };
+  }
+}
+readDeepLink();
+window.addEventListener("hashchange", ()=>{ readDeepLink(); tryDeepLink(); });
+function tryDeepLink(){
+  if(!pendingDeepLink || !currentUser || !isApproved()) return;
+  if(!dataLoaded.projects || !dataLoaded.invoices) return;
+  const l = pendingDeepLink;
+  pendingDeepLink = null;
+  history.replaceState(null, "", location.pathname + location.search);
+  if(l.msg) markMsgRead(l.msg);
+  if(!openLink(l)) toast("Der geteilte Eintrag existiert nicht mehr.");
+}
+
+let messagesTab = null;
+function renderMessages(){
+  const projTodos = computeProjectTodos();
+  const invTodos = computeInvoiceTodos();
+  const inbox = (DB.msgsIn||[]).slice().sort((a,b)=>(toDateSafe(b.createdAt)||new Date())-(toDateSafe(a.createdAt)||new Date()));
+  const sent = (DB.msgsOut||[]).slice().sort((a,b)=>(toDateSafe(b.createdAt)||new Date())-(toDateSafe(a.createdAt)||new Date()));
+  const unread = inbox.filter(m=>!m.read).length;
+  const openIn = inbox.filter(m=>!m.erledigt).length;
+  if(!messagesTab) messagesTab = unread ? "inbox" : (projTodos.length || invTodos.length ? "tasks" : "inbox");
+  const when = m => { const d = toDateSafe(m.createdAt); return d ? d.toLocaleString("de-CH", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" }) : "gerade eben"; };
+  const msgRow = (m, out)=>`
+    <div class="msg ${!out && !m.read ? "unread" : ""} ${m.erledigt ? "done" : ""}" data-msg="${escapeAttr(m.id)}">
+      <div class="msghead">
+        ${!out && !m.read ? `<span class="tdot"></span>` : ""}
+        <b>${out ? "An " + escapeHtml(nameFromEmail(m.toEmail)) : escapeHtml(nameFromEmail(m.fromEmail))}</b>
+        <span class="muted" style="font-size:12px;">${escapeHtml(when(m))}</span>
+        <span style="margin-left:auto;font-size:12px;" class="muted">${out ? (m.read ? `✓✓ gelesen${m.readAt?" "+escapeHtml(m.readAt):""}` : "✓ zugestellt") : ""}${m.erledigt ? ` · <span style="color:var(--ok);font-weight:600;">erledigt</span>` : ""}</span>
+      </div>
+      <div class="msgtext">${escapeHtml(m.text||"")}</div>
+      ${m.link ? `<button class="msglink" data-openmsg="${escapeAttr(m.id)}" data-out="${out?1:0}">🔗 ${escapeHtml(linkTypeLabel(m.link.type))}: ${escapeHtml(m.link.label||"")} →</button>` : ""}
+      ${!out ? `<div style="display:flex;gap:6px;margin-top:8px;">
+        <button class="small" data-msgdone="${escapeAttr(m.id)}">${m.erledigt ? "↺ Wieder offen" : "✓ Erledigt"}</button>
+        <button class="small" data-msgreply="${escapeAttr(m.id)}">↩ Antworten</button>
+      </div>` : ""}
+    </div>`;
+
+  mainEl.innerHTML = `
+    <h1>Nachrichten &amp; Aufgaben</h1>
+    <p class="subtitle">Geteilte Aufträge, Rechnungen und Subunternehmer – ein Klick auf den Link bringt dich direkt an die richtige Stelle. Aufgaben erstellt das Tool automatisch.</p>
+    <div class="tabs">
+      <button class="tab ${messagesTab==="inbox"?"active":""}" data-mtab="inbox">Posteingang ${unread?`<span class="nbadge" style="display:inline-flex;">${unread}</span>`:`<span class="muted">(${openIn})</span>`}</button>
+      <button class="tab ${messagesTab==="tasks"?"active":""}" data-mtab="tasks">Aufgaben ${projTodos.length+invTodos.length?`<span class="nbadge" style="display:inline-flex;">${projTodos.length+invTodos.length}</span>`:""}</button>
+      <button class="tab ${messagesTab==="sent"?"active":""}" data-mtab="sent">Gesendet <span class="muted">(${sent.length})</span></button>
+    </div>
+    <div id="mtabBody"></div>`;
+  const body = document.getElementById("mtabBody");
+  if(messagesTab==="inbox"){
+    body.innerHTML = inbox.length ? inbox.map(m=>msgRow(m,false)).join("") : `<div class="empty">Keine Nachrichten.</div>`;
+  } else if(messagesTab==="sent"){
+    body.innerHTML = sent.length ? sent.map(m=>msgRow(m,true)).join("") : `<div class="empty">Noch nichts gesendet. Über „📤 Teilen“ bei einem Auftrag, einer Rechnung oder einem Subunternehmer.</div>`;
+  } else {
+    body.innerHTML = `
+      <div class="card"><h2>Aufträge (${projTodos.length})</h2>${projTodos.length ? `<div id="projTodoSlot">${todosHtml(projTodos)}</div>` : `<div class="muted">✓ Alles erledigt – alle Aufträge haben eine AB und sind sauber zugeordnet.</div>`}</div>
+      <div class="card"><h2>Rechnungen prüfen (${invTodos.length})</h2>
+        ${invTodos.length ? `<div class="todolist">${invTodos.map(x=>`
+          <div class="todo"><span class="tdot"></span>
+            <div style="flex:1;min-width:0;"><b>${escapeHtml(invoiceLinkLabel(x.inv))}</b><div class="muted" style="font-size:12px;">${escapeHtml(x.why)}</div></div>
+            <div style="display:flex;gap:6px;flex-shrink:0;">
+              <button class="small primary" data-invopen="${escapeAttr(x.inv.id)}">Prüfen</button>
+              <button class="small" data-invshare="${escapeAttr(x.inv.id)}">📤 Zuweisen</button>
+            </div></div>`).join("")}</div>` : `<div class="muted">✓ Keine offenen Rechnungen mit Fehlern.</div>`}
+      </div>`;
+    const slot = document.getElementById("projTodoSlot");
+    if(slot) wireTodos(slot, projTodos, renderMessages);
+    body.querySelectorAll("[data-invopen]").forEach(b=>b.addEventListener("click", ()=> openLink({ type:"invoice", id:b.dataset.invopen })));
+    body.querySelectorAll("[data-invshare]").forEach(b=>b.addEventListener("click", ()=>{
+      const inv = DB.invoices.find(i=>i.id===b.dataset.invshare); if(!inv) return;
+      openShareDialog({ type:"invoice", id:inv.id, label: invoiceLinkLabel(inv) }, "Bitte diese Rechnung prüfen und freigeben bzw. beanstanden.");
+    }));
+  }
+  mainEl.querySelectorAll("[data-mtab]").forEach(b=>b.addEventListener("click", ()=>{ messagesTab = b.dataset.mtab; renderMessages(); }));
+  body.querySelectorAll("[data-openmsg]").forEach(b=>b.addEventListener("click", ()=>{
+    const list = b.dataset.out==="1" ? DB.msgsOut : DB.msgsIn;
+    const m = (list||[]).find(x=>x.id===b.dataset.openmsg); if(!m) return;
+    if(b.dataset.out!=="1") markMsgRead(m.id);
+    if(!openLink(m.link)) toast("Der geteilte Eintrag existiert nicht mehr.");
+  }));
+  body.querySelectorAll(".msg.unread").forEach(el=> el.addEventListener("click", (e)=>{ if(!e.target.closest("button")){ markMsgRead(el.dataset.msg); el.classList.remove("unread"); } }));
+  body.querySelectorAll("[data-msgdone]").forEach(b=>b.addEventListener("click", async ()=>{
+    const m = (DB.msgsIn||[]).find(x=>x.id===b.dataset.msgdone); if(!m) return;
+    try{ await window.fb.updateDoc("nachrichten", m.id, { erledigt: !m.erledigt, read: true, readAt: m.readAt || new Date().toLocaleString("de-CH") }); }
+    catch(err){ showDbError("nachrichten", err); }
+  }));
+  body.querySelectorAll("[data-msgreply]").forEach(b=>b.addEventListener("click", ()=>{
+    const m = (DB.msgsIn||[]).find(x=>x.id===b.dataset.msgreply); if(!m) return;
+    markMsgRead(m.id);
+    openShareDialog(m.link || { type:"project", id:"", label:"" }, "Erledigt. ", m.fromUid);
+  }));
+}
+
 /* ============================= HELPERS ============================= */
 
 function formatCHF(n){
@@ -3012,6 +3587,7 @@ document.querySelectorAll(".navbtn").forEach(btn=>{
   btn.addEventListener("click", ()=>{
     navStack = [];
     editingSub = null;
+    if(btn.dataset.view==="messages") messagesTab = null;
     currentView = btn.dataset.view;
     render();
   });
