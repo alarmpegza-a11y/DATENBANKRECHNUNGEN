@@ -5231,62 +5231,73 @@ async function buildDuplicatePdf(inv){
 function b64Lines(b64){ return b64.replace(/(.{76})/g, "$1\r\n"); }
 function utf8B64(str){ return btoa(unescape(encodeURIComponent(str))); }
 function mimeWord(str){ return `=?UTF-8?B?${utf8B64(str)}?=`; }
-// Outlook-Entwurf (.eml mit "X-Unsent: 1") inkl. PDF-Anhang erzeugen und oeffnen
-async function mailDuplicate(inv){
+function downloadBlob(blob, name){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 60000);
+}
+function dupFileBase(inv){ return `Doppelrechnung_${String(inv.rechnungsnr||"ohne-Nr").replace(/[^\w.-]+/g,"_")}`; }
+async function downloadDuplicatePdf(inv){
+  try{
+    const pdf = await buildDuplicatePdf(inv);
+    downloadBlob(new Blob([pdf], { type:"application/pdf" }), dupFileBase(inv) + ".pdf");
+    toast("PDF heruntergeladen.");
+  }catch(err){ console.error(err); toast("PDF konnte nicht erstellt werden – Druckansicht wird geöffnet."); printDuplicateLetter(inv); }
+}
+// Outlook-Entwurf (.eml mit "X-Unsent: 1") inkl. PDF-Anhang
+async function downloadDuplicateEml(inv, pdfBytes){
   const to = subEmailFor(inv);
-  const nr = inv.rechnungsnr || "ohne-Nr";
   const subject = `Doppelt zugestellte Rechnung Nr. ${inv.rechnungsnr||""}`;
   const text = duplicateLetterText(inv).split("\n").slice(2).join("\n") + "\n\nIm Anhang finden Sie die Bestätigung als PDF.";
+  const pdf = pdfBytes || new Uint8Array(await buildDuplicatePdf(inv));
+  const fname = dupFileBase(inv) + ".pdf";
+  const boundary = "----=_PE_" + Date.now().toString(36);
+  const eml = [
+    "X-Unsent: 1", `To: ${to||""}`, `Subject: ${mimeWord(subject)}`, "MIME-Version: 1.0",
+    `Content-Type: multipart/mixed; boundary="${boundary}"`, "",
+    `--${boundary}`, "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "",
+    b64Lines(utf8B64(text.replace(/\n/g, "\r\n"))), "",
+    `--${boundary}`, `Content-Type: application/pdf; name="${fname}"`, `Content-Disposition: attachment; filename="${fname}"`, "Content-Transfer-Encoding: base64", "",
+    b64Lines(bytesToB64(pdf)), "", `--${boundary}--`, "",
+  ].join("\r\n");
+  downloadBlob(new Blob([eml], { type:"message/rfc822" }), "E-Mail_" + dupFileBase(inv) + ".eml");
+}
+// Standard: PDF herunterladen + Outlook mit fertigem Text oeffnen (funktioniert ueberall)
+async function mailDuplicate(inv){
+  const to = subEmailFor(inv);
+  const subject = `Doppelt zugestellte Rechnung Nr. ${inv.rechnungsnr||""}`;
+  const text = duplicateLetterText(inv).split("\n").slice(2).join("\n") + "\n\nIm Anhang finden Sie die Bestätigung als PDF.";
+  let pdf = null;
   try{
-    toast("E-Mail mit PDF wird vorbereitet…");
-    const pdf = new Uint8Array(await buildDuplicatePdf(inv));
-    const fname = `Doppelrechnung_${String(nr).replace(/[^\w.-]+/g,"_")}.pdf`;
-    const boundary = "----=_PE_" + Date.now().toString(36);
-    const eml = [
-      "X-Unsent: 1",
-      to ? `To: ${to}` : "To: ",
-      `Subject: ${mimeWord(subject)}`,
-      "MIME-Version: 1.0",
-      `Content-Type: multipart/mixed; boundary="${boundary}"`,
-      "",
-      `--${boundary}`,
-      "Content-Type: text/plain; charset=UTF-8",
-      "Content-Transfer-Encoding: base64",
-      "",
-      b64Lines(utf8B64(text.replace(/\n/g, "\r\n"))),
-      "",
-      `--${boundary}`,
-      `Content-Type: application/pdf; name="${fname}"`,
-      `Content-Disposition: attachment; filename="${fname}"`,
-      "Content-Transfer-Encoding: base64",
-      "",
-      b64Lines(bytesToB64(pdf)),
-      "",
-      `--${boundary}--`,
-      "",
-    ].join("\r\n");
-    const blob = new Blob([eml], { type: "message/rfc822" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `E-Mail_Doppelrechnung_${String(nr).replace(/[^\w.-]+/g,"_")}.eml`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(a.href), 60000);
-    showModal(`
-      <h2>✉️ E-Mail ist vorbereitet</h2>
-      <p class="subtitle" style="margin-bottom:10px;">Die Datei <b>${escapeHtml(a.download)}</b> wurde heruntergeladen. <b>Doppelklick</b> darauf (oder unten in der Download-Leiste anklicken) – Outlook öffnet eine fertige E-Mail${to ? ` an <b>${escapeHtml(to)}</b>` : ""} mit der <b>PDF im Anhang</b>. Nur noch auf <b>Senden</b> klicken.</p>
-      ${to ? "" : `<p class="flag" style="font-size:12.5px;">Keine E-Mail-Adresse hinterlegt – bitte in Outlook eintragen oder unter Preise &amp; Einstellungen beim Subunternehmer erfassen.</p>`}
-      <p class="muted" style="font-size:12px;">Tipp: In Chrome/Edge beim Download auf „…“ → <b>„Dateien dieses Typs immer öffnen“</b> klicken – dann öffnet sich Outlook künftig automatisch.</p>
-      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-        <button id="mailPlain">Nur Text-E-Mail (ohne Anhang)</button>
-        <button class="primary" id="mailOk">OK</button>
-      </div>`);
-    document.getElementById("mailOk").addEventListener("click", closeModal);
-    document.getElementById("mailPlain").addEventListener("click", ()=>{ closeModal(); mailDuplicatePlain(inv); });
-  }catch(err){
-    console.error(err);
-    toast("PDF konnte nicht erstellt werden – es wird eine Text-E-Mail geöffnet.");
-    mailDuplicatePlain(inv);
-  }
+    toast("PDF wird erstellt…");
+    pdf = new Uint8Array(await buildDuplicatePdf(inv));
+  }catch(err){ console.error(err); }
+  const fname = dupFileBase(inv) + ".pdf";
+  const pdfFile = pdf && typeof File !== "undefined" ? new File([pdf], fname, { type:"application/pdf" }) : null;
+  const canShare = !!(pdfFile && navigator.canShare && navigator.canShare({ files:[pdfFile] }));
+  if(pdf) downloadBlob(new Blob([pdf], { type:"application/pdf" }), fname);
+  window.location.href = `mailto:${encodeURIComponent(to||"")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}`;
+  showModal(`
+    <h2>✉️ E-Mail ist geöffnet</h2>
+    <p class="subtitle" style="margin-bottom:10px;">Outlook ist mit Empfänger${to ? ` <b>${escapeHtml(to)}</b>` : ""}, Betreff und Text geöffnet.
+      ${pdf ? `Die Bestätigung <b>${escapeHtml(fname)}</b> wurde heruntergeladen – <b>einfach aus der Download-Leiste oben rechts in die E-Mail ziehen</b> (oder in Outlook: Einfügen → Datei anfügen → Downloads).` : `<span class="flag">Das PDF konnte nicht erstellt werden.</span>`}</p>
+    ${to ? "" : `<p class="flag" style="font-size:12.5px;">Keine E-Mail-Adresse beim Subunternehmer hinterlegt – unter Preise &amp; Einstellungen erfassen.</p>`}
+    <p class="muted" style="font-size:12px;">Hinweis: Ein Browser darf aus Sicherheitsgründen keine Datei selbst an eine Outlook-E-Mail anhängen. Alternativen mit automatischem Anhang:</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      ${canShare ? `<button id="mailShare">📤 Über Windows teilen (PDF automatisch angehängt)</button>` : ""}
+      ${pdf ? `<button id="mailEml">Outlook-Entwurf mit Anhang (.eml)</button>` : ""}
+      <button class="primary" id="mailOk">OK</button>
+    </div>`);
+  document.getElementById("mailOk").addEventListener("click", closeModal);
+  const sh = document.getElementById("mailShare");
+  if(sh) sh.addEventListener("click", async ()=>{
+    try{ await navigator.share({ files:[pdfFile], title: subject, text: (to ? `An: ${to}\n\n` : "") + text }); closeModal(); }
+    catch(e){ if(e && e.name !== "AbortError") toast("Teilen nicht möglich."); }
+  });
+  const em = document.getElementById("mailEml");
+  if(em) em.addEventListener("click", async ()=>{ await downloadDuplicateEml(inv, pdf); toast("Datei heruntergeladen – Doppelklick öffnet den Outlook-Entwurf mit Anhang (nur Outlook-Desktop)."); });
 }
 function mailDuplicatePlain(inv){
   const to = subEmailFor(inv);
@@ -5296,12 +5307,14 @@ function mailDuplicatePlain(inv){
   if(!to) toast("Keine E-Mail-Adresse des Subunternehmers gefunden – bitte in Outlook eintragen (oder unter Preise & Einstellungen beim Sub als Kontakt hinterlegen).");
 }
 function dupButtonsHtml(id){
-  return `<button class="small primary" data-dupmail="${id}">✉️ E-Mail mit PDF an Subunternehmer</button>
-          <button class="small" data-dupprint="${id}">📄 Bestätigung als PDF / drucken</button>
+  return `<button class="small primary" data-dupmail="${id}">✉️ E-Mail an Subunternehmer (+ PDF)</button>
+          <button class="small" data-duppdf="${id}">📄 PDF herunterladen</button>
+          <button class="small" data-dupprint="${id}">🖨️ Drucken</button>
           <button class="small" data-dupcopy="${id}">📋 Text kopieren</button>`;
 }
 function wireDupButtons(container){
   container.querySelectorAll("[data-dupmail]").forEach(b=>b.addEventListener("click", ()=>{ const i = DB.invoices.find(x=>x.id===b.dataset.dupmail); if(i) mailDuplicate(i); }));
+  container.querySelectorAll("[data-duppdf]").forEach(b=>b.addEventListener("click", ()=>{ const i = DB.invoices.find(x=>x.id===b.dataset.duppdf); if(i) downloadDuplicatePdf(i); }));
   container.querySelectorAll("[data-dupprint]").forEach(b=>b.addEventListener("click", ()=>{ const i = DB.invoices.find(x=>x.id===b.dataset.dupprint); if(i) printDuplicateLetter(i); }));
   container.querySelectorAll("[data-dupcopy]").forEach(b=>b.addEventListener("click", ()=>{ const i = DB.invoices.find(x=>x.id===b.dataset.dupcopy); if(i) navigator.clipboard.writeText(duplicateLetterText(i)).then(()=>toast("Text kopiert."), ()=>toast("Kopieren nicht möglich.")); }));
 }
