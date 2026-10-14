@@ -440,6 +440,7 @@ function startDataListeners(){
     setTimeout(normalizeSupplierNames, 500);
     setTimeout(fillMissingHouses, 1500);
     setTimeout(cleanupEmptyProjects, 2500);
+    setTimeout(autoReparseBroken, 3500);
     renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
@@ -490,6 +491,7 @@ function stopDataListeners(){
   abMigrationDone = false;
   houseFixDone = false;
   emptyCleanupDone = false;
+  reparseDone = false;
   seenMsgIds = null;
   dataLoaded = { projects:false, invoices:false };
   if(unsubProfile){ unsubProfile(); unsubProfile=null; }
@@ -956,7 +958,14 @@ function splitPagesIntoInvoices(pages){
 
 /* ============================= RECHNUNGSTEXT PARSEN ============================= */
 
+// Tausender-Trennzeichen vereinheitlichen: 3’682.80 / 3`682.80 / 3 682.80 -> 3'682.80
+function normalizeDigits(text){
+  return String(text||"")
+    .replace(/(\d)[’‘`´ʼ′](?=\d{3}\b)/g, "$1'")
+    .replace(/(\d)[\u00A0\u202F\u2009](?=\d{3}\b)/g, "$1'");
+}
 function parseInvoiceText(text){
+  text = normalizeDigits(text);
   const rawLines = text.split("\n").map(l=>l.trim()).filter(l=>l.length>0);
   const lower = text.toLowerCase();
 
@@ -1097,6 +1106,11 @@ function parseInvoiceText(text){
       if(prices.length >= 2 && menge){
         const cand = prices[prices.length-2];
         if(sameish(menge*cand, preis)) ep = cand;
+        else {
+          // Tausender abgeschnitten? (z.B. "3’682.80" als 682.80 gelesen) -> Menge x Einheitspreis nehmen
+          const calc = roundNum(menge * cand), diff = calc - preis;
+          if(diff > 0 && Math.abs(diff / 1000 - Math.round(diff / 1000)) * 1000 <= Math.max(1, calc * 0.01)){ preis = calc; ep = cand; }
+        }
       }
       // Faustregel aus dem Betrieb: m² ist immer Beplankung, m³ ist immer Ausflockung
       if(einheit === "m²") cat = catBeplankung;
@@ -1157,6 +1171,11 @@ function parseInvoiceText(text){
     it.label = (it.label + " – Betrag = Rechnungstotal ÷ 1.081").slice(0,120);
   }
 
+  // "Höhenstrasse 22, 8954 Geroldswil Galgenen, den 03.03.2026": Ort des Briefdatums gehoert nicht zum Objekt
+  if(result.objekt){
+    const lw = result.objekt.split(/\s+/).pop();
+    if(lw && lw.length > 2 && new RegExp(lw.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + ",?\\s*den\\s+\\d").test(text)) result.objekt = result.objekt.slice(0, -lw.length).replace(/[,\s]+$/,"");
+  }
   return result;
 }
 
@@ -1225,7 +1244,14 @@ function findTotal(rawLines){
   rawLines.forEach((l, i)=>{
     if(!strong.test(l)) return;
     const after = l.slice(l.search(strong));
-    const m = after.match(new RegExp("^[^\\d\\n]{0,40}" + amt.source));
+    let m = after.match(new RegExp("^[^\\d\\n]{0,40}" + amt.source));
+    if(!m){
+      // Betrag steht in einer der naechsten Zeilen (oft rechtsbuendig allein auf der Zeile)
+      for(const nx of rawLines.slice(i+1, i+4)){
+        const mm = nx.match(new RegExp("^(?:CHF\\s*)?" + amt.source + "\\s*(?:CHF|Fr\\.?)?$", "i"));
+        if(mm){ m = mm; break; }
+      }
+    }
     if(m){ const v = parseSwissNumber(m[1]); if(v!=null && (best==null || v > best)) best = v; }
   });
   if(best!=null) return best;
@@ -2119,6 +2145,30 @@ function renderProjects(){
   });
 }
 
+// Rechnung aus dem gespeicherten Text mit der aktuellen Erkennung neu auslesen
+function reparseInvoice(inv){
+  if(!inv || !inv.rawText) return null;
+  const r = parseInvoiceText(inv.rawText);
+  if(!r.items.length && r.total==null) return null;
+  return { items: r.items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: it.ep!==undefined ? it.ep : null, ...(it.tarifId ? { tarifId: it.tarifId } : {}) })), total: r.total };
+}
+// Einmalig: offene Rechnungen, deren Positionen nicht zum Rechnungsbetrag passen und nicht von Hand bearbeitet wurden, neu auslesen
+let reparseDone = false;
+async function autoReparseBroken(){
+  if(reparseDone) return; reparseDone = true;
+  for(const inv of DB.invoices){
+    if(inv.gedrucktAm || !inv.rawText) continue;
+    if((inv.verlauf||[]).some(e => /Positionen|Betrag/.test(e.was||""))) continue; // von Hand korrigiert -> nicht anfassen
+    const sum = (inv.items||[]).reduce((s,x)=>s+(num(x.preis)||0),0);
+    const okNow = num(inv.total)!=null && Math.abs(sum - inv.total/1.081) <= Math.max(2, inv.total*0.01);
+    if(okNow) continue;
+    const r = reparseInvoice(inv); if(!r || r.total==null) continue;
+    const sumNew = r.items.reduce((s,x)=>s+(num(x.preis)||0),0);
+    if(Math.abs(sumNew - r.total/1.081) > Math.max(2, r.total*0.01)) continue; // neue Lesung passt auch nicht -> lassen
+    inv.items = r.items; inv.total = r.total;
+    try{ await saveInvoice(inv); }catch(e){}
+  }
+}
 function itemAssigned(inv, it){
   if(it.category !== "Sonstiges") return true;
   const sub = getSubFor(inv.lieferant);
@@ -2656,11 +2706,24 @@ function renderInvoiceEditPanel(panel, invoiceId){
       <div class="section-title">Positionen</div>
       <div class="itemsSlot"></div>
       <div class="pruefSlot" style="margin-top:14px;"></div>
+      ${inv.rawText ? `<div style="margin-top:10px;"><button class="small" data-reparse title="Liest Positionen und Betrag mit der aktuellen Erkennung neu aus dem gespeicherten Rechnungstext">↻ Positionen &amp; Betrag neu auslesen</button></div>` : ""}
       ${auditHtml(inv)}
       ${inv.rawText ? `<details style="margin-top:10px;"><summary class="muted" style="cursor:pointer;font-size:12px;">Rohtext der Rechnung anzeigen</summary><textarea class="raw" readonly style="width:100%;margin-top:6px;">${escapeHtml(inv.rawText)}</textarea></details>` : ""}
     </div>
   `;
   const pruefSlot = panel.querySelector(".pruefSlot");
+  const rp = panel.querySelector("[data-reparse]");
+  if(rp) rp.addEventListener("click", async ()=>{
+    const i = getInv(); if(!i) return;
+    const r = reparseInvoice(i);
+    if(!r){ toast("Nichts Neues erkannt."); return; }
+    const sumOld = (i.items||[]).reduce((s,x)=>s+(num(x.preis)||0),0), sumNew = r.items.reduce((s,x)=>s+(num(x.preis)||0),0);
+    if(!confirm(`Neu ausgelesen:\n\nPositionen: CHF ${fmt(sumOld)} → CHF ${fmt(sumNew)}\nRechnungsbetrag: ${i.total!=null?"CHF "+fmt(i.total):"–"} → ${r.total!=null?"CHF "+fmt(r.total):"–"}\n\nÜbernehmen?`)) return;
+    i.items = r.items; if(r.total!=null) i.total = r.total;
+    await saveInvoice(i);
+    toast("Neu ausgelesen und gespeichert.");
+    renderInvoiceEditPanel(panel, invoiceId);
+  });
   const itemsSlot = panel.querySelector(".itemsSlot");
   const refresh = ()=> renderPruefPanel(pruefSlot, getInv);
   panel.querySelectorAll("[data-ef]").forEach(inp=>{
@@ -3124,6 +3187,7 @@ function suggestABCategory(pos){
 }
 
 function parseABText(text){
+  text = normalizeDigits(text);
   const lines = String(text||"").split("\n").map(l=>l.trim()).filter(Boolean);
   const ab = { nr:"", anr:"", baustelle:"", kunde:"", kontakt:"", bestelldatum:"", offertdatum:"", einheiten:null,
                inkl:[], exkl:[], positionen:[], auftragswert:null, totalInklMwst:null };
@@ -3294,6 +3358,9 @@ function projName(id){ const p = DB.projects.find(x=>x.id===id); return p ? p.na
 // Gleiche Leistung desselben Subs auf anderen Objekten vergleichen -> Ausreisser finden
 function outlierFor(inv, it){
   const S = getSettings();
+  // Gibt es einen vereinbarten Preis, ist der massgebend – kein Vergleich mit (evtl. falsch gelesenen) anderen Rechnungen
+  const subX = getSubFor(inv.lieferant);
+  if(subX && findTarif(subX, inv, it).tarif) return null;
   if(num(it.preis)==null || +it.preis<=0) return null;
   const toks = labelTokens(it.label);
   if(!toks.length) return null;
@@ -3307,6 +3374,7 @@ function outlierFor(inv, it){
       if(x.category!==it.category || num(x.preis)==null || +x.preis<=0) return;
       if(unitKey(x.einheit)!==unitKey(it.einheit)) return;
       if(jaccard(toks, labelTokens(x.label)) < 0.5) return;
+      if(x.ep!=null && num(x.menge) && Math.abs(x.menge * x.ep - x.preis) > Math.max(1, x.preis * 0.01)) return; // unstimmig gelesen
       refs.push({ inv:o, it:x, val: itemEP(x) ?? +x.preis });
     });
   });
