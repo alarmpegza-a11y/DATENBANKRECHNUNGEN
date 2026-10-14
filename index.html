@@ -1522,7 +1522,11 @@ async function handleFiles(fileList){
             const fixed = await refreshFromParsed(existing, parsed);
             dupInfo.push(`${existing.lieferant} ${existing.rechnungsnr||""}: war schon erfasst – Original ergänzt${fixed.length ? ` (korrigiert: ${fixed.filter(f=>f!=="rawText").join(", ")})` : ""}`);
           } else {
-            dupInfo.push(`${existing.lieferant} ${existing.rechnungsnr||""}: bereits erfasst – nicht doppelt gespeichert`);
+            // echte Doppelrechnung: Versuch beim Original vermerken und Bestaetigung fuer den Sub anbieten
+            const versuch = { am: new Date().toLocaleString("de-CH"), datei: file.name || "", von: currentUser ? currentUser.email : "" };
+            existing.duplikatVersuche = [...(existing.duplikatVersuche||[]), versuch];
+            try{ await window.fb.setDocMerge("invoices", existing.id, { duplikatVersuche: existing.duplikatVersuche }); }catch(e){}
+            appendDuplicateCard(existing, file.name);
           }
           continue;
         }
@@ -2492,6 +2496,7 @@ function renderInvoiceEditPanel(panel, invoiceId){
         <label class="field"><span>Datum</span><input type="text" data-ef="datum" value="${escapeAttr(inv.datum||"")}"></label>
         <label class="field"><span>Betrag CHF (Rechnungstotal)</span><input type="number" step="any" data-ef="total" value="${inv.total!=null?inv.total:""}"></label>
         <label class="field"><span>Haus</span><input type="text" data-ef="haus" value="${escapeAttr(inv.haus||"")}" placeholder="z.B. 1, A"></label>
+        <label class="field"><span>Bezahlt am</span><input type="date" data-ef="bezahltAm" value="${escapeAttr(inv.bezahltAm||"")}"></label>
       </div>
       ${inv.objekt ? `<div class="muted" style="font-size:12px;margin:-4px 0 8px 0;">Objekt laut Rechnung: ${escapeHtml(inv.objekt)}</div>` : ""}
       <div class="section-title">Positionen</div>
@@ -3170,6 +3175,7 @@ function checkInvoice(inv){
   const invHaus = inv.haus || "";
   let scopeHaus; // undefined = ganzes Objekt
   const ohneAB = invOhneAB(inv);
+  (inv.duplikatVersuche||[]).forEach(d => f.push({ level:"info", text:`Diese Rechnung wurde am ${d.am} erneut zugestellt (${d.datei||"Datei"}) – nicht doppelt gespeichert.` }));
   if(ohneAB) f.push({ level:"ok", text:`Keine AB vorhanden – bestätigt${inv.ohneAB && inv.ohneABvon ? ` von ${inv.ohneABvon}` : (!inv.ohneAB ? " (für das ganze Objekt)" : "")}. Preise werden trotzdem geprüft.` });
   if(p && !ohneAB && (houses.length > 1 || allAbs.some(a=>a.haus))){
     if(!invHaus){
@@ -3328,6 +3334,7 @@ function renderPruefPanel(el, getInv){
           <button class="small ${st==="beanstandet"?"st-bad":"danger"}" data-ps="beanstandet">✗ Beanstanden</button>
           <button class="small" data-ps="offen" ${st==="offen"?"disabled":""}>↺ Offen</button>
           <button class="small" data-copybean>📋 Beanstandung kopieren</button>
+          ${(inv.duplikatVersuche||[]).length ? dupButtonsHtml(inv.id) : ""}
           <button class="small ${inv.ohneAB ? "st-ok" : ""}" data-ohneab title="Für diese Rechnung gibt es keine AB (z.B. Regie, Reparatur) – AB-Meldungen ausblenden">${inv.ohneAB ? "✓ Keine AB vorhanden" : "🚫 Keine AB vorhanden!"}</button>
         </div>
       </div>
@@ -3352,6 +3359,7 @@ function renderPruefPanel(el, getInv){
       toast(next==="ok" ? "Rechnung freigegeben." : next==="beanstandet" ? "Rechnung beanstandet – zählt nicht mehr ins Ist." : "Status zurückgesetzt.");
     });
   });
+  wireDupButtons(el);
   el.querySelector("[data-ohneab]").addEventListener("click", async ()=>{
     const i = getInv(); if(!i) return;
     const next = !i.ohneAB;
@@ -5000,6 +5008,121 @@ async function openPrintPreview(invs){
 function closePrintPreview(){
   const r = document.getElementById("printRoot"); if(r) r.remove();
   document.body.classList.remove("printing");
+}
+
+/* ============================= DOPPELRECHNUNG: BESTAETIGUNG FUER DEN SUBUNTERNEHMER ============================= */
+function dupFacts(inv){
+  const p = DB.projects.find(x=>x.id===inv.projectId);
+  const erfasst = toDateSafe(inv.createdAt);
+  const pr = inv.pruefung || {};
+  return {
+    p,
+    nr: inv.rechnungsnr || "(ohne Nr.)",
+    datum: inv.datum || "",
+    betrag: inv.total!=null ? `CHF ${formatCHF(+inv.total)}` : "",
+    objekt: p ? p.name + (inv.haus ? ", " + inv.haus : "") : (inv.objekt || ""),
+    erfasst: erfasst ? `${erfasst.toLocaleDateString("de-CH",{day:"2-digit",month:"2-digit",year:"numeric"})} um ${erfasst.toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit"})} Uhr` : "",
+    freigegeben: pr.status==="ok" && pr.at ? `${String(pr.at).replace(/,\s*(\d{1,2}:\d{2})(:\d{2})?/, " um $1 Uhr")}` : "",
+    beanstandet: pr.status==="beanstandet" && pr.at ? String(pr.at).replace(/,\s*(\d{1,2}:\d{2})(:\d{2})?/, " um $1 Uhr") : "",
+    bezahlt: inv.bezahltAm ? new Date(inv.bezahltAm + "T12:00:00").toLocaleDateString("de-CH") : "",
+    gedruckt: inv.gedrucktAm ? String(inv.gedrucktAm).replace(/,\s*(\d{1,2}:\d{2})(:\d{2})?/, " um $1 Uhr") : "",
+  };
+}
+function subEmailFor(inv){
+  const s = getSubFor(inv.lieferant);
+  const fromSub = s && String(s.kontakt||"").match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+  if(fromSub) return fromSub[0];
+  const m = String(inv.rawText||"").match(/[\w.+-]+@[\w-]+\.[a-z]{2,}(?:\.[a-z]{2,})?/gi) || [];
+  return (m.find(e => !/pe-fabrikation/i.test(e)) || "").replace(/\s/g,"");
+}
+function duplicateLetterText(inv){
+  const f = dupFacts(inv);
+  const status = [
+    f.erfasst ? `bei uns bereits am ${f.erfasst} eingegangen und erfasst` : "bei uns bereits erfasst",
+    f.freigegeben ? `am ${f.freigegeben} geprüft und zur Zahlung freigegeben` : "",
+    f.bezahlt ? `am ${f.bezahlt} bezahlt` : "",
+  ].filter(Boolean);
+  const statusSatz = status.length > 1 ? status.slice(0,-1).join(", ") + " und " + status[status.length-1] : status[0];
+  return [
+    `Doppelt zugestellte Rechnung Nr. ${f.nr}`,
+    "",
+    "Sehr geehrte Damen und Herren",
+    "",
+    `Ihre Rechnung Nr. ${f.nr}${f.datum ? " vom " + f.datum : ""}${f.betrag ? " über " + f.betrag : ""}${f.objekt ? " (Objekt: " + f.objekt + ")" : ""} wurde uns erneut zugestellt.`,
+    "",
+    `Diese Rechnung ist ${statusSatz}.`,
+    "",
+    "Die erneut zugestellte Rechnung wird daher nicht ein zweites Mal bezahlt. Wir bitten Sie, Ihre Unterlagen entsprechend zu berichtigen und uns die Rechnung nicht nochmals zuzustellen.",
+    "",
+    "Freundliche Grüsse",
+    "PE Fabrikations AG",
+    currentUser ? nameFromEmail(currentUser.email) : "",
+  ].join("\n");
+}
+function printDuplicateLetter(inv){
+  const f = dupFacts(inv);
+  const body = duplicateLetterText(inv).split("\n");
+  const subject = body.shift(); body.shift();
+  closePrintPreview();
+  const root = document.createElement("div");
+  root.id = "printRoot";
+  root.innerHTML = `
+    <div class="ptoolbar noprint"><b>Bestätigung Doppelrechnung</b><span class="muted" style="font-size:12.5px;">Im Druckdialog „Als PDF speichern“ wählen, um sie per E-Mail zu senden.</span><span style="flex:1;"></span>
+      <button class="primary" id="dlPrint">🖨️ Drucken / als PDF speichern</button><button id="dlClose">Schliessen</button></div>
+    <div id="ppPages" style="margin-left:0;"><div class="ppage" style="padding:22mm 20mm;font-family:Arial,Helvetica,sans-serif;font-size:11pt;line-height:1.5;color:#111;">
+      <div style="font-weight:700;font-size:13pt;">PE Fabrikations AG</div>
+      <div style="font-size:9.5pt;color:#444;">Feldmoosstrasse 51 · 8853 Lachen · www.pe-fabrikation.ch</div>
+      <div style="margin-top:22mm;">${escapeHtml(inv.lieferant||"")}</div>
+      <div style="margin-top:14mm;text-align:right;">Lachen, ${new Date().toLocaleDateString("de-CH")}</div>
+      <div style="margin-top:10mm;font-weight:700;font-size:12pt;">${escapeHtml(subject)}</div>
+      <div style="margin-top:6mm;white-space:pre-wrap;">${escapeHtml(body.join("\n"))}</div>
+      <table style="margin-top:10mm;font-size:9.5pt;border-collapse:collapse;width:100%;">
+        ${[["Rechnungs-Nr.", f.nr],["Rechnungsdatum", f.datum],["Betrag", f.betrag],["Objekt", f.objekt],["Bei uns eingegangen", f.erfasst],["Zur Zahlung freigegeben", f.freigegeben],["Bezahlt", f.bezahlt],["Verbucht / abgelegt", f.gedruckt]]
+          .filter(r=>r[1]).map(r=>`<tr><td style="padding:3px 8px 3px 0;color:#555;width:45mm;border-bottom:1px solid #ddd;">${escapeHtml(r[0])}</td><td style="padding:3px 0;border-bottom:1px solid #ddd;">${escapeHtml(r[1])}</td></tr>`).join("")}
+      </table>
+    </div></div>`;
+  document.body.appendChild(root);
+  document.body.classList.add("printing");
+  document.getElementById("dlClose").addEventListener("click", closePrintPreview);
+  document.getElementById("dlPrint").addEventListener("click", ()=> window.print());
+}
+function mailDuplicate(inv){
+  const to = subEmailFor(inv);
+  const subject = `Doppelt zugestellte Rechnung Nr. ${inv.rechnungsnr||""}`;
+  const text = duplicateLetterText(inv).split("\n").slice(2).join("\n");
+  window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}`;
+  if(!to) toast("Keine E-Mail-Adresse des Subunternehmers gefunden – bitte in Outlook eintragen (oder unter Preise & Einstellungen beim Sub als Kontakt hinterlegen).");
+}
+function dupButtonsHtml(id){
+  return `<button class="small primary" data-dupmail="${id}">✉️ E-Mail an Subunternehmer</button>
+          <button class="small" data-dupprint="${id}">📄 Bestätigung als PDF / drucken</button>
+          <button class="small" data-dupcopy="${id}">📋 Text kopieren</button>`;
+}
+function wireDupButtons(container){
+  container.querySelectorAll("[data-dupmail]").forEach(b=>b.addEventListener("click", ()=>{ const i = DB.invoices.find(x=>x.id===b.dataset.dupmail); if(i) mailDuplicate(i); }));
+  container.querySelectorAll("[data-dupprint]").forEach(b=>b.addEventListener("click", ()=>{ const i = DB.invoices.find(x=>x.id===b.dataset.dupprint); if(i) printDuplicateLetter(i); }));
+  container.querySelectorAll("[data-dupcopy]").forEach(b=>b.addEventListener("click", ()=>{ const i = DB.invoices.find(x=>x.id===b.dataset.dupcopy); if(i) navigator.clipboard.writeText(duplicateLetterText(i)).then(()=>toast("Text kopiert."), ()=>toast("Kopieren nicht möglich.")); }));
+}
+function appendDuplicateCard(inv, filename){
+  const area = document.getElementById("reviewArea"); if(!area) return;
+  const f = dupFacts(inv);
+  const wrap = document.createElement("div");
+  wrap.className = "card";
+  wrap.style.borderLeft = "4px solid var(--danger)";
+  wrap.innerHTML = `
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start;">
+      <div><h2 style="margin:0;color:var(--danger);">⚠ Doppelrechnung: ${escapeHtml(inv.lieferant||"")} Nr. ${escapeHtml(f.nr)}</h2>
+        <div class="muted" style="font-size:12.5px;margin-top:4px;">Datei „${escapeHtml(filename||"")}“ – wurde <b>nicht</b> nochmals gespeichert.</div></div>
+      <span class="pill danger">bereits erfasst</span>
+    </div>
+    <table style="margin-top:10px;max-width:640px;">
+      ${[["Objekt", f.objekt],["Rechnungsdatum", f.datum],["Betrag", f.betrag],["Bei uns eingegangen", f.erfasst],["Freigegeben", f.freigegeben || (f.beanstandet ? "beanstandet am " + f.beanstandet : "noch nicht")],["Bezahlt", f.bezahlt || "–"],["Gedruckt / abgelegt", f.gedruckt || "–"]]
+        .map(r=>`<tr><td class="muted" style="width:170px;">${escapeHtml(r[0])}</td><td><b>${escapeHtml(r[1]||"–")}</b></td></tr>`).join("")}
+    </table>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;">${dupButtonsHtml(inv.id)}<button class="small" data-dupopen="${inv.id}">Original-Rechnung öffnen</button></div>`;
+  area.prepend(wrap);
+  wireDupButtons(wrap);
+  wrap.querySelector("[data-dupopen]").addEventListener("click", ()=> openLink({ type:"invoice", id: inv.id }));
 }
 
 /* ============================= STARTSEITE ============================= */
