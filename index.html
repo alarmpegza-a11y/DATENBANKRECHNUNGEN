@@ -531,9 +531,18 @@ async function removeProjectIfEmpty(projectId){
   catch(e){ /* keine Berechtigung -> Objekt bleibt, erzeugt aber keine Meldungen mehr */ }
 }
 let emptyCleanupDone = false;
+async function cleanProjectNames(){
+  const re = /\s+[A-ZÄÖÜa-zäöü][\wäöüÄÖÜ-]*,?\s*den\s+\d{1,2}\.\d{1,2}\.\d{2,4}.*$/;
+  for(const p of DB.projects){
+    const nn = String(p.name||"").replace(re, "").replace(/[,\s]+$/,"");
+    const na = String(p.address||"").replace(re, "").replace(/[,\s]+$/,"");
+    if(nn && (nn !== p.name || na !== (p.address||""))){ p.name = nn; p.address = na; try{ await saveProject(p); }catch(e){} }
+  }
+}
 async function cleanupEmptyProjects(){
   if(emptyCleanupDone || !dataLoaded.projects || !dataLoaded.invoices) return;
   emptyCleanupDone = true;
+  await cleanProjectNames();
   if(!hasPerm("deleteAuftraege")) return;
   const now = Date.now();
   for(const p of DB.projects.slice()){
@@ -1172,6 +1181,7 @@ function parseInvoiceText(text){
   }
 
   // "Höhenstrasse 22, 8954 Geroldswil Galgenen, den 03.03.2026": Ort des Briefdatums gehoert nicht zum Objekt
+  if(result.objekt) result.objekt = result.objekt.replace(/\s+[A-ZÄÖÜa-zäöü][\wäöüÄÖÜ-]*,?\s*den\s+\d{1,2}\.\d{1,2}\.\d{2,4}.*$/, "").replace(/[,\s]+$/,"");
   if(result.objekt){
     const lw = result.objekt.split(/\s+/).pop();
     if(lw && lw.length > 2 && new RegExp(lw.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + ",?\\s*den\\s+\\d").test(text)) result.objekt = result.objekt.slice(0, -lw.length).replace(/[,\s]+$/,"");
@@ -2169,6 +2179,19 @@ async function autoReparseBroken(){
     try{ await saveInvoice(inv); }catch(e){}
   }
 }
+// Material einer Beplankungs-Position: aus dem Text, sonst aus dem gewaehlten/erkannten vereinbarten Preis
+function itemMaterial(inv, it){
+  const m = normMaterial(it.label); if(m) return m;
+  const sub = getSubFor(inv.lieferant);
+  if(sub){ const r = findTarif(sub, inv, it); if(r.tarif){ const tm = normMaterial(r.tarif.material || r.tarif.bezeichnung); if(tm) return tm; } }
+  return null;
+}
+// Nachtrag (Mehr-/Minderpreis) ohne zugehoerige Haupt-AB?
+function missingBaseABs(p){
+  const abs = (p && p.abs) || [];
+  const clean = s => String(s||"").replace(/[^0-9A-Za-z]/g,"").toUpperCase();
+  return abs.filter(a => a.nachtrag && !abs.some(b => !b.nachtrag && (b.nr===a.nr || (a.zuAnr && clean(b.anr)===clean(a.zuAnr)))));
+}
 function itemAssigned(inv, it){
   if(it.category !== "Sonstiges") return true;
   const sub = getSubFor(inv.lieferant);
@@ -2319,7 +2342,38 @@ function projectControlRows(p, haus){
     const baseErl = ab[cat] ? ab[cat].erloes + erloesAdj : null;
     const erloes = baseErl!=null || fold.to[cat] ? (baseErl||0) + (fold.to[cat] ? fold.to[cat].erloes : 0) : null;
     return { cat, soll, ist:i, erloes, nebenErloes: fold.to[cat] ? fold.to[cat].erloes : 0, materials: ab[cat] ? ab[cat].materials : [], budget, mainSubName };
+  }).filter(Boolean).flatMap(r => splitBeplankungRow(r, p, haus, invs, ab));
+}
+function splitBeplankungRow(r, p, haus, invs, ab){
+  if(r.cat !== "Beplankung" || (r.soll && r.soll.quelle === "manuell")) return [r];
+  const a = ab.Beplankung, mq = (a && a.matQty) || {}, me = (a && a.matErl) || {};
+  const posM = Object.keys(mq).filter(k => mq[k] > 0);
+  const istBy = {};
+  invs.forEach(inv => (inv.items||[]).forEach(it => {
+    if(it.category !== "Beplankung") return;
+    const m = itemMaterial(inv, it) || (posM.length===1 ? posM[0] : "?");
+    const o = istBy[m] || (istBy[m] = { menge:0, chf:0, subs:{} });
+    o.menge += num(it.menge)||0; o.chf += num(it.preis)||0; const s = inv.lieferant || "?"; o.subs[s] = (o.subs[s]||0) + 1;
+  }));
+  const mats = Array.from(new Set([...Object.keys(mq), ...Object.keys(istBy)]));
+  if(mats.length <= 1) return [r];
+  const out = mats.map(m => {
+    const i = istBy[m] || { menge:0, chf:0, subs:{} };
+    const soll = mq[m] !== undefined ? { menge: roundNum(mq[m]), quelle: "AB" } : null;
+    if(soll && Math.abs(soll.menge) < 0.0001 && !i.menge) return null;
+    const subName = (Object.entries(i.subs).sort((x,y)=>y[1]-x[1])[0]||[])[0] || r.mainSubName;
+    const sub = subName ? getSubFor(subName) : null;
+    let budget = null;
+    if(soll && sub){ const t = findTarif(sub, { datum:"" }, { category:"Beplankung", label: m, einheit:"m²" }).tarif; if(t) budget = Math.max(0, soll.menge) * +t.preis; }
+    return { cat:"Beplankung", material: m==="?" ? "Material unbekannt" : m, soll, ist: i, erloes: me[m]!==undefined ? me[m] : null, nebenErloes: 0, materials: [], budget, mainSubName: subName };
   }).filter(Boolean);
+  // Pauschalen der Beplankung der groessten Material-Zeile zuschlagen
+  if(out.length && (r.ist.nebenChf || r.nebenErloes)){
+    const big = out.slice().sort((x,y)=>(y.ist.chf||0)-(x.ist.chf||0) || ((y.soll&&y.soll.menge)||0)-((x.soll&&x.soll.menge)||0))[0];
+    if(r.ist.nebenChf){ big.ist = { ...big.ist, chf: big.ist.chf + r.ist.nebenChf, nebenChf: r.ist.nebenChf }; }
+    if(r.nebenErloes){ big.erloes = (big.erloes||0) + r.nebenErloes; big.nebenErloes = r.nebenErloes; }
+  }
+  return out.length ? out : [r];
 }
 
 function renderProjectDetail(projectId){
@@ -2401,6 +2455,7 @@ function renderProjectDetail(projectId){
         <div style="display:flex;gap:6px;"><button class="small" id="addHausBtn">+ Haus</button><button class="small primary" id="abUploadBtn">${abs.length ? "+ Weitere AB(s) hochladen" : "AB(s) hochladen"}</button></div>
       </div>
       <p class="muted" style="font-size:12.5px;margin:6px 0 0 0;">Eine AB gilt für <b>alle Subunternehmer</b> dieses Objekts. Bei mehreren Häusern: bei jeder AB „Gilt für“ das richtige Haus wählen.</p>
+      ${missingBaseABs(p).length ? `<div class="fd danger" style="margin-top:10px;"><span class="fdi">✗</span><span>Haupt-AB ${escapeHtml(missingBaseABs(p).map(a=>a.zuAnr||a.nr).join(", "))} fehlt – hinterlegt ist nur der Mehr-/Minderpreis. Ohne Haupt-AB stimmen die Soll-Mengen nicht (z.B. −177 m² ohne die ursprünglichen +177 m²). Bitte Haupt-AB hochladen.</span></div>` : ""}
       ${houses.length ? `
         <div class="tablewrap" style="margin-top:12px;"><table>
           <thead><tr><th>Haus</th><th>AB</th><th>Rechnungen</th><th>ohne Haus-Zuordnung</th></tr></thead>
@@ -2465,14 +2520,14 @@ function renderProjectDetail(projectId){
           const S = getSettings();
           const over = r.soll && r.ist.menge > 0 && r.ist.menge > Math.max(0, r.soll.menge) * (1 + S.mengenTolProzent/100) + 1e-9;
           const pct = r.soll && r.soll.menge>0 ? Math.min(100, r.ist.menge / r.soll.menge * 100) : (r.ist.menge>0 ? 100 : 0);
-          const rest = r.soll ? r.soll.menge - r.ist.menge : null;
+          const rest = r.soll && r.soll.menge >= 0 ? r.soll.menge - r.ist.menge : null;
           const overBudget = r.budget!=null && r.ist.chf > r.budget + 0.5;
           const marge = r.erloes!=null ? r.erloes - r.ist.chf : null;
           const margePct = marge!=null && r.erloes > 0 ? marge / r.erloes * 100 : null;
           const catInvs = invs.filter(i => isActiveInvoice(i) && (!selH || i.haus===selH) && (i.items||[]).some(it=>it.category===r.cat));
           const approved = catInvs.length && catInvs.every(i=>i.pruefung && i.pruefung.status==="ok");
           return `<tr class="${over||overBudget ? (approved ? "overok" : "overrow") : ""}" ${(over||overBudget) && approved ? `title="Über Soll/Budget – alle betroffenen Rechnungen wurden bewusst freigegeben"` : ""}>
-            <td><b>${escapeHtml(r.cat==="Sonstiges" ? "Weitere vereinbarte Leistungen" : catLabel(r.cat))}</b>${r.materials.length?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.materials.join(", "))}</div>`:""}${r.mainSubName?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.mainSubName)}</div>`:""}</td>
+            <td><b>${escapeHtml(r.cat==="Sonstiges" ? "Weitere vereinbarte Leistungen" : r.material ? "Beplankung " + r.material : catLabel(r.cat))}</b>${r.soll && r.soll.menge < 0 ? `<div class="flag" style="font-size:11px;">Minderpreis – Haupt-AB nötig</div>` : ""}${r.materials.length?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.materials.join(", "))}</div>`:""}${r.mainSubName?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.mainSubName)}</div>`:""}</td>
             <td class="num" style="white-space:nowrap;">${r.soll ? `${fmtQty(r.soll.menge)} ${escapeHtml(u)} <span class="srcbadge ${r.soll.quelle==="AB"?"text":"ocr"}">${r.soll.quelle}</span>` : `<span class="muted">kein Soll</span>`}</td>
             <td class="num" style="white-space:nowrap;">${fmtQty(r.ist.menge)} ${escapeHtml(u)}</td>
             <td class="num" style="white-space:nowrap;">${rest==null ? "—" : over ? (approved ? `<span style="color:#9a5b00;font-weight:600;">+${fmtQty(-rest)} ${escapeHtml(u)} über · freigegeben</span>` : `<span class="flag">+${fmtQty(-rest)} ${escapeHtml(u)} über</span>`) : `${fmtQty(rest)} ${escapeHtml(u)}`}</td>
@@ -3108,7 +3163,7 @@ function findTarif(sub, inv, it){
 
 /* ============================= AUFTRAGSBESTAETIGUNG (AB) LESEN ============================= */
 
-const AB_PARSER_VERSION = 3;
+const AB_PARSER_VERSION = 4;
 // Bereits gespeicherte ABs mit dem aktuellen Leser neu auswerten (Rohtext ist gespeichert -> kein erneuter Upload noetig)
 let abMigrationDone = false;
 let supplierFixDone = false;
@@ -3196,8 +3251,8 @@ function parseABText(text){
   m = text.match(/Baustelle\s*:\s*([^\n]+)/i);
   if(m) ab.baustelle = m[1].trim();
   // Nachtrag: "Mehr- /Minderpreis … zur Auftragsbestätigung 202417673 / A- 24123830" oder Bestell-Nr. "MeMi"
-  ab.nachtrag = /Mehr-?\s*\/?\s*Minderpreis|Nachtrag\s+zu\s+AB|\bMeMi\b/i.test(text);
-  m = text.match(/zur\s+Auftragsbest[äa]tigung\s+\d+\s*\/\s*(A-?\s*\d+)/i) || text.match(/Nachtrag\s+zu\s+AB-?\s*(\d{6,})/i);
+  ab.nachtrag = /Mehr-?\s*\/?\s*Minderpreis|Minderpreis\s+\w+|Mehrpreis\s+\w+|Nachtrag\s+zu\s+AB|\bMeMi\b/i.test(text);
+  m = text.match(/zur\s+Auftragsbest[äa]tigung\s+\d+\s*\/\s*(A-?\s*\d+)/i) || text.match(/Nachtrag\s+zu\s+AB[-\s]*(A-?\s*\d{6,}|\d{6,})/i);
   ab.zuAnr = m ? ("A-" + m[1].replace(/^A-?\s*/i,"")) : "";
   m = text.match(/^Fax[\s\d]+?\s([A-ZÄÖÜ][^\n]+)$/m);
   if(m) ab.kunde = m[1].trim();
@@ -3322,7 +3377,8 @@ function abSoll(p, haus){
     const o = out[pos.category] || (out[pos.category] = { menge:0, erloes:0, einheit:pos.einheit, materials:[], positionen:[] });
     o.menge += +pos.menge || 0;
     o.erloes += +pos.betrag || 0;
-    if(pos.material){ o.matQty = o.matQty || {}; o.matQty[pos.material] = (o.matQty[pos.material]||0) + (+pos.menge || 0); }
+    if(pos.material){ o.matQty = o.matQty || {}; o.matQty[pos.material] = (o.matQty[pos.material]||0) + (+pos.menge || 0);
+      o.matErl = o.matErl || {}; o.matErl[pos.material] = (o.matErl[pos.material]||0) + (+pos.betrag || 0); }
     o.positionen.push(pos);
   }));
   Object.values(out).forEach(o => { if(o.matQty) o.materials = Object.keys(o.matQty).filter(k => o.matQty[k] > 0.0001); });
@@ -3509,7 +3565,26 @@ function checkInvoice(inv){
     const hTxt = scopeHaus ? ` (${scopeHaus})` : "";
     if(!projInvs.some(o=>o.id===inv.id)) projInvs.push(inv);
     const cats = Array.from(new Set(items.map(it=>it.category).filter(Boolean)));
+    const mb = missingBaseABs(p);
+    if(mb.length) f.push({ level:"warn", text:`Haupt-AB ${mb.map(a=>a.zuAnr||a.nr).join(", ")} fehlt – es ist nur der Mehr-/Minderpreis hinterlegt. Bitte die Haupt-AB hochladen, sonst stimmen die Soll-Mengen nicht.` });
     cats.forEach(cat=>{
+      // Beplankung mit mehreren Materialien (z.B. -177 m² 1x18mm, +177 m² 2x12.5mm): pro Material pruefen
+      if(cat==="Beplankung" && !(p.soll && p.soll.Beplankung && num(p.soll.Beplankung.menge)!=null)){
+        const a = abSoll(p, scopeHaus).Beplankung, mq = a && a.matQty;
+        if(mq && Object.keys(mq).length >= 2){
+          const posM = Object.keys(mq).filter(k => mq[k] > 0);
+          const matOf = (o, x) => itemMaterial(o, x) || (posM.length===1 ? posM[0] : null);
+          const myMats = Array.from(new Set(items.filter(x=>x.category==="Beplankung").map(x=>matOf(inv, x)).filter(Boolean)));
+          if(!myMats.length){ f.push({ level:"warn", text:`Beplankung${hTxt}: Material nicht erkennbar – bitte bei der Position unter „Vereinbarter Preis“ das Material wählen (AB: ${Object.keys(mq).filter(k=>mq[k]>0).join(", ") || "–"}).` }); return; }
+          myMats.forEach(mm=>{
+            const istM = projInvs.reduce((s,o)=> s + (o.items||[]).filter(x=>x.category==="Beplankung" && matOf(o, x)===mm).reduce((q,x)=>q+(num(x.menge)||0),0), 0);
+            const sollM = Math.max(0, roundNum(mq[mm]||0));
+            if(istM > sollM * (1 + S.mengenTolProzent/100) + 1e-9) f.push({ level:"danger", text:`Beplankung ${mm}${hTxt}: kumuliert ${fmtQty(istM)} m² verrechnet, Soll laut AB (inkl. Mehr-/Minderpreis) ${fmtQty(sollM)} m² → ${fmtQty(istM - sollM)} m² zu viel.` });
+            else f.push({ level:"ok", text:`Beplankung ${mm}${hTxt}: kumuliert ${fmtQty(istM)} von ${fmtQty(sollM)} m² (AB inkl. Mehr-/Minderpreis).` });
+          });
+          return;
+        }
+      }
       const ist = projInvs.reduce((s,o)=> s + (o.items||[]).filter(x=>x.category===cat).reduce((a,x)=>a+(num(x.menge)||0),0), 0);
       const soll = getSoll(p, cat, scopeHaus);
       const u = catUnit(cat);
@@ -4270,6 +4345,9 @@ function computeProjectTodos(){
       houses.filter(h=>houseNeedsAB(p, h) && (!invs.some(i=>i.haus===h) || relevant.some(i=>i.haus===h))).forEach(h=>{
         t.push({ kind:"ab", projectId:p.id, text:`AB fehlt für ${h} – ${p.name}`, hint:"Für dieses Haus ist keine eigene AB hinterlegt.", share:`Bitte für „${p.name}“, ${h}, die Auftragsbestätigung (AB) im Tool hochladen.` });
       });
+    }
+    if(missingBaseABs(p).length && relevant.length){
+      t.push({ kind:"ab", projectId:p.id, text:`Haupt-AB fehlt (nur Mehr-/Minderpreis) – ${p.name}`, hint:`Zu ${missingBaseABs(p).map(a=>a.zuAnr||a.nr).join(", ")} ist nur der Nachtrag hinterlegt.`, share:`Bitte bei „${p.name}“ die Haupt-AB hochladen (nur Mehr-/Minderpreis vorhanden).` });
     }
     if(abs.filter(a=>!a.haus).length >= 2 && (houses.length || abs.some(a=>a.haus) || abs.filter(a=>!a.haus).length >= 2)){
       t.push({ kind:"ab", projectId:p.id, text:`${abs.filter(a=>!a.haus).length} ABs ohne Haus – ${p.name}`, hint:"Mehrere ABs gelten fürs ganze Objekt – dann werden die Mengen zusammengezählt. Bitte bei jeder AB „Gilt für“ das Haus wählen.", share:`Bitte bei „${p.name}“ jeder AB das richtige Haus zuordnen.` });
