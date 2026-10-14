@@ -2414,17 +2414,17 @@ function renderProjectDetail(projectId){
           }).join("")}
           <tr><td class="muted">—</td><td></td><td></td><td>${invs.filter(i=>!i.haus).length ? `<span class="hchip ${houses.length>1||abs.some(a=>a.haus)?"bad":"ok"}">${invs.filter(i=>!i.haus).length} Rechnung(en)</span>` : "0"}</td></tr>
           </tbody></table></div>` : ""}
-      ${abs.length ? abs.map(ab=>{
-        const open = expandedABs.has(p.id+"|"+ab.nr);
+      ${abs.length ? abs.slice().sort((a,b)=> String(a.nr).localeCompare(String(b.nr)) || ((a.nachtrag?1:0)-(b.nachtrag?1:0)) || String(a.anr).localeCompare(String(b.anr))).map(ab=>{
+        const open = expandedABs.has(p.id+"|"+abKey(ab));
         return `<div class="abbox">
           <div class="abhead">
-            <div><b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}${ab.haus?` · <span class="hchip ok">${escapeHtml(ab.haus)}</span>`:""}${ab.los?` <span class="muted">Los ${escapeHtml(ab.los)}</span>`:""}
+            <div>${ab.nachtrag ? `<span class="pill warnok" style="margin-right:6px;">± Mehr-/Minderpreis${ab.zuAnr ? " zu " + escapeHtml(ab.zuAnr) : ""}</span>` : ""}<b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}${ab.haus?` · <span class="hchip ok">${escapeHtml(ab.haus)}</span>`:""}${ab.los?` <span class="muted">Los ${escapeHtml(ab.los)}</span>`:""}
               <div class="muted" style="font-size:12px;">Kunde: ${escapeHtml(ab.kunde||"—")}${ab.kontakt?" ("+escapeHtml(ab.kontakt)+")":""} · Offerte ${escapeHtml(ab.offertdatum||"—")} · ${ab.einheiten!=null?ab.einheiten+" Einheiten · ":""}CHF ${fmt(ab.auftragswert)} exkl. MwSt · eingelesen ${escapeHtml(ab.importedAt||"")}</div>
             </div>
             <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">
-              <select class="hsel" data-abhaus="${escapeAttr(ab.nr)}" title="Gilt für"><option value="">Gilt für: ganzes Objekt</option>${houses.concat(ab.haus && !houses.includes(ab.haus) ? [ab.haus] : []).map(h=>`<option value="${escapeAttr(h)}" ${h===ab.haus?"selected":""}>Gilt für: ${escapeHtml(h)}</option>`).join("")}<option value="__new">+ neues Haus…</option></select>
-              <button class="small" data-abtoggle="${escapeAttr(ab.nr)}">${open?"Positionen ▴":"Positionen ▾"}</button>
-              <button class="small danger" data-abdel="${escapeAttr(ab.nr)}">Entfernen</button>
+              <select class="hsel" data-abhaus="${escapeAttr(abKey(ab))}" title="Gilt für"><option value="">Gilt für: ganzes Objekt</option>${houses.concat(ab.haus && !houses.includes(ab.haus) ? [ab.haus] : []).map(h=>`<option value="${escapeAttr(h)}" ${h===ab.haus?"selected":""}>Gilt für: ${escapeHtml(h)}</option>`).join("")}<option value="__new">+ neues Haus…</option></select>
+              <button class="small" data-abtoggle="${escapeAttr(abKey(ab))}">${open?"Positionen ▴":"Positionen ▾"}</button>
+              <button class="small danger" data-abdel="${escapeAttr(abKey(ab))}">Entfernen</button>
             </div>
           </div>
           <div style="margin-top:8px;">${abSummaryHtml(ab)}</div>
@@ -2438,7 +2438,7 @@ function renderProjectDetail(projectId){
                   <td class="num" style="white-space:nowrap;">${fmtQty(pos.menge)} ${escapeHtml(pos.einheit)}</td>
                   <td class="num">${fmt(pos.ep)}</td>
                   <td class="num">${fmt(pos.betrag)}${pos.betragAnteilig?`<div class="muted" style="font-size:11px;">anteilig aus Gruppe</div>`:""}${pos.rabatt?`<div class="muted" style="font-size:11px;">−${pos.rabatt}%</div>`:""}</td>
-                  <td style="min-width:170px;"><select data-abpos="${escapeAttr(ab.nr)}|${escapeAttr(pos.pos)}"><option value="">— nicht Sub-relevant —</option>${catOpts}</select>
+                  <td style="min-width:170px;"><select data-abpos="${escapeAttr(abKey(ab))}§${escapeAttr(pos.pos)}"><option value="">— nicht Sub-relevant —</option>${catOpts}</select>
                     ${pos.material?`<div class="muted" style="font-size:11px;margin-top:2px;">Material: ${escapeHtml(pos.material)}</div>`:""}</td>
                 </tr>`).join("")}</tbody>
             </table></div>
@@ -2539,7 +2539,7 @@ function renderProjectDetail(projectId){
   });
   mainEl.querySelectorAll("[data-htab]").forEach(b=>b.addEventListener("click", ()=>{ selectedHaus[p.id] = b.dataset.htab; renderProjectDetail(projectId); }));
   mainEl.querySelectorAll("[data-abhaus]").forEach(sel=>sel.addEventListener("change", async ()=>{
-    const ab = (p.abs||[]).find(a=>a.nr===sel.dataset.abhaus); if(!ab) return;
+    const ab = (p.abs||[]).find(a=>abKey(a)===sel.dataset.abhaus); if(!ab) return;
     let h = sel.value;
     if(h==="__new"){ h = askNewHaus(); if(!h){ renderProjectDetail(projectId); return; } }
     ab.haus = h;
@@ -2593,10 +2593,10 @@ function renderProjectDetail(projectId){
       if(!ab) return;
       const score = projectAddrScore(ab.baustelle, p);
       if(ab.baustelle && score < 1 && !confirm(`Die AB-Baustelle „${ab.baustelle}“ passt nicht zu diesem Auftrag („${p.name}“). Trotzdem hier zuordnen?`)) return;
-      const elsewhere = DB.projects.find(x=>x.id!==p.id && (x.abs||[]).some(a=>a.nr===ab.nr));
+      const elsewhere = DB.projects.find(x=>x.id!==p.id && (x.abs||[]).some(a=>abKey(a)===abKey(ab)));
       if(elsewhere){
         if(!confirm(`Diese AB (${ab.nr}) ist bereits beim Auftrag „${elsewhere.name}“ hinterlegt. Dorthin verschieben?`)) return;
-        await detachAB(elsewhere.id, ab.nr);
+        await detachAB(elsewhere.id, abKey(ab));
       }
       await attachAB(p.id, ab);
       toast(`AB ${ab.nr} eingelesen: ${ab.positionen.length} Positionen.`);
@@ -2634,8 +2634,8 @@ function renderProjectDetail(projectId){
     });
   });
   mainEl.querySelectorAll("[data-abpos]").forEach(sel=>{
-    const [nr, posNr] = sel.dataset.abpos.split("|");
-    const ab = (p.abs||[]).find(a=>a.nr===nr);
+    const [key, posNr] = sel.dataset.abpos.split("§");
+    const ab = (p.abs||[]).find(a=>abKey(a)===key);
     const pos = ab && (ab.positionen||[]).find(x=>x.pos===posNr);
     if(!pos) return;
     sel.value = pos.category || "";
@@ -3195,6 +3195,10 @@ function parseABText(text){
   if(m){ ab.nr = m[1]; ab.anr = m[2]; }
   m = text.match(/Baustelle\s*:\s*([^\n]+)/i);
   if(m) ab.baustelle = m[1].trim();
+  // Nachtrag: "Mehr- /Minderpreis … zur Auftragsbestätigung 202417673 / A- 24123830" oder Bestell-Nr. "MeMi"
+  ab.nachtrag = /Mehr-?\s*\/?\s*Minderpreis|Nachtrag\s+zu\s+AB|\bMeMi\b/i.test(text);
+  m = text.match(/zur\s+Auftragsbest[äa]tigung\s+\d+\s*\/\s*(A-?\s*\d+)/i) || text.match(/Nachtrag\s+zu\s+AB-?\s*(\d{6,})/i);
+  ab.zuAnr = m ? ("A-" + m[1].replace(/^A-?\s*/i,"")) : "";
   m = text.match(/^Fax[\s\d]+?\s([A-ZÄÖÜ][^\n]+)$/m);
   if(m) ab.kunde = m[1].trim();
   else {
@@ -3318,9 +3322,10 @@ function abSoll(p, haus){
     const o = out[pos.category] || (out[pos.category] = { menge:0, erloes:0, einheit:pos.einheit, materials:[], positionen:[] });
     o.menge += +pos.menge || 0;
     o.erloes += +pos.betrag || 0;
-    if(pos.material && !o.materials.includes(pos.material)) o.materials.push(pos.material);
+    if(pos.material){ o.matQty = o.matQty || {}; o.matQty[pos.material] = (o.matQty[pos.material]||0) + (+pos.menge || 0); }
     o.positionen.push(pos);
   }));
+  Object.values(out).forEach(o => { if(o.matQty) o.materials = Object.keys(o.matQty).filter(k => o.matQty[k] > 0.0001); });
   return out;
 }
 function getSoll(p, cat, haus){
@@ -3764,30 +3769,37 @@ function bestProjectForAddress(addr){
   return { project: best, score: bestScore };
 }
 
+function abKey(ab){ return `${ab.nr||""}|${ab.anr||""}`; }
 async function attachAB(projectId, ab){
   const p = DB.projects.find(x=>x.id===projectId);
   if(!p) throw new Error("Auftrag nicht gefunden.");
-  const old = (p.abs||[]).find(a=>a.nr===ab.nr);
+  const old = (p.abs||[]).find(a=>abKey(a)===abKey(ab));
+  // Nachtrag ohne eigenes Haus: Haus der Haupt-AB uebernehmen
+  if(!ab.haus){ const parent = (p.abs||[]).find(a => a.nr===ab.nr && abKey(a)!==abKey(ab) && a.haus); if(parent) ab.haus = parent.haus; }
   if(old){ // manuelle Kategorie-Zuordnungen einer frueheren Version uebernehmen
     ab.positionen.forEach(np=>{
       const op = (old.positionen||[]).find(o=>o.pos===np.pos && o.artikel===np.artikel);
       if(op && op.categoryManual){ np.category = op.category; np.categoryManual = true; }
     });
   }
-  p.abs = (p.abs||[]).filter(a=>a.nr!==ab.nr).concat([ab]);
+  p.abs = (p.abs||[]).filter(a=>abKey(a)!==abKey(ab)).concat([ab]);
   if(!p.address && ab.baustelle) p.address = ab.baustelle;
   if(!p.auftragsnummer && ab.anr) p.auftragsnummer = ab.anr;
   await saveProject(p);
 }
-async function detachAB(projectId, nr){
+async function detachAB(projectId, key){
   const p = DB.projects.find(x=>x.id===projectId);
   if(!p) return;
-  p.abs = (p.abs||[]).filter(a=>a.nr!==nr);
+  p.abs = (p.abs||[]).filter(a=>abKey(a)!==key && !(key===a.nr && !String(key).includes("|")));
   await saveProject(p);
 }
 async function autoAssignAB(ab){
   const sameNr = DB.projects.find(p=>(p.abs||[]).some(a=>a.nr && a.nr===ab.nr));
-  if(sameNr){ await attachAB(sameNr.id, ab); return { projectId: sameNr.id, how:"revision" }; }
+  if(sameNr){
+    const isRev = (sameNr.abs||[]).some(a=>abKey(a)===abKey(ab));
+    await attachAB(sameNr.id, ab);
+    return { projectId: sameNr.id, how: isRev ? "revision" : (ab.nachtrag ? "nachtrag" : "auto") };
+  }
   const { project, score } = bestProjectForAddress(ab.baustelle);
   if(project && score >= 1){ await attachAB(project.id, ab); return { projectId: project.id, how: score>=2 ? "auto" : "unsicher" }; }
   const id = await createProject({ name: stripHaus(ab.baustelle) || `AB ${ab.nr}`, address: stripHaus(ab.baustelle || ""), auftragsnummer: ab.anr || "", soll: {}, abs: [ab], haeuser: ab.haus ? [ab.haus] : [] });
@@ -3821,12 +3833,12 @@ function appendABCard(ab, res){
   wrap.className = "card";
   wrap.style.borderLeft = "4px solid var(--accent)";
   let projectId = res.projectId;
-  const howTxt = { revision:"Neue Version einer bereits vorhandenen AB – ersetzt.", auto:"Automatisch über die Baustellenadresse zugeordnet.",
+  const howTxt = { nachtrag:"Nachtrag zur bestehenden AB – wird zur AB dazugerechnet (Mehr- und Minderpreise).", revision:"Neue Version einer bereits vorhandenen AB – ersetzt.", auto:"Automatisch über die Baustellenadresse zugeordnet.",
                    unsicher:"⚠ Zuordnung unsicher (nur teilweise Adressübereinstimmung) – bitte bestätigen oder ändern.", neu:"Kein passender Auftrag gefunden – neuer Auftrag angelegt." }[res.how] || "";
   function draw(){
     wrap.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
-        <h2>📑 Auftragsbestätigung ${escapeHtml(ab.nr)} ${ab.anr?`/ ${escapeHtml(ab.anr)}`:""}</h2>
+        <h2>📑 ${ab.nachtrag ? "Mehr-/Minderpreis (Nachtrag)" : "Auftragsbestätigung"} ${escapeHtml(ab.nr)} ${ab.anr?`/ ${escapeHtml(ab.anr)}`:""}</h2>
         <span class="pill ${res.how==="unsicher"?"warn":"ok"}">${res.how==="unsicher"?"⚠ bitte prüfen":"✓ gespeichert"}</span>
       </div>
       <p class="subtitle" style="margin-top:-8px;">${escapeHtml(howTxt)}</p>
@@ -3846,7 +3858,7 @@ function appendABCard(ab, res){
     wrap.querySelector(".abProjSel").addEventListener("change", async (e)=>{
       const target = e.target.value;
       try{
-        await detachAB(projectId, ab.nr);
+        await detachAB(projectId, abKey(ab));
         if(target==="__new"){
           projectId = await createProject({ name: stripHaus(ab.baustelle) || `AB ${ab.nr}`, address: stripHaus(ab.baustelle||""), auftragsnummer: ab.anr||"", soll:{}, abs:[ab], haeuser: ab.haus ? [ab.haus] : [] });
         } else {
@@ -4207,9 +4219,11 @@ async function addABsToProject(p0, files){
       const ab = await readABFile(file);
       if(!ab){ bad.push(file.name); continue; }
       if(ab.baustelle && projectAddrScore(ab.baustelle, p) < 1 && !confirm(`Die AB-Baustelle „${ab.baustelle}“ (${file.name}) passt nicht zu „${p.name}“. Trotzdem hier zuordnen?`)) { bad.push(file.name); continue; }
-      const elsewhere = DB.projects.find(x=>x.id!==p.id && (x.abs||[]).some(a=>a.nr===ab.nr));
-      if(elsewhere){ if(!confirm(`AB ${ab.nr} ist bereits bei „${elsewhere.name}“ hinterlegt. Hierher verschieben?`)){ bad.push(file.name); continue; } await detachAB(elsewhere.id, ab.nr); }
+      const elsewhere = DB.projects.find(x=>x.id!==p.id && (x.abs||[]).some(a=>abKey(a)===abKey(ab)));
+      if(elsewhere){ if(!confirm(`AB ${ab.nr} ist bereits bei „${elsewhere.name}“ hinterlegt. Hierher verschieben?`)){ bad.push(file.name); continue; } await detachAB(elsewhere.id, abKey(ab)); }
       const known = projectHouses(p);
+      const parentAB = (cur().abs||[]).find(a => a.nr===ab.nr && a.haus);
+      if(!ab.haus && parentAB) ab.haus = parentAB.haus;
       if(!ab.haus && (files.length > 1 || known.length || (p.abs||[]).length)){
         const v = prompt(`Für welches Haus gilt die AB ${ab.nr}${ab.los ? " (Los " + ab.los + ")" : ""}?\nBaustelle: ${ab.baustelle || "?"}\n${known.length ? "Bekannte Häuser: " + known.join(", ") + "\n" : ""}Leer lassen = gilt für das ganze Objekt.`, "");
         if(v && v.trim()) ab.haus = normHaus(v);
