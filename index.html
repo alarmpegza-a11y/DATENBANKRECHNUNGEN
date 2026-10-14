@@ -433,6 +433,7 @@ function startDataListeners(){
     if(!abMigrationDone) setTimeout(migrateABs, 0);
     setTimeout(normalizeSupplierNames, 500);
     setTimeout(fillMissingHouses, 1500);
+    setTimeout(cleanupEmptyProjects, 2500);
     renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
@@ -479,6 +480,7 @@ function stopDataListeners(){
   if(unsubMsgOut){ unsubMsgOut(); unsubMsgOut=null; }
   abMigrationDone = false;
   houseFixDone = false;
+  emptyCleanupDone = false;
   seenMsgIds = null;
   dataLoaded = { projects:false, invoices:false };
   if(unsubProfile){ unsubProfile(); unsubProfile=null; }
@@ -506,6 +508,28 @@ async function deleteInvoiceDoc(id){
   await window.fb.deleteDoc("invoices", id);
   if(inv && (inv.bildSeiten||0) > 0) deleteInvoiceImages(id);
   if(inv && inv.pdfId) releasePdfIfUnused(inv.pdfId, id);
+  DB.invoices = DB.invoices.filter(i=>i.id!==id);
+  if(inv) await removeProjectIfEmpty(inv.projectId);
+}
+// Objekt ohne Rechnungen und ohne AB ist nutzlos (z.B. durch falsch gelesene Rechnung entstanden) -> weg damit
+async function removeProjectIfEmpty(projectId){
+  const p = DB.projects.find(x=>x.id===projectId);
+  if(!p || (p.abs||[]).length) return;
+  if(DB.invoices.some(i=>i.projectId===projectId)) return;
+  try{ await deleteProjectDoc(projectId); DB.projects = DB.projects.filter(x=>x.id!==projectId); }
+  catch(e){ /* keine Berechtigung -> Objekt bleibt, erzeugt aber keine Meldungen mehr */ }
+}
+let emptyCleanupDone = false;
+async function cleanupEmptyProjects(){
+  if(emptyCleanupDone || !dataLoaded.projects || !dataLoaded.invoices) return;
+  emptyCleanupDone = true;
+  if(!hasPerm("deleteAuftraege")) return;
+  const now = Date.now();
+  for(const p of DB.projects.slice()){
+    const created = toDateSafe(p.createdAt);
+    if(created && now - created.getTime() < 10*60*1000) continue; // gerade erst angelegt (Upload laeuft evtl. noch)
+    await removeProjectIfEmpty(p.id);
+  }
 }
 
 function renderAuthScreen(mode){
@@ -3951,8 +3975,9 @@ function computeProjectTodos(){
     const invs = DB.invoices.filter(i=>i.projectId===p.id);
     const abs = p.abs || [];
     const houses = projectHouses(p);
-    const relevant = invs.filter(i=>!invOhneAB(i));
-    if(p.ohneAB || (invs.length && !relevant.length)){
+    // nur Rechnungen, die noch bearbeitet werden (nicht gedruckt, nicht "ohne AB" bestaetigt)
+    const relevant = invs.filter(i=>!invOhneAB(i) && !i.gedrucktAm);
+    if(p.ohneAB || !relevant.length){
       // "Keine AB vorhanden" bestaetigt -> keine Meldungen zu AB/Haeusern
     } else if(!abs.length){
       t.push({ kind:"ab", projectId:p.id, text:`AB fehlt – ${p.name}`, hint:"Ohne AB keine Mengen- und Leistungskontrolle.", share:`Bitte für das Objekt „${p.name}“ die Auftragsbestätigung (AB) im Tool hochladen.` });
@@ -3974,6 +3999,8 @@ function computeProjectTodos(){
     for(let j=i+1;j<DB.projects.length;j++){
       const a = DB.projects[i], b = DB.projects[j];
       if((a.notDup||[]).includes(b.id) || (b.notDup||[]).includes(a.id)) continue;
+      const active = x => DB.invoices.some(i=>i.projectId===x.id && !i.gedrucktAm) || (x.abs||[]).length;
+      if(!active(a) || !active(b)) continue; // leere Objekte nicht melden
       const s = Math.max(scoreAddress(a.address||a.name, b.address||b.name), scoreAddress(a.name, b.name));
       if(s >= 1) t.push({ kind:"dup", projectId:a.id, otherId:b.id, text:`Gleiches Objekt? „${a.name}“ und „${b.name}“`, hint:"Gleiche Strasse – falls es dasselbe Objekt ist (evtl. andere Häuser): zusammenführen, dann gilt eine AB für alle Subunternehmer.", share:`Bitte prüfen, ob „${a.name}“ und „${b.name}“ dasselbe Objekt sind, und ggf. zusammenführen.` });
     }
