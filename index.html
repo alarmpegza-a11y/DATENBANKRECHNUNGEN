@@ -241,6 +241,9 @@
   .ptabs .tab .tdot{display:inline-block;margin:0 0 0 6px;}
   details.help{font-size:12.5px;color:var(--text-dim);margin:8px 0 0 0;}
   details.help summary{cursor:pointer;color:var(--accent);font-weight:600;}
+  .audit{font-size:12px;color:var(--text-dim);margin-top:12px;padding:8px 10px;background:var(--surface);border-radius:6px;line-height:1.5;}
+  .audit details summary{cursor:pointer;color:var(--accent);font-weight:600;margin-top:4px;}
+  .audit ul{margin:6px 0 0 0;padding-left:18px;}
   .nbadge{margin-left:auto;display:none;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:#e5302a;color:#fff;font-size:11.5px;font-weight:700;line-height:1;box-shadow:0 0 0 2px rgba(255,255,255,.15);}
   .tab .nbadge{margin-left:6px;}
   .tdot{width:10px;height:10px;border-radius:50%;background:#e5302a;flex:0 0 10px;margin-top:4px;}
@@ -429,6 +432,7 @@ function startDataListeners(){
   if(unsubSettings) unsubSettings();
   unsubProjects = window.fb.watchCollection("projects", (snap)=>{
     DB.projects = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+    rememberShadow("projects", snap);
     dataLoaded.projects = true;
     if(!abMigrationDone) setTimeout(migrateABs, 0);
     setTimeout(normalizeSupplierNames, 500);
@@ -438,11 +442,13 @@ function startDataListeners(){
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
     DB.invoices = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+    rememberShadow("invoices", snap);
     dataLoaded.invoices = true;
     renderFromSnapshot();
   }, (err)=> showDbError("invoices", err));
   unsubSubs = window.fb.watchCollection("subunternehmer", (snap)=>{
     DB.subs = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+    rememberShadow("subunternehmer", snap);
     renderFromSnapshot();
   }, (err)=> showDbError("subunternehmer", err));
   if(unsubMsgIn) unsubMsgIn();
@@ -468,6 +474,7 @@ function startDataListeners(){
   unsubSettings = window.fb.watchCollection("einstellungen", (snap)=>{
     const g = snap.docs.find(d=>d.id==="global");
     DB.settings = g ? g.data() : {};
+    rememberShadow("einstellungen", snap);
     renderFromSnapshot();
   }, (err)=> showDbError("einstellungen", err));
 }
@@ -588,7 +595,84 @@ function translateAuthError(e){
   return "Fehler: " + (e.message || c);
 }
 
+/* ============================= AENDERUNGSVERLAUF (wer hat wann was geaendert) ============================= */
+const AUDIT_COLS = new Set(["invoices", "projects", "subunternehmer", "einstellungen"]);
+const AUDIT_IGNORE = new Set(["geaendertVon","geaendertAm","geaendertName","verlauf","updatedAt","updatedBy","createdAt","createdBy","createdByEmail","rawText","id"]);
+const FIELD_LABELS = {
+  lieferant:"Lieferant", rechnungsnr:"Rechnungsnr.", datum:"Datum", total:"Betrag", objekt:"Objekt", haus:"Haus", items:"Positionen",
+  projectId:"Auftrag", pruefung:"Prüfung/Freigabe", ohneAB:"„Keine AB“", ohneABvon:"„Keine AB“", bezahltAm:"Bezahlt am", eingangsdatum:"Stempeldatum",
+  stempelPos:"Stempelposition", gedrucktAm:"Gedruckt", gedrucktVon:"Gedruckt", pdfId:"Original-PDF", pdfPages:"Original-PDF", duplikatVersuche:"Doppelrechnung",
+  auftragsnummer:"Auftragsnr.", filename:"Datei", bildSeiten:"Original",
+  name:"Name", address:"Adresse", abs:"AB", soll:"Soll-Mengen", haeuser:"Häuser", notDup:"Duplikat-Markierung",
+  tarife:"Preise", aliases:"Aliase", kontakt:"Kontakt", email:"E-Mail", notizen:"Notizen", rnrMuster:"Rechnungsnr.-Erkennung",
+  tolPreisProzent:"Toleranz", tolPreisCHF:"Toleranz", mengenTolProzent:"Toleranz", ausreisserFaktor:"Ausreisser", ausreisserMinCHF:"Ausreisser",
+};
+const shadows = { invoices:{}, projects:{}, subunternehmer:{}, einstellungen:{} };
+function rememberShadow(col, snap){
+  const m = {};
+  snap.docs.forEach(d => { try{ m[d.id] = JSON.parse(JSON.stringify(d.data())); }catch(e){ m[d.id] = {}; } });
+  shadows[col] = m;
+}
+function auditStamp(){
+  return new Date().toLocaleString("de-CH", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" });
+}
+function auditData(col, id, data, fullWrite){
+  if(!AUDIT_COLS.has(col) || !currentUser || !data || typeof data !== "object") return data;
+  const prev = (shadows[col] || {})[id] || {};
+  const norm = v => JSON.stringify(v === undefined ? null : v);
+  const changed = Object.keys(data).filter(k => !AUDIT_IGNORE.has(k) && norm(data[k]) !== norm(prev[k]));
+  if(!changed.length){
+    if(!fullWrite) return data;
+    return { ...data, verlauf: prev.verlauf || [], geaendertVon: prev.geaendertVon || "", geaendertName: prev.geaendertName || "", geaendertAm: prev.geaendertAm || "" };
+  }
+  const am = auditStamp();
+  const was = Array.from(new Set(changed.map(k => FIELD_LABELS[k] || k))).slice(0, 8).join(", ");
+  const entry = { am, von: currentUser.email, name: nameFromEmail(currentUser.email), was };
+  let verlauf = (prev.verlauf || []).slice();
+  const last = verlauf[verlauf.length - 1];
+  // mehrere Aenderungen derselben Person in der gleichen Minute zusammenfassen
+  if(last && last.von === entry.von && last.am === entry.am) verlauf[verlauf.length - 1] = { ...last, was: Array.from(new Set((last.was + ", " + was).split(", "))).join(", ") };
+  else verlauf.push(entry);
+  verlauf = verlauf.slice(-40);
+  const out = { ...data, geaendertVon: currentUser.email, geaendertName: entry.name, geaendertAm: am, verlauf };
+  shadows[col][id] = { ...prev, ...data, verlauf, geaendertVon: out.geaendertVon, geaendertAm: am };
+  return out;
+}
+let auditInstalled = false;
+function installAuditTrail(){
+  if(auditInstalled || !window.fb) return;
+  auditInstalled = true;
+  const fb = window.fb;
+  const oSet = fb.setDoc, oMerge = fb.setDocMerge, oUpd = fb.updateDoc, oAdd = fb.addDoc;
+  fb.setDoc = (col, id, data) => oSet(col, id, auditData(col, id, data, true));
+  fb.setDocMerge = (col, id, data) => oMerge(col, id, auditData(col, id, data, false));
+  fb.updateDoc = (col, id, data) => oUpd(col, id, auditData(col, id, data, false));
+  fb.addDoc = (col, data) => {
+    if(AUDIT_COLS.has(col) && currentUser && data && typeof data === "object"){
+      const am = auditStamp();
+      data = { ...data, geaendertVon: currentUser.email, geaendertName: nameFromEmail(currentUser.email), geaendertAm: am,
+               verlauf: [{ am, von: currentUser.email, name: nameFromEmail(currentUser.email), was: "erstellt" }] };
+    }
+    return oAdd(col, data);
+  };
+}
+// Anzeige: "Zuletzt geändert von … am … um … Uhr" + aufklappbarer Verlauf
+function auditHtml(obj, label){
+  if(!obj) return "";
+  const v = (obj.verlauf || []).slice().reverse();
+  const fmtAm = am => String(am||"").replace(/,\s*(\d{1,2}:\d{2})$/, " um $1 Uhr");
+  const who = e => `${escapeHtml(e.name || nameFromEmail(e.von))} <span class="muted">(${escapeHtml(e.von||"")})</span>`;
+  const created = obj.createdByEmail ? `Erfasst von ${escapeHtml(nameFromEmail(obj.createdByEmail))} <span class="muted">(${escapeHtml(obj.createdByEmail)})</span>${toDateSafe(obj.createdAt) ? ` am ${toDateSafe(obj.createdAt).toLocaleDateString("de-CH",{day:"2-digit",month:"2-digit",year:"numeric"})} um ${toDateSafe(obj.createdAt).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit"})} Uhr` : ""}` : "";
+  if(!v.length && !created) return `<div class="audit muted">Noch keine Änderungen protokolliert.</div>`;
+  return `<div class="audit">
+    ${v.length ? `🕓 ${label||"Zuletzt geändert"}: ${who(v[0])} am ${escapeHtml(fmtAm(v[0].am))} – <i>${escapeHtml(v[0].was||"")}</i>` : ""}
+    ${created ? `<div>${created}</div>` : ""}
+    ${v.length > 1 ? `<details><summary>Ganzer Verlauf (${v.length})</summary><ul>${v.map(e=>`<li><b>${escapeHtml(fmtAm(e.am))}</b> – ${who(e)}: ${escapeHtml(e.was||"")}</li>`).join("")}</ul></details>` : ""}
+  </div>`;
+}
+
 function initAuth(){
+  installAuditTrail();
   window.fb.onAuthChange((user)=>{
     if(!user){
       currentUser = null; currentProfile = null;
@@ -620,6 +704,7 @@ function initAuth(){
         unsubUsers = window.fb.watchCollection("users", (usnap)=>{
           allUsers = usnap.docs.map(d=>({ id: d.id, ...d.data() }));
           updateBadges();
+          updateSidebarForUser();
           if(currentView==="admin") render();
         }, (err)=> showDbError("users (Firestore-Regeln aktualisieren)", err));
       }
@@ -658,20 +743,14 @@ function updateSidebarForUser(){
   if(!currentUser){ el.innerHTML = ""; return; }
   const roleLabel = isAdmin() ? "Admin" : "Mitarbeiter";
   const profileFound = currentProfile !== null;
+  const myName = (currentProfile && currentProfile.anzeigename) || nameFromEmail(currentUser.email);
   el.innerHTML = `
-    <div style="font-size:12px;opacity:.85;">${escapeHtml(currentUser.email)}</div>
-    <div style="font-size:11px;opacity:.6;margin-bottom:2px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
-    <div style="font-size:9.5px;opacity:.45;margin-bottom:6px;word-break:break-all;font-family:monospace;" title="Deine Auth-UID -- muss exakt mit der Dokument-ID in Firestore users/ übereinstimmen">
-      UID: ${escapeHtml(currentUser.uid)}
-      <button id="copyUidBtn" style="padding:1px 6px;font-size:9px;margin-left:4px;">Kopieren</button>
-    </div>
+    <div style="font-size:14px;font-weight:700;">👤 ${escapeHtml(myName)}</div>
+    <div style="font-size:11.5px;opacity:.7;">${escapeHtml(currentUser.email)}</div>
+    <div style="font-size:11px;opacity:.55;margin-bottom:8px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
     <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
   `;
   document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
-  document.getElementById("copyUidBtn").addEventListener("click", (e)=>{
-    e.stopPropagation();
-    navigator.clipboard.writeText(currentUser.uid).then(()=> toast("UID kopiert."));
-  });
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
   // "Alle Daten löschen" liegt jetzt unter Preise & Einstellungen (nur Admin)
 }
@@ -2169,7 +2248,8 @@ function renderProjectDetail(projectId){
     ${myTodos.length ? `<div class="todobanner"><h2><span class="nbadge" style="display:inline-flex;margin:0;">${myTodos.length}</span> Zu erledigen bei diesem Auftrag</h2><div id="todoSlot">${todosHtml(myTodos)}</div></div>` : ""}
 
     <div class="card" data-sec="edit">
-      <div class="section-title" style="margin-top:0;">Name &amp; Adresse des Objekts (bei Bedarf korrigieren)</div>
+      ${auditHtml(p, "Auftrag zuletzt geändert")}
+      <div class="section-title">Name &amp; Adresse des Objekts (bei Bedarf korrigieren)</div>
       <div class="row">
         <label class="field"><span>Name des Auftrags</span><input type="text" id="editProjName" value="${escapeAttr(p.name)}"></label>
         <label class="field"><span>Adresse / Objekt</span><input type="text" id="editProjAddress" value="${escapeAttr(p.address||"")}"></label>
@@ -2502,6 +2582,7 @@ function renderInvoiceEditPanel(panel, invoiceId){
       <div class="section-title">Positionen</div>
       <div class="itemsSlot"></div>
       <div class="pruefSlot" style="margin-top:14px;"></div>
+      ${auditHtml(inv)}
       ${inv.rawText ? `<details style="margin-top:10px;"><summary class="muted" style="cursor:pointer;font-size:12px;">Rohtext der Rechnung anzeigen</summary><textarea class="raw" readonly style="width:100%;margin-top:6px;">${escapeHtml(inv.rawText)}</textarea></details>` : ""}
     </div>
   `;
@@ -2539,7 +2620,7 @@ function renderInvoices(){
     <div id="searchSlot"></div>
     <div class="card">
       <table>
-        <thead><tr><th>Datum</th><th>Lieferant</th><th>Auftrag</th><th>Rechnungsnr.</th><th>Mengen</th><th>Prüfung</th><th></th></tr></thead>
+        <thead><tr><th>Datum</th><th>Lieferant</th><th>Auftrag</th><th>Rechnungsnr.</th><th>Mengen</th><th>Prüfung</th><th>Zuletzt geändert</th><th></th></tr></thead>
         <tbody id="invTableBody">
           ${sorted.map(inv=>{
             const p = DB.projects.find(x=>x.id===inv.projectId);
@@ -2551,6 +2632,7 @@ function renderInvoices(){
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}" data-openinv="${inv.id}">${findingsPill(inv)}</td>
+              <td style="font-size:11.5px;" class="muted" title="${escapeAttr((inv.verlauf||[]).slice(-1).map(e=>e.was).join(""))}">${inv.geaendertAm ? `${escapeHtml(inv.geaendertName || nameFromEmail(inv.geaendertVon))}<br>${escapeHtml(String(inv.geaendertAm).replace(/,\s*/, " "))}` : "–"}</td>
               <td style="white-space:nowrap;"><button class="small" data-shareinvl="${inv.id}" title="Teilen">📤</button> <button class="small danger" data-delinv="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
             </tr>`;
           }).join("")}
@@ -2598,7 +2680,7 @@ function renderAdmin(){
     <p class="subtitle">${allUsers.length} Benutzer registriert${pendingCount>0 ? ` — <b style="color:var(--danger)">${pendingCount} warten auf Freischaltung</b>` : ""}.</p>
     <div class="card">
       <table>
-        <thead><tr><th>E-Mail</th><th>Status</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th><th>Preise bearbeiten</th><th title="Erscheinen im Stempel bei Mat.preis">Initialen</th></tr></thead>
+        <thead><tr><th>E-Mail</th><th>Status</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th><th>Preise bearbeiten</th><th title="Erscheinen im Stempel bei Mat.preis">Initialen</th><th title="Wird in Briefen, E-Mails und Nachrichten verwendet">Name</th></tr></thead>
         <tbody>
           ${allUsers.map(u=>`
             <tr data-uid="${u.id}" class="${u.role!=="admin" && !u.approved ? "needs-review" : ""}">
@@ -2624,6 +2706,7 @@ function renderAdmin(){
               <td><input type="checkbox" data-perm="deleteAnyRechnung" ${u.permissions?.deleteAnyRechnung?"checked":""} ${u.role==="admin"?"disabled":""}></td>
               <td><input type="checkbox" data-perm="editPreise" ${u.permissions?.editPreise?"checked":""} ${u.role==="admin"?"disabled":""}></td>
               <td><input type="text" data-initialen="${u.id}" value="${escapeAttr(u.initialen||"")}" placeholder="${escapeAttr(defaultInitials(u.email))}" maxlength="5" style="width:70px;text-transform:uppercase;"></td>
+              <td><input type="text" data-anzeigename="${u.id}" value="${escapeAttr(u.anzeigename||"")}" placeholder="z.B. Ajdin Slijepcevic" style="width:180px;"></td>
             </tr>
           `).join("")}
         </tbody>
@@ -2632,6 +2715,13 @@ function renderAdmin(){
       <p class="subtitle" style="margin-top:6px;">Nur Adressen @pe-fabrikation.ch können freigeschaltet werden, alle anderen sind automatisch gesperrt. Neu registrierte Mitarbeiter sind gesperrt, bis du sie hier freischaltest. Admins haben automatisch alle Rechte. Freigeschaltete Mitarbeiter dürfen ohne zusätzliche Häkchen nur ihre eigenen Rechnungen der letzten 5 Stunden löschen.</p>
     </div>
   `;
+  mainEl.querySelectorAll("[data-anzeigename]").forEach(inp=>{
+    inp.addEventListener("change", async ()=>{
+      const v = inp.value.trim();
+      try{ await window.fb.updateDoc("users", inp.dataset.anzeigename, { anzeigename: v }); toast(v ? `Name „${v}“ gespeichert.` : "Name entfernt."); updateSidebarForUser(); }
+      catch(err){ showDbError("users", err); }
+    });
+  });
   mainEl.querySelectorAll("[data-initialen]").forEach(inp=>{
     inp.addEventListener("change", async ()=>{
       const v = inp.value.trim().toUpperCase().slice(0,5);
@@ -3637,7 +3727,7 @@ function blankTarif(t){
 function cleanSubForSave(s){
   return {
     name: s.name || "", aliases: (s.aliases||[]).map(a=>String(a).trim()).filter(Boolean),
-    kontakt: s.kontakt || "", notizen: s.notizen || "",
+    kontakt: s.kontakt || "", email: String(s.email||"").trim(), notizen: s.notizen || "",
     tarife: (s.tarife||[]).map(t=>({ id:t.id||uid("tf"), category:t.category||"Sonstiges", bezeichnung:t.bezeichnung||"", material:t.material||"",
       einheit:t.einheit||"", preis: num(t.preis), gueltigAb:t.gueltigAb||"", keywords:t.keywords||"" })),
     rnrMuster: s.rnrMuster || null,
@@ -3681,7 +3771,7 @@ function renderSettings(){
         const invCount = DB.invoices.filter(i=>i.lieferant===n).length;
         return `<div class="proj-list-item" data-subname="${escapeAttr(n)}">
           <div><div class="pname">🏢 ${escapeHtml(n)}</div>
-          <div class="paddr">${invCount} Rechnung(en)${s && (s.aliases||[]).length ? ` · Aliase: ${escapeHtml(s.aliases.join(", "))}` : ""}</div></div>
+          <div class="paddr">${invCount} Rechnung(en)${s && s.email ? ` · ✉️ ${escapeHtml(s.email)}` : ` · <span style="color:var(--warn);">✉️ keine E-Mail</span>`}${s && (s.aliases||[]).length ? ` · Aliase: ${escapeHtml(s.aliases.join(", "))}` : ""}</div></div>
           <div class="pmeta">${priced ? `<span class="pill ok">${priced} Preise</span>` : `<span class="pill warn">⚠ keine Preise</span>`}</div>
         </div>`;
       }).join("") : `<div class="empty">Noch keine Subunternehmer. Lege einen an oder lade eine Rechnung hoch.</div>`}
@@ -3737,9 +3827,11 @@ function renderSubPrices(name){
       <div class="row">
         <label class="field"><span>Weitere Namen auf Rechnungen (Aliase, mit Komma)</span><input type="text" data-sf="aliases" value="${escapeAttr((s.aliases||[]).join(", "))}" placeholder="z.B. FA Bauservice, Froh Haustechnik" ${dis}></label>
         <label class="field"><span>Ansprechpartner / Kontakt</span><input type="text" data-sf="kontakt" value="${escapeAttr(s.kontakt||"")}" ${dis}></label>
+        <label class="field"><span>✉️ E-Mail für Rechnungen</span><input type="email" data-sf="email" value="${escapeAttr(s.email||"")}" placeholder="z.B. buchhaltung@firma.ch" ${dis}></label>
       </div>
       <label class="field"><span>Notizen / Konditionen</span><input type="text" data-sf="notizen" value="${escapeAttr(s.notizen||"")}" placeholder="z.B. Skonto 2% 10 Tage, Preise gültig 2026" ${dis}></label>
     </div>
+    ${stored ? auditHtml(stored, "Preise/Stammdaten zuletzt geändert") : ""}
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
         <h2 style="margin:0;">Preisliste (${rows.length} Zeilen)</h2>
@@ -4121,6 +4213,10 @@ async function mergeProjects(src, target){
 const FIRMEN_DOMAIN = "@pe-fabrikation.ch";
 function isFirmenMail(e){ return String(e||"").toLowerCase().trim().endsWith(FIRMEN_DOMAIN); }
 function nameFromEmail(e){
+  const em = String(e||"").toLowerCase();
+  const u = (allUsers||[]).find(x => String(x.email||"").toLowerCase() === em);
+  if(u && u.anzeigename) return u.anzeigename;
+  if(currentUser && String(currentUser.email||"").toLowerCase() === em && currentProfile && currentProfile.anzeigename) return currentProfile.anzeigename;
   const local = String(e||"").split("@")[0];
   return local.split(/[._-]+/).filter(Boolean).map(w=>w[0].toUpperCase()+w.slice(1)).join(" ") || e;
 }
@@ -5030,6 +5126,7 @@ function dupFacts(inv){
 }
 function subEmailFor(inv){
   const s = getSubFor(inv.lieferant);
+  if(s && s.email) return String(s.email).trim();
   const fromSub = s && String(s.kontakt||"").match(/[\w.+-]+@[\w-]+\.[\w.]+/);
   if(fromSub) return fromSub[0];
   const m = String(inv.rawText||"").match(/[\w.+-]+@[\w-]+\.[a-z]{2,}(?:\.[a-z]{2,})?/gi) || [];
@@ -5086,7 +5183,112 @@ function printDuplicateLetter(inv){
   document.getElementById("dlClose").addEventListener("click", closePrintPreview);
   document.getElementById("dlPrint").addEventListener("click", ()=> window.print());
 }
-function mailDuplicate(inv){
+// jsPDF nur bei Bedarf laden
+let jsPdfPromise = null;
+function loadJsPdf(){
+  if(window.jspdf && window.jspdf.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+  if(!jsPdfPromise) jsPdfPromise = new Promise((res, rej)=>{
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    s.onload = ()=> res(window.jspdf.jsPDF);
+    s.onerror = ()=> { jsPdfPromise = null; rej(new Error("PDF-Bibliothek konnte nicht geladen werden.")); };
+    document.head.appendChild(s);
+  });
+  return jsPdfPromise;
+}
+// Gleicher Brief wie die Druckansicht, als echte PDF-Datei
+async function buildDuplicatePdf(inv){
+  const jsPDF = await loadJsPdf();
+  const f = dupFacts(inv);
+  const lines = duplicateLetterText(inv).split("\n");
+  const subject = lines.shift(); lines.shift();
+  const doc = new jsPDF({ unit:"mm", format:"a4" });
+  const L = 20, W = 170;
+  doc.setFont("helvetica","bold"); doc.setFontSize(13); doc.text("PE Fabrikations AG", L, 22);
+  doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(80);
+  doc.text("Feldmoosstrasse 51 · 8853 Lachen · www.pe-fabrikation.ch", L, 27);
+  doc.setTextColor(17); doc.setFontSize(11);
+  doc.text(String(inv.lieferant||""), L, 50);
+  doc.text(`Lachen, ${new Date().toLocaleDateString("de-CH",{day:"2-digit",month:"2-digit",year:"numeric"})}`, L + W, 66, { align:"right" });
+  doc.setFont("helvetica","bold"); doc.setFontSize(12); doc.text(subject, L, 80);
+  doc.setFont("helvetica","normal"); doc.setFontSize(11);
+  let y = 90;
+  for(const ln of lines){
+    if(!ln.trim()){ y += 3; continue; }
+    const parts = doc.splitTextToSize(ln, W);
+    doc.text(parts, L, y); y += parts.length * 5.6;
+  }
+  y += 6; doc.setFontSize(9.5);
+  [["Rechnungs-Nr.", f.nr],["Rechnungsdatum", f.datum],["Betrag", f.betrag],["Objekt", f.objekt],["Bei uns eingegangen", f.erfasst],["Zur Zahlung freigegeben", f.freigegeben],["Bezahlt", f.bezahlt],["Verbucht / abgelegt", f.gedruckt]]
+    .filter(r=>r[1]).forEach(r=>{
+      doc.setTextColor(85); doc.text(r[0], L, y);
+      doc.setTextColor(17); doc.text(doc.splitTextToSize(String(r[1]), W-50), L + 50, y);
+      doc.setDrawColor(220); doc.line(L, y + 1.8, L + W, y + 1.8);
+      y += 7;
+    });
+  return doc.output("arraybuffer");
+}
+function b64Lines(b64){ return b64.replace(/(.{76})/g, "$1\r\n"); }
+function utf8B64(str){ return btoa(unescape(encodeURIComponent(str))); }
+function mimeWord(str){ return `=?UTF-8?B?${utf8B64(str)}?=`; }
+// Outlook-Entwurf (.eml mit "X-Unsent: 1") inkl. PDF-Anhang erzeugen und oeffnen
+async function mailDuplicate(inv){
+  const to = subEmailFor(inv);
+  const nr = inv.rechnungsnr || "ohne-Nr";
+  const subject = `Doppelt zugestellte Rechnung Nr. ${inv.rechnungsnr||""}`;
+  const text = duplicateLetterText(inv).split("\n").slice(2).join("\n") + "\n\nIm Anhang finden Sie die Bestätigung als PDF.";
+  try{
+    toast("E-Mail mit PDF wird vorbereitet…");
+    const pdf = new Uint8Array(await buildDuplicatePdf(inv));
+    const fname = `Doppelrechnung_${String(nr).replace(/[^\w.-]+/g,"_")}.pdf`;
+    const boundary = "----=_PE_" + Date.now().toString(36);
+    const eml = [
+      "X-Unsent: 1",
+      to ? `To: ${to}` : "To: ",
+      `Subject: ${mimeWord(subject)}`,
+      "MIME-Version: 1.0",
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: base64",
+      "",
+      b64Lines(utf8B64(text.replace(/\n/g, "\r\n"))),
+      "",
+      `--${boundary}`,
+      `Content-Type: application/pdf; name="${fname}"`,
+      `Content-Disposition: attachment; filename="${fname}"`,
+      "Content-Transfer-Encoding: base64",
+      "",
+      b64Lines(bytesToB64(pdf)),
+      "",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+    const blob = new Blob([eml], { type: "message/rfc822" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `E-Mail_Doppelrechnung_${String(nr).replace(/[^\w.-]+/g,"_")}.eml`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 60000);
+    showModal(`
+      <h2>✉️ E-Mail ist vorbereitet</h2>
+      <p class="subtitle" style="margin-bottom:10px;">Die Datei <b>${escapeHtml(a.download)}</b> wurde heruntergeladen. <b>Doppelklick</b> darauf (oder unten in der Download-Leiste anklicken) – Outlook öffnet eine fertige E-Mail${to ? ` an <b>${escapeHtml(to)}</b>` : ""} mit der <b>PDF im Anhang</b>. Nur noch auf <b>Senden</b> klicken.</p>
+      ${to ? "" : `<p class="flag" style="font-size:12.5px;">Keine E-Mail-Adresse hinterlegt – bitte in Outlook eintragen oder unter Preise &amp; Einstellungen beim Subunternehmer erfassen.</p>`}
+      <p class="muted" style="font-size:12px;">Tipp: In Chrome/Edge beim Download auf „…“ → <b>„Dateien dieses Typs immer öffnen“</b> klicken – dann öffnet sich Outlook künftig automatisch.</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+        <button id="mailPlain">Nur Text-E-Mail (ohne Anhang)</button>
+        <button class="primary" id="mailOk">OK</button>
+      </div>`);
+    document.getElementById("mailOk").addEventListener("click", closeModal);
+    document.getElementById("mailPlain").addEventListener("click", ()=>{ closeModal(); mailDuplicatePlain(inv); });
+  }catch(err){
+    console.error(err);
+    toast("PDF konnte nicht erstellt werden – es wird eine Text-E-Mail geöffnet.");
+    mailDuplicatePlain(inv);
+  }
+}
+function mailDuplicatePlain(inv){
   const to = subEmailFor(inv);
   const subject = `Doppelt zugestellte Rechnung Nr. ${inv.rechnungsnr||""}`;
   const text = duplicateLetterText(inv).split("\n").slice(2).join("\n");
@@ -5094,7 +5296,7 @@ function mailDuplicate(inv){
   if(!to) toast("Keine E-Mail-Adresse des Subunternehmers gefunden – bitte in Outlook eintragen (oder unter Preise & Einstellungen beim Sub als Kontakt hinterlegen).");
 }
 function dupButtonsHtml(id){
-  return `<button class="small primary" data-dupmail="${id}">✉️ E-Mail an Subunternehmer</button>
+  return `<button class="small primary" data-dupmail="${id}">✉️ E-Mail mit PDF an Subunternehmer</button>
           <button class="small" data-dupprint="${id}">📄 Bestätigung als PDF / drucken</button>
           <button class="small" data-dupcopy="${id}">📋 Text kopieren</button>`;
 }
