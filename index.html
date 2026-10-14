@@ -2173,25 +2173,80 @@ const expandedABs = new Set();
 const projTabFor = {}; // pro Auftrag gewaehlter Tab: overview | invoices | ab | edit
 const selectedHaus = {};
 
+// Pauschalen (Installation, Anfahrt, Parking, Entsorgung) gehoeren zur Hauptleistung (z.B. Ausflockung)
+const NEBEN_CATS = new Set(["Anfahrt", "Entsorgung"]);
+const NEBEN_RE = /install|anfahrt|pausch|parking|fahrt|einricht|entsorg/i;
+const MAIN_EXCL = new Set(["Anfahrt", "Entsorgung", "Sonstiges", "Regie", "Material"]);
+function abNebenFold(p, haus){
+  const res = { to:{}, from:{} };
+  (p.abs||[]).filter(ab => haus===undefined || ab.haus===haus).forEach(ab=>{
+    const pos = ab.positionen || [];
+    pos.filter(x => NEBEN_CATS.has(x.category)).forEach(n=>{
+      let target = pos.filter(x => x.gruppe===n.gruppe && x.category && !MAIN_EXCL.has(x.category)).sort((a,b)=>(+b.betrag||0)-(+a.betrag||0))[0];
+      if(!target){
+        const t = (n.beschreibung + " " + n.artikel).toLowerCase();
+        const kc = /ausflock/.test(t) ? "Ausflockung" : /beplank/.test(t) ? "Beplankung" : null;
+        if(kc && pos.some(x=>x.category===kc)) target = { category: kc };
+      }
+      if(!target) return;
+      const to = res.to[target.category] || (res.to[target.category] = { erloes:0, count:0 });
+      to.erloes += +n.betrag || 0; to.count += +n.menge || 0;
+      const fr = res.from[n.category] || (res.from[n.category] = { menge:0, erloes:0 });
+      fr.menge += +n.menge || 0; fr.erloes += +n.betrag || 0;
+    });
+  });
+  return res;
+}
+function invoiceMainCat(inv){
+  let best = null, bestChf = -1;
+  (inv.items||[]).forEach(it=>{ if(MAIN_EXCL.has(it.category)) return; const c = num(it.preis)||0; if(c > bestChf){ best = it.category; bestChf = c; } });
+  return best;
+}
+function isNebenItem(inv, it){
+  if(NEBEN_CATS.has(it.category)) return true;
+  return it.category==="Sonstiges" && NEBEN_RE.test(String(it.label||"")) && itemAssigned(inv, it);
+}
+function subNebenTarif(sub){
+  const all = (sub && sub.tarife || []).filter(t => num(t.preis)!=null);
+  return all.find(t => NEBEN_CATS.has(t.category) && NEBEN_RE.test((t.bezeichnung||"") + " " + (t.keywords||"")))
+      || all.find(t => NEBEN_CATS.has(t.category))
+      || all.find(t => t.category==="Sonstiges" && NEBEN_RE.test(t.bezeichnung||"")) || null;
+}
+
 function projectControlRows(p, haus){
   const invs = DB.invoices.filter(i=>i.projectId===p.id && isActiveInvoice(i) && (haus===undefined || i.haus===haus));
   const ab = abSoll(p, haus);
+  const fold = abNebenFold(p, haus);
   const cats = new Set(Object.keys(ab));
   if(haus===undefined) Object.keys(p.soll||{}).forEach(k=>{ if(p.soll[k] && num(p.soll[k].menge)!=null) cats.add(k); });
   const ist = {};
-  invs.forEach(inv=>(inv.items||[]).forEach(it=>{
+  invs.forEach(inv=>{ const mainCat = invoiceMainCat(inv); (inv.items||[]).forEach(it=>{
     if(it.category==="Sonstiges" && !itemAssigned(inv, it)) return;
+    // Pauschale auf derselben Rechnung -> zur Hauptleistung zaehlen (nur CHF, nicht die Menge)
+    if(mainCat && isNebenItem(inv, it)){
+      const m = ist[mainCat] || (ist[mainCat] = { menge:0, chf:0, subs:{} });
+      if(num(it.preis)!=null){ m.chf += +it.preis; m.nebenChf = (m.nebenChf||0) + +it.preis; }
+      return;
+    }
     const o = ist[it.category] || (ist[it.category] = { menge:0, chf:0, subs:{} });
     if(num(it.menge)!=null) o.menge += +it.menge;
     if(num(it.preis)!=null) o.chf += +it.preis;
     const s = inv.lieferant || "?"; o.subs[s] = (o.subs[s]||0) + 1;
-  }));
+  }); });
   Object.keys(ist).forEach(k=>cats.add(k));
   if(!ist.Sonstiges) cats.delete("Sonstiges");
   const order = (DB.categories||DEFAULT_CATEGORIES).map(c=>c.key);
   return Array.from(cats).sort((a,b)=>order.indexOf(a)-order.indexOf(b)).map(cat=>{
-    const soll = getSoll(p, cat, haus);
+    let soll = getSoll(p, cat, haus);
     const i = ist[cat] || { menge:0, chf:0, subs:{} };
+    // AB-Pauschalen, die einer Hauptleistung zugeschlagen wurden, nicht nochmals als eigene Zeile fuehren
+    let erloesAdj = 0;
+    if(fold.from[cat] && soll && soll.quelle !== "manuell"){
+      const rest = roundNum(soll.menge - fold.from[cat].menge);
+      erloesAdj = -fold.from[cat].erloes;
+      soll = rest > 0 ? { ...soll, menge: rest } : null;
+      if(!soll && !i.menge && !i.chf) return null;
+    }
     const mainSubName = (Object.entries(i.subs).sort((a,b)=>b[1]-a[1])[0]||[])[0] || null;
     const sub = mainSubName ? getSubFor(mainSubName) : null;
     let budget = null;
@@ -2204,13 +2259,17 @@ function projectControlRows(p, haus){
           if(r.tarif) sum += (+pos.menge||0) * +r.tarif.preis; else ok = false;
         });
         budget = ok ? sum : null;
+        // Pauschalen der AB (z.B. Installation/Anfahrt Ausflockung) ins Budget der Hauptleistung
+        if(budget!=null && fold.to[cat] && fold.to[cat].count){ const nt = subNebenTarif(sub); if(nt) budget += fold.to[cat].count * +nt.preis; }
       } else {
         const r = findTarif(sub, today, { category:cat, label:"", einheit:catUnit(cat) });
         if(r.tarif) budget = soll.menge * +r.tarif.preis;
       }
     }
-    return { cat, soll, ist:i, erloes: ab[cat] ? ab[cat].erloes : null, materials: ab[cat] ? ab[cat].materials : [], budget, mainSubName };
-  });
+    const baseErl = ab[cat] ? ab[cat].erloes + erloesAdj : null;
+    const erloes = baseErl!=null || fold.to[cat] ? (baseErl||0) + (fold.to[cat] ? fold.to[cat].erloes : 0) : null;
+    return { cat, soll, ist:i, erloes, nebenErloes: fold.to[cat] ? fold.to[cat].erloes : 0, materials: ab[cat] ? ab[cat].materials : [], budget, mainSubName };
+  }).filter(Boolean);
 }
 
 function renderProjectDetail(projectId){
@@ -2369,8 +2428,8 @@ function renderProjectDetail(projectId){
             <td class="num" style="white-space:nowrap;">${rest==null ? "—" : over ? (approved ? `<span style="color:#9a5b00;font-weight:600;">+${fmtQty(-rest)} ${escapeHtml(u)} über · freigegeben</span>` : `<span class="flag">+${fmtQty(-rest)} ${escapeHtml(u)} über</span>`) : `${fmtQty(rest)} ${escapeHtml(u)}`}</td>
             <td><div class="barwrap" style="margin:0;"><div class="bar ${over?"over":""}" style="width:${pct}%"></div></div></td>
             <td class="num">${r.budget!=null ? fmt(r.budget) : `<span class="muted" title="Kein Soll oder kein Preis beim Sub hinterlegt">—</span>`}</td>
-            <td class="num ${overBudget?"flag":""}">${fmt(r.ist.chf)}</td>
-            <td class="num">${r.erloes!=null ? fmt(r.erloes) : "—"}</td>
+            <td class="num ${overBudget?"flag":""}">${fmt(r.ist.chf)}${r.ist.nebenChf ? `<div class="muted" style="font-size:11px;">inkl. Pauschalen ${fmt(r.ist.nebenChf)}</div>` : ""}</td>
+            <td class="num">${r.erloes!=null ? fmt(r.erloes) : "—"}${r.nebenErloes ? `<div class="muted" style="font-size:11px;">inkl. Anfahrt ${fmt(r.nebenErloes)}</div>` : ""}</td>
             <td class="num ${marge!=null && marge<0?"flag":""}" style="white-space:nowrap;">${marge!=null ? `${fmt(marge)} <span class="muted" style="font-size:11.5px;">${margePct!=null ? (margePct>=0?"":"") + margePct.toFixed(1) + "%" : ""}</span>` : "—"}</td>
             <td><button class="close-x" data-sollset="${escapeAttr(r.cat)}" title="Soll manuell setzen / zurücksetzen">✎</button></td>
           </tr>`;
@@ -2378,7 +2437,7 @@ function renderProjectDetail(projectId){
           <tr class="sumrow"><td colspan="5"><b>Total</b></td><td class="num"><b>${anyBudget?fmt(sumBudget):"—"}</b></td><td class="num"><b>${fmt(sumIst)}</b></td><td class="num"><b>${anyErloes?fmt(sumErloes):"—"}</b></td><td class="num" style="white-space:nowrap;"><b>${anyErloes?fmt(sumErloes-sumIst):"—"}</b>${anyErloes && sumErloes>0 ? ` <b style="font-size:12px;" class="${sumErloes-sumIst<0?"flag":""}">${((sumErloes-sumIst)/sumErloes*100).toFixed(1)}%</b>` : ""}</td><td></td></tr>
         </tbody>
       </table></div>
-      <details class="help"><summary>ℹ️ Was bedeuten die Spalten?</summary><p style="margin:6px 0 0 0;"><b>Soll</b> = Menge laut AB · <b>Ist</b> = von den Subunternehmern verrechnet (ohne beanstandete Rechnungen) · <b>Budget Sub</b> = Soll × vereinbarter Preis · <b>Erlös AB</b> = was wir dem Kunden verrechnen · <b>Marge</b> = Erlös − verrechnet · <b>✎</b> = Soll von Hand ändern.</p></details>`
+      <details class="help"><summary>ℹ️ Was bedeuten die Spalten?</summary><p style="margin:6px 0 0 0;"><b>Pauschalen</b> (Installation, Anfahrt, Parking, Entsorgung) werden der Hauptleistung derselben Rechnung bzw. AB-Gruppe zugerechnet, z.B. der Ausflockung. · <b>Soll</b> = Menge laut AB · <b>Ist</b> = von den Subunternehmern verrechnet (ohne beanstandete Rechnungen) · <b>Budget Sub</b> = Soll × vereinbarter Preis · <b>Erlös AB</b> = was wir dem Kunden verrechnen · <b>Marge</b> = Erlös − verrechnet · <b>✎</b> = Soll von Hand ändern.</p></details>`
       : `<div class="empty" style="padding:24px;">Noch keine Soll- oder Ist-Werte. AB hochladen oder Rechnungen erfassen.</div>`}
       <div style="margin-top:10px;display:flex;gap:6px;align-items:center;">
         <select id="addSollCat" style="width:auto;font-size:12px;"><option value="">Soll für weitere Leistung setzen…</option>${catOpts}</select>
