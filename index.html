@@ -244,6 +244,8 @@
   .audit{font-size:12px;color:var(--text-dim);margin-top:12px;padding:8px 10px;background:var(--surface);border-radius:6px;line-height:1.5;}
   .audit details summary{cursor:pointer;color:var(--accent);font-weight:600;margin-top:4px;}
   .audit ul{margin:6px 0 0 0;padding-left:18px;}
+  .pill.warnok{background:#fff3dc;color:#9a5b00;border:1px solid #f5d79a;}
+  tr.overok td{background:#fff8e8;}
   .nbadge{margin-left:auto;display:none;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:#e5302a;color:#fff;font-size:11.5px;font-weight:700;line-height:1;box-shadow:0 0 0 2px rgba(255,255,255,.15);}
   .tab .nbadge{margin-left:6px;}
   .tdot{width:10px;height:10px;border-radius:50%;background:#e5302a;flex:0 0 10px;margin-top:4px;}
@@ -1992,7 +1994,7 @@ function renderSupplierDetail(name){
           <div class="paddr">${escapeHtml(p.address||"—")} · ${pInvs.length} Rechnung(en) von ${escapeHtml(name)}</div>
           <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(pInvs))}</div>
         </div>
-        ${overCount>0 ? `<span class="pill danger">⚠ ${overCount} über Soll</span>` : `<span class="pill ok">im Soll</span>`}
+        ${projectOverPill(p)}
       </div>
     `;
   }).join("");
@@ -2084,7 +2086,7 @@ function renderProjects(){
         </div>
         ${(p.abs||[]).length ? `<span class="pill neutral" title="Auftragsbestätigung hinterlegt">📑 AB</span>` : (p.ohneAB || (invs.length && invs.every(invOhneAB))) ? `<span class="pill neutral" title="Keine AB vorhanden – bestätigt">ohne AB ✓</span>` : `<span class="pill warn" title="Ohne AB keine Mengenkontrolle">keine AB</span>`}
         ${(()=>{ const bad = invs.filter(i=>!(i.pruefung && i.pruefung.status) || i.pruefung.status==="offen").filter(i=>checkInvoice(i).some(x=>x.level==="danger")).length; return bad ? `<span class="pill danger">✗ ${bad} Rechn. mit Fehlern</span>` : ""; })()}
-        ${needsReview ? `<span class="pill warn">⚠ Prüfen nötig</span>` : (overCount>0 ? `<span class="pill danger">⚠ ${overCount} über Soll</span>` : `<span class="pill ok">im Soll</span>`)}
+        ${needsReview ? `<span class="pill warn">⚠ Prüfen nötig</span>` : projectOverPill(p)}
         <button class="small" data-shareproj="${p.id}" title="Teilen" style="margin-left:6px;">📤</button>
         ${hasPerm('deleteAuftraege') ? `<button class="small danger" data-delproj="${p.id}" style="margin-left:6px;">Löschen</button>` : ""}
       </div>
@@ -2141,6 +2143,15 @@ function notifyIfNeedsReview(inv){
   }catch(e){}
 }
 
+function projectOverPill(p){
+  const n = countOverBudget(p);
+  if(!n) return `<span class="pill ok">im Soll</span>`;
+  const act = DB.invoices.filter(i=>i.projectId===p.id && isActiveInvoice(i));
+  const allApproved = act.length && act.every(i=>i.pruefung && i.pruefung.status==="ok");
+  return allApproved
+    ? `<span class="pill warnok" title="Mengen über der AB, aber alle Rechnungen wurden bewusst freigegeben">✓ ${n} über Soll · freigegeben</span>`
+    : `<span class="pill danger">⚠ ${n} über Soll</span>`;
+}
 function countOverBudget(p){
   return projectControlRows(p).filter(r => r.soll && r.ist.menge > 0 && r.ist.menge > Math.max(0, r.soll.menge) * (1 + getSettings().mengenTolProzent/100) + 1e-9).length;
 }
@@ -2271,6 +2282,7 @@ function renderProjectDetail(projectId){
       <div class="kpi"><div class="kl">Auftragswert AB (exkl. MwSt)</div><div class="kv num">${abs.length ? "CHF "+fmt(auftragswert) : "—"}</div></div>
       <div class="kpi"><div class="kl">Sub verrechnet (Positionen netto)</div><div class="kv num">CHF ${fmt(subNetto)}</div></div>
       <div class="kpi"><div class="kl">Budget Sub (Soll × Preise)</div><div class="kv num">${anyBudget ? "CHF "+fmt(sumBudget) : "—"}</div></div>
+      <div class="kpi"><div class="kl">Marge (Erlös AB − Sub)</div><div class="kv num ${anyErloes && sumErloes-sumIst<0 ? "flag" : ""}">${anyErloes ? `CHF ${fmt(sumErloes-sumIst)}${sumErloes>0 ? ` <span style="font-size:14px;">· ${((sumErloes-sumIst)/sumErloes*100).toFixed(1)}%</span>` : ""}` : "—"}</div></div>
       <div class="kpi"><div class="kl">Prüfung offen</div><div class="kv">${offen} / ${invs.length}</div></div>
     </div>
 
@@ -2338,7 +2350,7 @@ function renderProjectDetail(projectId){
       ${(()=>{ const un = invs.filter(i=>(i.items||[]).some(it=>!itemAssigned(i, it))); return un.length ? `<div class="fd warn" style="margin-bottom:12px;"><span class="fdi">⚠</span><span>${un.reduce((s,i)=>s+(i.items||[]).filter(it=>!itemAssigned(i, it)).length,0)} Position(en) in ${un.length} Rechnung(en) sind keiner Leistung zugeordnet und fehlen in dieser Kontrolle: ${un.map(i=>`<a href="#" data-openunassigned="${escapeAttr(i.id)}">${escapeHtml(i.rechnungsnr||i.lieferant||"Rechnung")}</a>`).join(", ")} – bitte Kategorie wählen.</span></div>` : ""; })()}
       ${rows.length ? `
       <div class="tablewrap"><table class="ctltable">
-        <thead><tr><th>Leistung</th><th>Soll</th><th>Ist (verrechnet)</th><th>Rest / Über</th><th style="width:110px;"></th><th>Budget Sub</th><th>Verrechnet Sub</th><th>Erlös AB</th><th>Marge</th><th></th></tr></thead>
+        <thead><tr><th>Leistung</th><th>Soll</th><th>Ist (verrechnet)</th><th>Rest / Über</th><th style="width:110px;"></th><th>Budget Sub</th><th>Verrechnet Sub</th><th>Erlös AB</th><th>Marge CHF / %</th><th></th></tr></thead>
         <tbody>${rows.map(r=>{
           const u = catUnit(r.cat);
           const S = getSettings();
@@ -2347,20 +2359,23 @@ function renderProjectDetail(projectId){
           const rest = r.soll ? r.soll.menge - r.ist.menge : null;
           const overBudget = r.budget!=null && r.ist.chf > r.budget + 0.5;
           const marge = r.erloes!=null ? r.erloes - r.ist.chf : null;
-          return `<tr class="${over||overBudget?"overrow":""}">
+          const margePct = marge!=null && r.erloes > 0 ? marge / r.erloes * 100 : null;
+          const catInvs = invs.filter(i => isActiveInvoice(i) && (!selH || i.haus===selH) && (i.items||[]).some(it=>it.category===r.cat));
+          const approved = catInvs.length && catInvs.every(i=>i.pruefung && i.pruefung.status==="ok");
+          return `<tr class="${over||overBudget ? (approved ? "overok" : "overrow") : ""}" ${(over||overBudget) && approved ? `title="Über Soll/Budget – alle betroffenen Rechnungen wurden bewusst freigegeben"` : ""}>
             <td><b>${escapeHtml(r.cat==="Sonstiges" ? "Weitere vereinbarte Leistungen" : catLabel(r.cat))}</b>${r.materials.length?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.materials.join(", "))}</div>`:""}${r.mainSubName?`<div class="muted" style="font-size:11.5px;">${escapeHtml(r.mainSubName)}</div>`:""}</td>
             <td class="num" style="white-space:nowrap;">${r.soll ? `${fmtQty(r.soll.menge)} ${escapeHtml(u)} <span class="srcbadge ${r.soll.quelle==="AB"?"text":"ocr"}">${r.soll.quelle}</span>` : `<span class="muted">kein Soll</span>`}</td>
             <td class="num" style="white-space:nowrap;">${fmtQty(r.ist.menge)} ${escapeHtml(u)}</td>
-            <td class="num" style="white-space:nowrap;">${rest==null ? "—" : over ? `<span class="flag">+${fmtQty(-rest)} ${escapeHtml(u)} über</span>` : `${fmtQty(rest)} ${escapeHtml(u)}`}</td>
+            <td class="num" style="white-space:nowrap;">${rest==null ? "—" : over ? (approved ? `<span style="color:#9a5b00;font-weight:600;">+${fmtQty(-rest)} ${escapeHtml(u)} über · freigegeben</span>` : `<span class="flag">+${fmtQty(-rest)} ${escapeHtml(u)} über</span>`) : `${fmtQty(rest)} ${escapeHtml(u)}`}</td>
             <td><div class="barwrap" style="margin:0;"><div class="bar ${over?"over":""}" style="width:${pct}%"></div></div></td>
             <td class="num">${r.budget!=null ? fmt(r.budget) : `<span class="muted" title="Kein Soll oder kein Preis beim Sub hinterlegt">—</span>`}</td>
             <td class="num ${overBudget?"flag":""}">${fmt(r.ist.chf)}</td>
             <td class="num">${r.erloes!=null ? fmt(r.erloes) : "—"}</td>
-            <td class="num ${marge!=null && marge<0?"flag":""}">${marge!=null ? fmt(marge) : "—"}</td>
+            <td class="num ${marge!=null && marge<0?"flag":""}" style="white-space:nowrap;">${marge!=null ? `${fmt(marge)} <span class="muted" style="font-size:11.5px;">${margePct!=null ? (margePct>=0?"":"") + margePct.toFixed(1) + "%" : ""}</span>` : "—"}</td>
             <td><button class="close-x" data-sollset="${escapeAttr(r.cat)}" title="Soll manuell setzen / zurücksetzen">✎</button></td>
           </tr>`;
         }).join("")}
-          <tr class="sumrow"><td colspan="5"><b>Total</b></td><td class="num"><b>${anyBudget?fmt(sumBudget):"—"}</b></td><td class="num"><b>${fmt(sumIst)}</b></td><td class="num"><b>${anyErloes?fmt(sumErloes):"—"}</b></td><td class="num"><b>${anyErloes?fmt(sumErloes-sumIst):"—"}</b></td><td></td></tr>
+          <tr class="sumrow"><td colspan="5"><b>Total</b></td><td class="num"><b>${anyBudget?fmt(sumBudget):"—"}</b></td><td class="num"><b>${fmt(sumIst)}</b></td><td class="num"><b>${anyErloes?fmt(sumErloes):"—"}</b></td><td class="num" style="white-space:nowrap;"><b>${anyErloes?fmt(sumErloes-sumIst):"—"}</b>${anyErloes && sumErloes>0 ? ` <b style="font-size:12px;" class="${sumErloes-sumIst<0?"flag":""}">${((sumErloes-sumIst)/sumErloes*100).toFixed(1)}%</b>` : ""}</td><td></td></tr>
         </tbody>
       </table></div>
       <details class="help"><summary>ℹ️ Was bedeuten die Spalten?</summary><p style="margin:6px 0 0 0;"><b>Soll</b> = Menge laut AB · <b>Ist</b> = von den Subunternehmern verrechnet (ohne beanstandete Rechnungen) · <b>Budget Sub</b> = Soll × vereinbarter Preis · <b>Erlös AB</b> = was wir dem Kunden verrechnen · <b>Marge</b> = Erlös − verrechnet · <b>✎</b> = Soll von Hand ändern.</p></details>`
@@ -2608,15 +2623,30 @@ function renderInvoiceEditPanel(panel, invoiceId){
   refresh();
 }
 
+let invFilter = "alle";
 function renderInvoices(){
   if(!DB.invoices.length){
     mainEl.innerHTML = `<h1>Alle Rechnungen</h1><div class="empty">Noch keine Rechnungen erfasst.</div>`;
     return;
   }
-  const sorted = DB.invoices.slice().sort((a,b)=> (b.datum||"").localeCompare(a.datum||""));
+  const keyOf = {}; DB.invoices.forEach(i => keyOf[i.id] = invStatusKey(i));
+  const dnum = s => { const d = parseDateCH(s); return d ? d.getTime() : 0; };
+  const cnt = k => DB.invoices.filter(i=>keyOf[i.id]===k).length;
+  const sorted = DB.invoices.slice()
+    .filter(i => invFilter==="alle" || keyOf[i.id]===invFilter)
+    .sort((a,b)=> (INV_STATUS_ORDER[keyOf[a.id]] - INV_STATUS_ORDER[keyOf[b.id]]) || (dnum(b.datum) - dnum(a.datum)));
+  const chip = (k, label, cls) => `<button class="tab ${invFilter===k?"active":""}" data-invf="${k}">${label} <span class="${cls||"muted"}" style="margin-left:4px;">${k==="alle" ? DB.invoices.length : cnt(k)}</span></button>`;
   mainEl.innerHTML = `
     <h1>Alle Rechnungen</h1>
-    <p class="subtitle">${DB.invoices.length} Rechnung(en) über alle Aufträge.</p>
+    <p class="subtitle">${DB.invoices.length} Rechnung(en) über alle Aufträge. Auffällige Rechnungen stehen zuoberst.</p>
+    <div class="tabs">
+      ${chip("alle","Alle")}
+      ${chip("fehler","✗ Fehler – noch offen")}
+      ${chip("ok_abw","⚠ Freigegeben mit Abweichung")}
+      ${chip("beanstandet","Beanstandet")}
+      ${chip("offen","Offen")}
+      ${chip("ok","✓ Freigegeben ohne Abweichung")}
+    </div>
     <div id="searchSlot"></div>
     <div class="card">
       <table>
@@ -2640,6 +2670,7 @@ function renderInvoices(){
       </table>
     </div>
   `;
+  mainEl.querySelectorAll("[data-invf]").forEach(b=>b.addEventListener("click", ()=>{ invFilter = b.dataset.invf; renderInvoices(); }));
   addSearchBox(document.getElementById("searchSlot"), "Rechnungen suchen…", (q)=>{
     document.querySelectorAll("#invTableBody tr").forEach(el=>{
       el.style.display = el.dataset.search.includes(q) ? "" : "none";
@@ -3381,9 +3412,22 @@ function findingsHtml(f){
   return `${rest.length ? `<ul class="findings">${rest.map(li).join("")}</ul>` : `<div class="fd ok" style="font-size:12.5px;">✓ Keine Abweichungen gefunden.</div>`}
     ${oks.length ? `<details class="okdetails"><summary>✓ ${oks.length} Punkt(e) in Ordnung</summary><ul class="findings">${oks.map(li).join("")}</ul></details>` : ""}`;
 }
+// Gesamtstatus einer Rechnung fuer Listen/Filter
+function invStatusKey(inv){
+  const st = inv.pruefung && inv.pruefung.status;
+  if(st === "beanstandet") return "beanstandet";
+  const dev = checkInvoice(inv).some(x=>x.level==="danger");
+  if(st === "ok") return dev ? "ok_abw" : "ok";
+  return dev ? "fehler" : "offen";
+}
+const INV_STATUS_ORDER = { fehler:0, ok_abw:1, beanstandet:2, offen:3, ok:4 };
 function findingsPill(inv){
   const st = inv.pruefung && inv.pruefung.status;
-  if(st==="ok") return `<span class="pill ok">✓ freigegeben</span>`;
+  if(st==="ok"){
+    const dev = checkInvoice(inv).filter(x=>x.level==="danger");
+    if(dev.length) return `<span class="pill warnok" title="${escapeAttr("Bewusst freigegeben trotz:\n" + dev.map(x=>"– " + x.text).join("\n"))}">✓ freigegeben · mit Abweichung</span>`;
+    return `<span class="pill ok">✓ freigegeben</span>`;
+  }
   if(st==="beanstandet") return `<span class="pill danger">✗ beanstandet</span>`;
   const f = checkInvoice(inv);
   const d = f.filter(x=>x.level==="danger").length, w = f.filter(x=>x.level==="warn").length;
