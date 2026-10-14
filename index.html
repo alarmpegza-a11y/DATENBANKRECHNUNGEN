@@ -4339,7 +4339,7 @@ function computeProjectTodos(){
     const abs = p.abs || [];
     const houses = projectHouses(p);
     // nur Rechnungen, die noch bearbeitet werden (nicht gedruckt, nicht "ohne AB" bestaetigt)
-    const relevant = invs.filter(i=>!invOhneAB(i) && !i.gedrucktAm);
+    const relevant = invs.filter(i=>!invOhneAB(i) && !i.gedrucktAm && !(i.pruefung && (i.pruefung.status==="ok" || i.pruefung.status==="beanstandet")));
     if(p.ohneAB || !relevant.length){
       // "Keine AB vorhanden" bestaetigt -> keine Meldungen zu AB/Haeusern
     } else if(!abs.length){
@@ -4353,8 +4353,10 @@ function computeProjectTodos(){
       t.push({ kind:"ab", projectId:p.id, text:`Haupt-AB fehlt (nur Mehr-/Minderpreis) – ${p.name}`, hint:`Zu ${missingBaseABs(p).map(a=>a.zuAnr||a.nr).join(", ")} ist nur der Nachtrag hinterlegt.`, share:`Bitte bei „${p.name}“ die Haupt-AB hochladen (nur Mehr-/Minderpreis vorhanden).` });
     }
     // Nur eigenstaendige ABs zaehlen: ein Mehr-/Minderpreis gehoert zu seiner Haupt-AB; "ganzes Objekt" bewusst gewaehlt = in Ordnung
-    const baseNoHaus = abs.filter(a => !a.haus && !a.hausBestaetigt && !(a.nachtrag && abs.some(b => !b.nachtrag && b.nr === a.nr)));
-    if(baseNoHaus.length >= 2){
+    const cl = x => String(x||"").replace(/[^0-9A-Za-z]/g,"").toUpperCase();
+    const isAddOn = a => a.nachtrag && abs.some(b => b !== a && !b.nachtrag && (b.nr === a.nr || (a.zuAnr && cl(b.anr) === cl(a.zuAnr))));
+    const baseNoHaus = abs.filter(a => !a.haus && !a.hausBestaetigt && !isAddOn(a));
+    if(baseNoHaus.length >= 2 && relevant.length){
       t.push({ kind:"ab", projectId:p.id, text:`${baseNoHaus.length} ABs ohne Haus – ${p.name}`, hint:"Mehrere ABs gelten fürs ganze Objekt – dann werden die Mengen zusammengezählt. Bitte bei jeder AB „Gilt für“ das Haus wählen.", share:`Bitte bei „${p.name}“ jeder AB das richtige Haus zuordnen.` });
     }
     if(!p.ohneAB && (houses.length > 1 || abs.some(a=>a.haus))){
