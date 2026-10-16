@@ -289,6 +289,9 @@
   .ppage{position:relative;width:min(820px,94vw);aspect-ratio:210/297;margin:0 auto 22px auto;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.15);overflow:hidden;}
   .ppage img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
   .pstamp{position:absolute;cursor:grab;touch-action:none;outline:1px dashed rgba(30,90,200,.55);outline-offset:4px;}
+  .wvstamp{position:absolute;right:calc(100% + 6%);top:0;width:62%;}
+  .wvstamp.below{right:auto;left:0;top:calc(100% + 8%);}
+  tr.wvrow td{background:#fff3f3;}
   .pstamp:active{cursor:grabbing;}
   @media print{
     @page{size:A4;margin:0;}
@@ -1646,7 +1649,7 @@ function addUploadResultRow(invId, cardEl){
     const inv = DB.invoices.find(i=>i.id===invId); if(!inv) return "";
     const p = DB.projects.find(x=>x.id===inv.projectId);
     const f = checkInvoice(inv).filter(x=>x.level==="danger"||x.level==="warn");
-    return `<td>${escapeHtml(inv.lieferant||"—")}</td><td>${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}</td><td>${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
+    return `<td>${escapeHtml(inv.lieferant||"—")}</td><td>${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}</td><td>${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
       <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td><td>${findingsPill(inv)}</td>
       <td style="font-size:12px;max-width:380px;" class="${f.some(x=>x.level==="danger")?"flag":"muted"}">${f.length ? escapeHtml(shortText(f[0].text, 110)) : "–"}</td>
       <td><button class="small" data-togglecard>Details</button></td>`;
@@ -2092,7 +2095,7 @@ function renderSupplierDetail(name){
             return `<tr class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
-              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td>${findingsPill(inv)}</td>
               <td><button class="small danger" data-delinv2="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
@@ -2661,7 +2664,7 @@ function renderProjectDetail(projectId){
             <tr class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td>${escapeHtml(inv.datum||"—")}</td>
               <td>${escapeHtml(inv.lieferant||"—")}</td>
-              <td>${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}</td>
+              <td>${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}</td>
               <td><select class="hsel" data-invhaus="${inv.id}" style="${!inv.haus && (houses.length>1 || abs.some(a=>a.haus)) ? "border-color:var(--danger);" : ""}">${hausOptionsHtml(p, inv.haus||"")}</select></td>
               <td>${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Scan prüfen</span> ` : ""}${(inv.items||[]).map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
@@ -2941,7 +2944,7 @@ function renderInvoices(){
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.lieferant||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
-              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}" data-openinv="${inv.id}">${findingsPill(inv)}</td>
               <td style="font-size:11.5px;" class="muted" title="${escapeAttr((inv.verlauf||[]).slice(-1).map(e=>e.was).join(""))}">${inv.geaendertAm ? `${escapeHtml(inv.geaendertName || nameFromEmail(inv.geaendertVon))}<br>${escapeHtml(String(inv.geaendertAm).replace(/,\s*/, " "))}` : "–"}</td>
@@ -3588,6 +3591,7 @@ function checkInvoice(inv){
   const houses = p ? projectHouses(p) : [];
   const invHaus = inv.haus || "";
   let scopeHaus; // undefined = ganzes Objekt
+  if(wvItems(inv).length) f.push({ level:"info", text:`↗ Weiter verrechnen an Kunde: ${wvKurztext(inv)} · CHF ${fmt(wvSumme(inv))} – erscheint beim Drucken als roter Stempel.` });
   const ohneAB = invOhneAB(inv);
   (inv.duplikatVersuche||[]).forEach(d => f.push({ level:"info", text:`Diese Rechnung wurde am ${d.am} erneut zugestellt (${d.datei||"Datei"}) – nicht doppelt gespeichert.` }));
   if(ohneAB) f.push({ level:"ok", text:`Keine AB vorhanden – bestätigt${inv.ohneAB && inv.ohneABvon ? ` von ${inv.ohneABvon}` : (!inv.ohneAB ? " (für das ganze Objekt)" : "")}. Preise werden trotzdem geprüft.` });
@@ -3648,7 +3652,7 @@ function checkInvoice(inv){
     if(ex) f.push({ level:"warn", itemId:it.id, text:`${name}: laut AB nicht im Auftrag („${shortText(ex,70)}“) → ablehnen oder als Nachtrag an den Kunden weiterverrechnen.` });
 
     // --- Regie ---
-    if(it.category==="Regie" && num(it.menge)) f.push({ level:"info", itemId:it.id, text:`${name}: ${fmtQty(it.menge)} h Regie – visierten Regierapport prüfen.` });
+    if(it.category==="Regie" && num(it.menge)) f.push({ level:"info", itemId:it.id, text:`${name}: ${fmtQty(it.menge)} h Regie – visierten Regierapport prüfen${it.weiterVerrechnen ? " · wird an Kunde weiter verrechnet" : " · an Kunde weiter verrechnen? (Häkchen „↗ an Kunde“)"}.` });
 
     // --- Vergleich mit anderen Objekten ---
     const o = outlierFor(inv, it);
@@ -3781,6 +3785,7 @@ function renderPruefPanel(el, getInv){
           <button class="small" data-ps="offen" ${st==="offen"?"disabled":""}>↺ Offen</button>
           <button class="small" data-copybean>📋 Beanstandung kopieren</button>
           ${(inv.duplikatVersuche||[]).length ? dupButtonsHtml(inv.id) : ""}
+          ${(inv.items||[]).some(x=>x.category==="Regie") || wvItems(inv).length ? `<button class="small ${wvItems(inv).length ? "st-bad" : ""}" data-wvall title="Alle Regie-Positionen an Kunde weiter verrechnen">${wvItems(inv).length ? "↗ Wird weiter verrechnet" : "↗ Regie weiter verrechnen"}</button>` : ""}
           <button class="small ${inv.ohneAB ? "st-ok" : ""}" data-ohneab title="Für diese Rechnung gibt es keine AB (z.B. Regie, Reparatur) – AB-Meldungen ausblenden">${inv.ohneAB ? "✓ Keine AB vorhanden" : "🚫 Keine AB vorhanden!"}</button>
         </div>
       </div>
@@ -3806,6 +3811,18 @@ function renderPruefPanel(el, getInv){
     });
   });
   wireDupButtons(el);
+  const wva = el.querySelector("[data-wvall]");
+  if(wva) wva.addEventListener("click", async ()=>{
+    const i = getInv(); if(!i) return;
+    const on = !wvItems(i).length;
+    const targets = (i.items||[]).filter(x => x.category==="Regie");
+    (on ? (targets.length ? targets : []) : (i.items||[])).forEach(x => { x.weiterVerrechnen = on; });
+    await saveInvoice(i);
+    renderPruefPanel(el, getInv);
+    const tbl = el.parentElement && el.parentElement.querySelector(".itemsSlot");
+    if(tbl) renderItemsTable(tbl, getInv, ()=>renderPruefPanel(el, getInv));
+    toast(on ? "Regie wird an Kunde weiter verrechnet – roter Stempel beim Drucken." : "Markierung entfernt.");
+  });
   el.querySelector("[data-ohneab]").addEventListener("click", async ()=>{
     const i = getInv(); if(!i) return;
     const next = !i.ohneAB;
@@ -3838,7 +3855,7 @@ function renderItemsTable(container, getInv, onChange){
     const tarife = sub ? (sub.tarife||[]).filter(t=>num(t.preis)!=null) : [];
     container.innerHTML = `
       <div class="tablewrap"><table class="itemtable">
-        <thead><tr><th>Kategorie</th><th>Beschreibung (Original)</th><th>Menge</th><th>Einh.</th><th title="Einheitspreis – leer = Betrag ÷ Menge">EP CHF</th><th>Betrag CHF</th><th>Vereinbarter Preis (Sub)</th><th></th></tr></thead>
+        <thead><tr><th>Kategorie</th><th>Beschreibung (Original)</th><th>Menge</th><th>Einh.</th><th title="Einheitspreis – leer = Betrag ÷ Menge">EP CHF</th><th>Betrag CHF</th><th>Vereinbarter Preis (Sub)</th><th title="Diese Position an den Kunden weiter verrechnen (roter Stempel beim Drucken)">↗ an Kunde</th><th></th></tr></thead>
         <tbody>${inv.items.map(it=>{
           const r = sub ? findTarif(sub, inv, it) : { tarif:null };
           const autoLabel = r.tarif && !r.manual ? `auto: ${r.tarif.bezeichnung} · ${fmt(r.tarif.preis)}` : (tarife.length ? "– bitte wählen –" : "keine Preise hinterlegt");
@@ -3851,6 +3868,7 @@ function renderItemsTable(container, getInv, onChange){
             <td style="width:92px;"><input type="number" step="any" data-if="ep" value="${it.ep!=null?it.ep:""}" placeholder="${epCalc}"></td>
             <td style="width:104px;"><input type="number" step="any" data-if="preis" value="${it.preis!=null?it.preis:""}"></td>
             <td style="min-width:170px;"><select data-if="tarifId"><option value="">${escapeHtml(autoLabel)}</option>${tarife.map(t=>`<option value="${escapeAttr(t.id)}">${escapeHtml(t.bezeichnung||"?")} · ${fmt(t.preis)}/${escapeHtml(t.einheit||"")}</option>`).join("")}</select></td>
+            <td style="text-align:center;"><input type="checkbox" data-wv="${escapeAttr(it.id)}" ${it.weiterVerrechnen ? "checked" : ""} style="width:auto;" title="An Kunde weiter verrechnen"></td>
             <td><button class="close-x" data-removeitem="${escapeAttr(it.id)}" title="Position entfernen">✕</button></td>
           </tr>`;
         }).join("")}</tbody>
@@ -3876,6 +3894,16 @@ function renderItemsTable(container, getInv, onChange){
           it[fld] = ["menge","preis","ep"].includes(fld) ? (inp.value===""?null:parseFloat(inp.value)) : inp.value;
         });
         inp.addEventListener("change", ()=>commit(false));
+      });
+    });
+    container.querySelectorAll("[data-wv]").forEach(cb=>{
+      const row = cb.closest("tr"); const it0 = inv.items.find(i=>i.id===cb.dataset.wv);
+      if(row && it0 && it0.weiterVerrechnen) row.classList.add("wvrow");
+      cb.addEventListener("change", ()=>{
+        const i = getInv(); if(!i) return;
+        const it = i.items.find(x=>x.id===cb.dataset.wv); if(!it) return;
+        it.weiterVerrechnen = cb.checked;
+        commit(true);
       });
     });
     container.querySelectorAll("[data-removeitem]").forEach(btn=>{
@@ -4597,6 +4625,26 @@ function linkTypeLabel(t){ return { project:"Auftrag", invoice:"Rechnung", suppl
 function deepLinkUrl(link, msgId){
   return `${location.origin}${location.pathname}#open=${link.type}:${encodeURIComponent(link.id)}${msgId?`&msg=${msgId}`:""}`;
 }
+// "Weiter verrechnen" (an den Kunden): markierte Positionen, meist Regie
+function wvItems(inv){ return (inv && inv.items || []).filter(it => it.weiterVerrechnen); }
+function wvSumme(inv){ return wvItems(inv).reduce((s,x)=>s+(num(x.preis)||0),0); }
+function wvKurztext(inv){
+  const its = wvItems(inv);
+  const h = its.filter(x=>x.category==="Regie").reduce((s,x)=>s+(num(x.menge)||0),0);
+  return (h ? `Regie ${fmtQty(h)} h` : its.map(x=>displayLabel(x.label)).slice(0,2).join(", ")) || "";
+}
+function wvTag(inv){ return wvItems(inv).length ? ` <span class="pill danger" title="An Kunde weiter verrechnen: ${escapeAttr(wvKurztext(inv))}">↗ weiter verr. CHF ${formatCHF(wvSumme(inv))}</span>` : ""; }
+// Roter Zusatzstempel neben dem Eingangsstempel
+function wvStampHtml(inv, posX){
+  if(!wvItems(inv).length) return "";
+  const below = posX < 24;
+  return `<div class="wvstamp ${below ? "below" : ""}">
+    <svg viewBox="0 0 200 70" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;">
+      <rect x="2" y="2" width="196" height="66" rx="6" fill="none" stroke="#d01f1f" stroke-width="3.5"/>
+      <text x="100" y="31" text-anchor="middle" fill="#d01f1f" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700">WEITER</text>
+      <text x="100" y="56" text-anchor="middle" fill="#d01f1f" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700">VERRECHNEN</text>
+    </svg></div>`;
+}
 function sammelTag(inv){ return inv && inv.sammel ? ` <span class="pill neutral" title="Sammelrechnung: ${escapeAttr((inv.sammel.objekte||[]).join(" · "))}${inv.sammel.gesamtTotal!=null ? " – Gesamtbetrag CHF " + formatCHF(+inv.sammel.gesamtTotal) : ""}">Teil ${inv.sammel.teil}/${inv.sammel.von}</span>` : ""; }
 function invoiceLinkLabel(inv){
   const p = DB.projects.find(x=>x.id===inv.projectId);
@@ -5222,7 +5270,7 @@ function renderPrintCenter(){
             <td>${escapeHtml((toDateSafe(inv.createdAt)||new Date()).toLocaleDateString("de-CH"))}</td>
             <td>${escapeHtml(inv.lieferant||"—")}</td>
             <td style="cursor:pointer;" data-popen="${inv.id}">${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
-            <td>${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}</td>
+            <td>${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}</td>
             <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
             <td style="cursor:pointer;" data-popen="${inv.id}">${findingsPill(inv)}</td>
             ${printTab==="neu" && probs[inv.id].d.some(x=>x.code==="ab") ? `<td style="font-size:12.5px;max-width:460px;">
@@ -5429,7 +5477,7 @@ async function openPrintPreview(invs){
       body.innerHTML = imgs.map((src, n)=>`
         <div class="ppage" data-inv="${inv.id}">
           <img src="${src}" alt="">
-          ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}</div>` : ""}
+          ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}${wvStampHtml(inv, pos.x)}</div>` : ""}
         </div>`).join("");
       body.querySelectorAll(".pstamp").forEach(wireStamp);
       msg.textContent = `– ${imgs.length} Seite(n), Stempel verschiebbar`;
