@@ -334,7 +334,7 @@
 
 const DEFAULT_CATEGORIES = [
   { key: "VW", label: "Vorwand-Element (VW)", unit: "Stk", keywords: ["vorwand","vw-element","vw "] },
-  { key: "TW", label: "Trennwand (TW)", unit: "Stk", keywords: ["trennwand","tw-element","tw ","trw"] },
+  { key: "TW", label: "Trennwand (TW)", unit: "Stk", keywords: ["trennwand","raumtrenner","tw-element","tw ","trw"] },
   { key: "Duofix", label: "Duofix (pro Apparat)", unit: "App.", keywords: ["duofix"] },
   { key: "Beplankung", label: "Beplankung", unit: "m²", keywords: ["beplank"] },
   { key: "Ausflockung", label: "Ausflockung", unit: "m³", keywords: ["ausflock","ausgeflockt"] },
@@ -531,6 +531,26 @@ async function removeProjectIfEmpty(projectId){
   catch(e){ /* keine Berechtigung -> Objekt bleibt, erzeugt aber keine Meldungen mehr */ }
 }
 let emptyCleanupDone = false;
+async function fixFallbackProjects(){
+  const re = /^.+\s–\s\d{1,2}\.\d{1,2}\.\d{4}$/;
+  for(const p of DB.projects.slice()){
+    if(!re.test(p.name||"") || (p.abs||[]).length) continue;
+    const invs = DB.invoices.filter(i=>i.projectId===p.id && i.rawText);
+    for(const inv of invs){
+      const r = parseInvoiceText(inv.rawText);
+      if(!r.objekt || /diverse/i.test(r.objekt)) continue;
+      let target = findMatchingProject({ objekt: r.objekt, auftragsnummer: "" });
+      if(target && target.id === p.id) target = null;
+      const pid = target ? target.id : await createProject({ name: stripHaus(r.objekt), address: stripHaus(r.objekt), auftragsnummer:"", soll:{}, haeuser:[] });
+      const upd = { projectId: pid, objekt: r.objekt };
+      const manuell = (inv.verlauf||[]).some(e => /Positionen|Betrag/.test(e.was||""));
+      if(!manuell && r.items.length){ upd.items = r.items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: it.ep!==undefined ? it.ep : null })); if(r.total!=null) upd.total = r.total; }
+      Object.assign(inv, upd);
+      try{ await window.fb.setDocMerge("invoices", inv.id, upd); }catch(e){}
+    }
+    await removeProjectIfEmpty(p.id);
+  }
+}
 async function cleanProjectNames(){
   const re = /\s+[A-ZÄÖÜa-zäöü][\wäöüÄÖÜ-]*,?\s*den\s+\d{1,2}\.\d{1,2}\.\d{2,4}.*$/;
   for(const p of DB.projects){
@@ -543,6 +563,7 @@ async function cleanupEmptyProjects(){
   if(emptyCleanupDone || !dataLoaded.projects || !dataLoaded.invoices) return;
   emptyCleanupDone = true;
   await cleanProjectNames();
+  try{ await fixFallbackProjects(); }catch(e){ console.warn(e); }
   if(!hasPerm("deleteAuftraege")) return;
   const now = Date.now();
   for(const p of DB.projects.slice()){
@@ -1059,6 +1080,7 @@ function parseInvoiceText(text){
     if(m) result.objekt = sanitizeObjekt(m[1]);
   }
   if(!result.objekt) result.objekt = objektFromLabels(rawLines, isOwnCompanyLine, result.lieferant);
+  if(!result.objekt) result.objekt = objektAfterRecipient(rawLines);
   if(!result.objekt){
     // Manche Rechnungen nennen das Objekt ganz ohne Label -- einfach als eigene Zeile direkt
     // nach der Rechnungsnummer. Als letzten Fallback: die Zeile danach nehmen, wenn sie
@@ -1162,6 +1184,39 @@ function parseInvoiceText(text){
     result.items.push({ id: uid("it"), category: "Ausflockung", label: `Total m³ (Ausmassblatt${m3vals.length>1?` ${m3vals.length} Blätter: ${m3vals.join(" + ")}`:""})`, menge: sumM3, einheit: "m³", preis: null, ep: null });
   }
 
+  // Folgezeile einer Position = Beschreibung ("Vorwand", "Raumtrenner", "Gis + Duofix 16'000.00")
+  {
+    const idxOf = new Map(result.items.map(it => [it, rawLines.findIndex(l => l.slice(0,90) === it.label)]));
+    const itemLines = new Set(Array.from(idxOf.values()));
+    const consumed = new Set();
+    result.items.forEach(it=>{
+      const li = idxOf.get(it); if(li < 0) return;
+      const nl = String(rawLines[li+1] || "").trim();
+      if(!nl || consumed.has(li) || /^(subtotal|zwischensumme|total|mwst|summe|rabatt|skonto)/i.test(nl) || /^\d+(?:\.\d+)?\s+\S/.test(nl) && itemLines.has(li+1) && !/^\d[\d'’.,]*\s*$/.test(nl)) return;
+      if(/^\d{1,2}(?:\.\d{1,2})?\s+/.test(nl)) return; // naechste Position
+      if(itemLines.has(li+1)){
+        // Folgezeile ist selbst eine Position -> nur uebernehmen, wenn hier der Betrag fehlt oder die Folgezeile keinen eigenen Betrag hat
+        const nextItem = result.items.find(x => idxOf.get(x) === li+1);
+        const missingAmt = /CHF\s*$/.test(rawLines[li]) && it.ep == null;
+        if(!missingAmt && !(nextItem && nextItem.preis == null)) return;
+      }
+      const nlc = nl.toLowerCase();
+      // Betrag in der Folgezeile ("… 32 Stk CHF 500.00 CHF" / "Gis + Duofix 16'000.00")
+      if(/CHF\s*$/.test(rawLines[li]) && it.ep == null){
+        const m = nl.match(/(-?[\d']+[.,]\d{2})\s*$/);
+        if(m){ const amt = parseSwissNumber(m[1]); if(it.preis!=null && it.menge && Math.abs(it.menge * it.preis - amt) <= Math.max(1, amt * 0.01)){ it.ep = it.preis; it.preis = amt; } }
+      }
+      if(["Elemente","Sonstiges"].includes(it.category)){
+        const c = /raumtrenner|trennwand/.test(nlc) ? "TW" : /vorwand/.test(nlc) ? "VW" : /duofix/.test(nlc) ? "Duofix" : /beplank/.test(nlc) ? "Beplankung" : /ausflock/.test(nlc) ? "Ausflockung" : null;
+        if(c) it.category = c;
+      }
+      const desc = nl.replace(/(-?[\d']+[.,]\d{2})\s*$/, "").trim();
+      if(desc) it.label = (it.label + " – " + desc).slice(0, 120);
+      consumed.add(li+1);
+    });
+    result.items = result.items.filter(it => !consumed.has(idxOf.get(it)));
+  }
+
   // Sammelrechnung ("Diverse Objekte"): Positionskopf "1 Feldblumenweg, Zürich …" -> Objekt pro Position
   {
     const headRe = /^(\d{1,2})\s+([A-ZÄÖÜ][^\d,]{2,40}?(?:\s\d{1,3}[a-z]?)?,\s*[A-ZÄÖÜ][\wäöüÄÖÜ\-]+(?:\s[A-ZÄÖÜ][\wäöüÄÖÜ\-]+)?)(?=\s+\d|\s*$)/;
@@ -1171,7 +1226,7 @@ function parseInvoiceText(text){
     if(distinct.length >= 2 || (/diverse\s+objekte/i.test(text) && distinct.length >= 1)){
       result.items.forEach(it=>{
         // Position gehoert zum letzten Objekt-Kopf oberhalb ihrer Zeile
-        const li = rawLines.findIndex(l => l.slice(0,90) === it.label);
+        const li = rawLines.findIndex(l => it.label.startsWith(l.slice(0,90)));
         const h = heads.filter(x => x.idx <= (li < 0 ? 1e9 : li)).pop();
         if(h) it.objekt = h.objekt;
       });
@@ -1245,6 +1300,19 @@ function creditorFromQR(rawLines, isOwn){
   return "";
 }
 // Objekt ueber typische Beschriftungen; Wert steht in derselben Zeile oder direkt darunter
+// Viele Subs schreiben das Objekt ohne Beschriftung direkt unter unsere Adresse
+function objektAfterRecipient(rawLines){
+  const i = rawLines.findIndex(l => /^\s*8853\s+Lachen\b/i.test(l));
+  if(i < 0) return "";
+  for(const l of rawLines.slice(i+1, i+3)){
+    const t = String(l||"").trim();
+    if(!t || /^(datum|nummer|rechnung|mwst|mwst\.|unser|kontakt|telefon|e-mail|web|pos\.|seite|kunden|ihre|referenz)/i.test(t)) continue;
+    if(/\d{1,2}\.\d{1,2}\.\d{4}/.test(t) || t.length > 60) continue;
+    if(!/^[A-ZÄÖÜ]/.test(t)) continue;
+    return sanitizeObjekt(t);
+  }
+  return "";
+}
 function objektFromLabels(rawLines, isOwn, lieferant){
   const labelRe = /(Baustellen-?\s*\/?\s*Lieferanschrift|Baustellenadresse|Lieferanschrift|Lieferadresse|Bauvorhaben|Bauobjekt|Objektadresse|Ausführungsort|Arbeitsort|Projekt|Baustelle)\s*:?\s*(.*)$/i;
   const cleanVal = v => {
@@ -4404,6 +4472,7 @@ function computeProjectTodos(){
       const a = DB.projects[i], b = DB.projects[j];
       if((a.notDup||[]).includes(b.id) || (b.notDup||[]).includes(a.id)) continue;
       const active = x => DB.invoices.some(i=>i.projectId===x.id && !i.gedrucktAm) || (x.abs||[]).length;
+      if(/\s–\s\d{1,2}\.\d{1,2}\.\d{4}$/.test(a.name||"") || /\s–\s\d{1,2}\.\d{1,2}\.\d{4}$/.test(b.name||"")) continue;
       if(!active(a) || !active(b)) continue; // leere Objekte nicht melden
       const s = Math.max(scoreAddress(a.address||a.name, b.address||b.name), scoreAddress(a.name, b.name));
       if(s >= 1) t.push({ kind:"dup", projectId:a.id, otherId:b.id, text:`Gleiches Objekt? „${a.name}“ und „${b.name}“`, hint:"Gleiche Strasse – falls es dasselbe Objekt ist (evtl. andere Häuser): zusammenführen, dann gilt eine AB für alle Subunternehmer.", share:`Bitte prüfen, ob „${a.name}“ und „${b.name}“ dasselbe Objekt sind, und ggf. zusammenführen.` });
