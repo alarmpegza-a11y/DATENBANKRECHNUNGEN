@@ -937,7 +937,7 @@ function classifyPage(text){
   if(text.replace(/\s/g,"").length < 80) return "attachment"; // fast leere Seite / reiner QR-Beleg
   // Mehrseitige Rechnungen: eine Folgeseite ohne jeden neuen Rechnungs-/Objekt-Hinweis ist
   // vermutlich die Fortsetzung der Positionstabelle der vorherigen Seite, keine neue Rechnung.
-  const hasInvoiceMarker = /rechnung|auftragsnr|objekt\s*:|\badresse\b|baustelle/i.test(t);
+  const hasInvoiceMarker = /rechnung|faktura|invoice|auftragsnr|objekt\s*:|\badresse\b|baustelle|diverse\s+objekte|\bnummer\s*:\s*[a-z]{0,4}\d|\btotal\s+chf\b|\bsubtotal\b|\bzwischensumme\b/i.test(t);
   if(!hasInvoiceMarker) return "attachment";
   return "invoice_start";
 }
@@ -1162,6 +1162,25 @@ function parseInvoiceText(text){
     result.items.push({ id: uid("it"), category: "Ausflockung", label: `Total m³ (Ausmassblatt${m3vals.length>1?` ${m3vals.length} Blätter: ${m3vals.join(" + ")}`:""})`, menge: sumM3, einheit: "m³", preis: null, ep: null });
   }
 
+  // Sammelrechnung ("Diverse Objekte"): Positionskopf "1 Feldblumenweg, Zürich …" -> Objekt pro Position
+  {
+    const headRe = /^(\d{1,2})\s+([A-ZÄÖÜ][^\d,]{2,40}?(?:\s\d{1,3}[a-z]?)?,\s*[A-ZÄÖÜ][\wäöüÄÖÜ\-]+(?:\s[A-ZÄÖÜ][\wäöüÄÖÜ\-]+)?)(?=\s+\d|\s*$)/;
+    const heads = [];
+    rawLines.forEach((l, idx) => { const m = l.match(headRe); if(m && !isOwnCompanyLine(l.toLowerCase())) heads.push({ idx, objekt: m[2].trim(), line: l }); });
+    const distinct = Array.from(new Set(heads.map(h=>h.objekt)));
+    if(distinct.length >= 2 || (/diverse\s+objekte/i.test(text) && distinct.length >= 1)){
+      result.items.forEach(it=>{
+        // Position gehoert zum letzten Objekt-Kopf oberhalb ihrer Zeile
+        const li = rawLines.findIndex(l => l.slice(0,90) === it.label);
+        const h = heads.filter(x => x.idx <= (li < 0 ? 1e9 : li)).pop();
+        if(h) it.objekt = h.objekt;
+      });
+      const parts = Array.from(new Set(result.items.map(it=>it.objekt).filter(Boolean)));
+      if(parts.length >= 2) result.sammelObjekte = parts;
+      if(!result.objekt || /diverse/i.test(result.objekt)) result.objekt = parts.length === 1 ? parts[0] : "Diverse Objekte";
+    }
+  }
+
   // Nicht erkannte Zeilen: zuerst ueber die Preisliste des Subs zuordnen (Bezeichnung/Suchbegriffe),
   // was dann immer noch unbekannt ist UND keinen Betrag hat, ist kein Rechnungsposten (Adresse, Hinweis …)
   const subForItems = getSubFor(result.lieferant);
@@ -1355,6 +1374,7 @@ function rnrCandidates(text, lieferant){
   for(const mm of text.matchAll(new RegExp("Rechnungs?\\s*[-.]?\\s*(?:Nr|Nummer|No)\\.?\\s*[:#]?\\s*" + RNR_VAL, "gi"))) add(mm[1], "Rechnung Nr.");
   for(const mm of text.matchAll(new RegExp("\\bRechnung\\s*[:#]?\\s+" + RNR_VAL, "gi"))) add(mm[1], "Rechnung");
   for(const mm of text.matchAll(new RegExp("\\b(?:Beleg|Faktura|Invoice|Rg)\\s*[-.]?\\s*(?:Nr|Nummer|No)\\.?\\s*[:#]?\\s*" + RNR_VAL, "gi"))) add(mm[1], "Beleg");
+  for(const mm of text.matchAll(/(?:^|\s)Nummer\s*:\s*([A-Z]{1,4}-?\d{4,})/gm)) add(mm[1], "Nummer");
   // 3) Nummer in der Zeile unter einer Kopfzeile "Rechnung Nr. | Datum | …"
   lines.forEach((l, i)=>{
     if(!/\brechnung(s?\s*[-.]?\s*(nr|nummer))?\b/i.test(l) || !lines[i+1]) return;
@@ -1558,7 +1578,7 @@ function addUploadResultRow(invId, cardEl){
     const inv = DB.invoices.find(i=>i.id===invId); if(!inv) return "";
     const p = DB.projects.find(x=>x.id===inv.projectId);
     const f = checkInvoice(inv).filter(x=>x.level==="danger"||x.level==="warn");
-    return `<td>${escapeHtml(inv.lieferant||"—")}</td><td>${escapeHtml(inv.rechnungsnr||"—")}</td><td>${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
+    return `<td>${escapeHtml(inv.lieferant||"—")}</td><td>${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}</td><td>${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
       <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td><td>${findingsPill(inv)}</td>
       <td style="font-size:12px;max-width:380px;" class="${f.some(x=>x.level==="danger")?"flag":"muted"}">${f.length ? escapeHtml(shortText(f[0].text, 110)) : "–"}</td>
       <td><button class="small" data-togglecard>Details</button></td>`;
@@ -1620,7 +1640,7 @@ async function handleFiles(fileList){
       const groups = allGroups.filter(g => {
         if(!g.onlyAttach) return true;
         const pr = parseInvoiceText(g.allText);
-        return /rechnung|faktura|invoice/i.test(g.allText) && (pr.total || pr.items.some(i=>i.preis));
+        return (/rechnung|faktura|invoice|\bnummer\s*:|\btotal\s+chf|\bsubtotal/i.test(g.allText) || /rechnung|faktura/i.test(file.name||"")) && (pr.total || pr.items.some(i=>i.preis));
       });
       const skipped = allGroups.length - groups.length;
       if(!uploadCompact || skipped) statusEl.insertAdjacentHTML("beforeend", `<div class="muted">"${escapeHtml(file.name)}": <b>${groups.length}</b> Rechnung(en) erkannt, getrennt und automatisch gespeichert.${skipped ? ` <span class="flag">${skipped} Dokument(e) ohne Rechnung (z.B. Ausmass-Formular ohne Beträge) wurden nicht als Rechnung gespeichert.</span>` : ""}</div>`);
@@ -1628,8 +1648,21 @@ async function handleFiles(fileList){
       let pdfPromise = null;
       const getPdfId = () => pdfPromise || (pdfPromise = storePdfFile(file));
       let dupInfo = [];
+      const expanded = [];
       for(const g of groups){
-        const parsed = parseInvoiceText(g.allText);
+        const full = parseInvoiceText(g.allText);
+        if(full.sammelObjekte && full.sammelObjekte.length >= 2){
+          const sumAll = full.items.reduce((s,x)=>s+(num(x.preis)||0),0);
+          full.sammelObjekte.forEach((obj, k)=>{
+            const items = full.items.filter(it=>it.objekt===obj);
+            const sum = items.reduce((s,x)=>s+(num(x.preis)||0),0);
+            expanded.push({ g, parsed: { ...full, objekt: obj, items, sammelObjekte: undefined,
+              total: full.total!=null && sumAll ? roundNum(full.total * sum / sumAll) : null,
+              sammel: { teil: k+1, von: full.sammelObjekte.length, gesamtTotal: full.total!=null ? full.total : null, objekte: full.sammelObjekte } } });
+          });
+        } else expanded.push({ g, parsed: full });
+      }
+      for(const { g, parsed } of expanded){
         const existing = findExistingInvoice(parsed);
         if(existing){
           if((!hasOriginal(existing) || invoiceUnreliable(existing)) && !existing.gedrucktAm){
@@ -1691,6 +1724,7 @@ async function appendReviewCard(parsed){
     datum: parsed.datum || "",
     total: parsed.total,
     objekt: parsed.objekt || "",
+    sammel: parsed.sammel || null,
     auftragsnummer: String(parsed.auftragsnummer || auftragsNrFromText(parsed._rawText) || ""),
     haus: detectInvoiceHaus({ rawText: parsed._rawText, objekt: parsed.objekt, auftragsnummer: parsed.auftragsnummer }, projectId),
     rawText: String(parsed._rawText||"").slice(0, 30000),
@@ -1990,7 +2024,7 @@ function renderSupplierDetail(name){
             return `<tr class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
-              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td>${findingsPill(inv)}</td>
               <td><button class="small danger" data-delinv2="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
@@ -2559,7 +2593,7 @@ function renderProjectDetail(projectId){
             <tr class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td>${escapeHtml(inv.datum||"—")}</td>
               <td>${escapeHtml(inv.lieferant||"—")}</td>
-              <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
+              <td>${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}</td>
               <td><select class="hsel" data-invhaus="${inv.id}" style="${!inv.haus && (houses.length>1 || abs.some(a=>a.haus)) ? "border-color:var(--danger);" : ""}">${hausOptionsHtml(p, inv.haus||"")}</select></td>
               <td>${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Scan prüfen</span> ` : ""}${(inv.items||[]).map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
@@ -2839,7 +2873,7 @@ function renderInvoices(){
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.lieferant||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
-              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}" data-openinv="${inv.id}">${findingsPill(inv)}</td>
               <td style="font-size:11.5px;" class="muted" title="${escapeAttr((inv.verlauf||[]).slice(-1).map(e=>e.was).join(""))}">${inv.geaendertAm ? `${escapeHtml(inv.geaendertName || nameFromEmail(inv.geaendertVon))}<br>${escapeHtml(String(inv.geaendertAm).replace(/,\s*/, " "))}` : "–"}</td>
@@ -3464,7 +3498,7 @@ function checkInvoice(inv){
   const sameTotal = o => num(o.total)!=null && num(inv.total)!=null && Math.abs(+o.total - +inv.total) < 0.01;
   if(inv.rechnungsnr && String(inv.rechnungsnr).replace(/\D/g,"").length >= 3){
     const nr = String(inv.rechnungsnr).trim().toLowerCase();
-    const same = DB.invoices.filter(o => o.id!==inv.id && sameLief(o) && String(o.rechnungsnr||"").trim().toLowerCase()===nr);
+    const same = DB.invoices.filter(o => o.id!==inv.id && sameLief(o) && String(o.rechnungsnr||"").trim().toLowerCase()===nr && !(o.sammel && inv.sammel && o.sammel.teil !== inv.sammel.teil));
     const realDup = same.find(o => sameTotal(o) || (o.projectId===inv.projectId && (!o.datum || !inv.datum || o.datum===inv.datum)));
     if(realDup){
       f.push({ level:"danger", text:`Doppelte Rechnung? Rechnungsnr. ${inv.rechnungsnr} von ${inv.lieferant} ist bereits erfasst (${realDup.datum||"ohne Datum"}, ${projName(realDup.projectId)}${num(realDup.total)!=null?", CHF "+fmt(realDup.total):""}).` });
@@ -4494,6 +4528,7 @@ function linkTypeLabel(t){ return { project:"Auftrag", invoice:"Rechnung", suppl
 function deepLinkUrl(link, msgId){
   return `${location.origin}${location.pathname}#open=${link.type}:${encodeURIComponent(link.id)}${msgId?`&msg=${msgId}`:""}`;
 }
+function sammelTag(inv){ return inv && inv.sammel ? ` <span class="pill neutral" title="Sammelrechnung: ${escapeAttr((inv.sammel.objekte||[]).join(" · "))}${inv.sammel.gesamtTotal!=null ? " – Gesamtbetrag CHF " + formatCHF(+inv.sammel.gesamtTotal) : ""}">Teil ${inv.sammel.teil}/${inv.sammel.von}</span>` : ""; }
 function invoiceLinkLabel(inv){
   const p = DB.projects.find(x=>x.id===inv.projectId);
   return `Rechnung ${inv.rechnungsnr||"(ohne Nr.)"} · ${inv.lieferant||"?"} · ${p?p.name:"?"}${inv.haus?" · "+inv.haus:""}`;
@@ -4926,7 +4961,7 @@ function findExistingInvoice(parsed){
     return false;
   };
   if(nr){
-    const byNr = sameSup.find(i => cleanRnr(i.rechnungsnr).toLowerCase() === nr && !contradicts(i));
+    const byNr = sameSup.find(i => cleanRnr(i.rechnungsnr).toLowerCase() === nr && !contradicts(i) && !(i.sammel && parsed.sammel && i.sammel.teil !== parsed.sammel.teil));
     if(byNr) return byNr;
   }
   if(parsed.total!=null){
@@ -5118,7 +5153,7 @@ function renderPrintCenter(){
             <td>${escapeHtml((toDateSafe(inv.createdAt)||new Date()).toLocaleDateString("de-CH"))}</td>
             <td>${escapeHtml(inv.lieferant||"—")}</td>
             <td style="cursor:pointer;" data-popen="${inv.id}">${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
-            <td>${escapeHtml(inv.rechnungsnr||"—")}</td>
+            <td>${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}</td>
             <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
             <td style="cursor:pointer;" data-popen="${inv.id}">${findingsPill(inv)}</td>
             ${printTab==="neu" && probs[inv.id].d.some(x=>x.code==="ab") ? `<td style="font-size:12.5px;max-width:460px;">
@@ -5304,7 +5339,17 @@ async function openPrintPreview(invs){
   // alle Rechnungen parallel laden (max. 3 gleichzeitig), Reihenfolge bleibt wie markiert
   let done = 0, okCount = 0;
   const failed = [];
+  const pdfKeyOf = inv => inv.pdfId ? inv.pdfId + "|" + (inv.pdfPages||[]).join(",") : "";
+  const firstOfKey = {};
+  invs.forEach(inv => { const k = pdfKeyOf(inv); if(k && !firstOfKey[k]) firstOfKey[k] = inv.id; });
   const loadOne = async (inv)=>{
+    const k = pdfKeyOf(inv);
+    if(k && firstOfKey[k] !== inv.id){
+      document.getElementById("pbody-"+inv.id).innerHTML = "";
+      document.getElementById("pmsg-"+inv.id).textContent = "– Teil derselben Sammelrechnung, wird mit dem 1. Teil gedruckt";
+      const st0 = document.getElementById("pst-"+inv.id); st0.textContent = "✓"; st0.className = "pst ok";
+      done++; return;
+    }
     const body = document.getElementById("pbody-"+inv.id);
     const msg = document.getElementById("pmsg-"+inv.id);
     const st = document.getElementById("pst-"+inv.id);
@@ -5347,7 +5392,8 @@ async function openPrintPreview(invs){
   });
   document.getElementById("ppPrint").addEventListener("click", ()=>{
     window.print();
-    const printed = invs.filter(inv => pagesEl.querySelector(`.ppage[data-inv="${inv.id}"]`));
+    const printedIds = new Set(invs.filter(inv => pagesEl.querySelector(`.ppage[data-inv="${inv.id}"]`)).map(i=>i.id));
+    const printed = invs.filter(inv => printedIds.has(inv.id) || (pdfKeyOf(inv) && printedIds.has(firstOfKey[pdfKeyOf(inv)])));
     setTimeout(async ()=>{
       if(!confirm(`Wurden alle ${printed.length} Rechnung(en) korrekt gedruckt?\n\nOK = als „Gedruckt“ ablegen und die gespeicherten PDFs löschen.`)) return;
       const stamp = new Date().toLocaleString("de-CH");
