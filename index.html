@@ -57,6 +57,51 @@
       return ref.id;
     },
   };
+  // Lese-Bruecke zu den Planungs-Apps (PE-KALENDER alle Gruppen + Montage Manager): Kunde, Adresse, Auftragsnr.
+  const EXT_SOURCES = [
+    { key: "kalender", label: "PE-Kalender",
+      config: { apiKey: "AIzaSyDStnUEu9A7reQUXBhVz5CrXxkmY4n2nOk", authDomain: "pe-kalender-alle-gruppen.firebaseapp.com", projectId: "pe-kalender-alle-gruppen", storageBucket: "pe-kalender-alle-gruppen.firebasestorage.app", messagingSenderId: "993655186874", appId: "1:993655186874:web:068a06ce160cd611e1e983" },
+      login: { email: "zugang@pe-intern.local", password: "PE-Zugang-3161x" } },
+    { key: "montage", label: "Montage Manager",
+      config: { apiKey: "AIzaSyD25cVhiguQKP4PTD8evGI4CxSh7rglbBs", authDomain: "montage-pe-a5f79.firebaseapp.com", projectId: "montage-pe-a5f79", storageBucket: "montage-pe-a5f79.firebasestorage.app", messagingSenderId: "588324363042", appId: "1:588324363042:web:c544a07261f62de427237b" },
+      login: { email: "zugang-montage@pe-intern.local", password: "PE-Zugang-3161m" } },
+  ];
+  const extApps = {};
+  async function extDb(src){
+    if(!extApps[src.key]){
+      const app = initializeApp(src.config, "ext-" + src.key);
+      const a = getAuth(app);
+      await signInWithEmailAndPassword(a, src.login.email, src.login.password);
+      extApps[src.key] = getFirestore(app);
+    }
+    return extApps[src.key];
+  }
+  window.extern = {
+    // liefert flache Liste: { quelle, team, kunde, adresse, auftragsNr, memo, datum, bis, typ, erledigt }
+    async loadAll(){
+      const out = [], errors = [];
+      const map = (quelle, team, e) => ({ quelle, team: team || "", kunde: e.customer || e.kunde || "", adresse: e.address || e.adresse || "", auftragsNr: e.auftragsNr || "", memo: e.memo || "", datum: e.deliveryDate || "", bis: e.endDate || "", typ: e.entryType || "", erledigt: !!(e.isDone || e.doneAt) });
+      for(const src of EXT_SOURCES){
+        try{
+          const d = await extDb(src);
+          if(src.key === "kalender"){
+            const teams = await getDocs(collection(d, "teams_config"));
+            await Promise.all(teams.docs.map(async t => {
+              const snap = await getDocs(collection(d, "teams_cal_" + t.id));
+              const tn = (t.data() || {}).name || t.id;
+              snap.docs.forEach(x => out.push(map(src.label, tn, x.data() || {})));
+            }));
+          } else {
+            const base = ["artifacts", "montage-pe-a5f79", "public", "data"];
+            for(const c of ["calentries", "standby_items"]){
+              try{ const snap = await getDocs(collection(d, ...base, c)); snap.docs.forEach(x => out.push(map(src.label, c === "standby_items" ? "Standby" : "Montage", x.data() || {}))); }catch(e){ errors.push(src.label + "/" + c + ": " + e.message); }
+            }
+          }
+        }catch(e){ errors.push(src.label + ": " + e.message); }
+      }
+      return { entries: out, errors };
+    }
+  };
   window.dispatchEvent(new CustomEvent("fb-ready"));
 </script>
 <style>
@@ -241,6 +286,11 @@
   .ptabs .tab .tdot{display:inline-block;margin:0 0 0 6px;}
   details.help{font-size:12.5px;color:var(--text-dim);margin:8px 0 0 0;}
   details.help summary{cursor:pointer;color:var(--accent);font-weight:600;}
+  .extline{font-size:11.5px;color:#3d5a8a;margin-top:2px;line-height:1.35;}
+  .assibox{margin-top:12px;padding:10px;border:1px dashed #b9c6e0;border-radius:8px;background:#f6f8fd;}
+  .assibox textarea{flex:1;min-height:42px;font:inherit;font-size:13px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;resize:vertical;}
+  .assiresp{margin-top:8px;font-size:13px;}
+  .assiresp ul{margin:6px 0 8px 0;padding-left:20px;}
   .audit{font-size:12px;color:var(--text-dim);margin-top:12px;padding:8px 10px;background:var(--surface);border-radius:6px;line-height:1.5;}
   .audit details summary{cursor:pointer;color:var(--accent);font-weight:600;margin-top:4px;}
   .audit ul{margin:6px 0 0 0;padding-left:18px;}
@@ -663,6 +713,7 @@ const FIELD_LABELS = {
   auftragsnummer:"Auftragsnr.", filename:"Datei", bildSeiten:"Original",
   name:"Name", address:"Adresse", abs:"AB", soll:"Soll-Mengen", haeuser:"Häuser", notDup:"Duplikat-Markierung",
   tarife:"Preise", aliases:"Aliase", kontakt:"Kontakt", email:"E-Mail", notizen:"Notizen", rnrMuster:"Rechnungsnr.-Erkennung",
+  quittiert:"Befund quittiert", ausmass:"Ausmassblätter", assistentLog:"Assistent", ohneAB:"„Keine AB“",
   tolPreisProzent:"Toleranz", tolPreisCHF:"Toleranz", mengenTolProzent:"Toleranz", ausreisserFaktor:"Ausreisser", ausreisserMinCHF:"Ausreisser",
 };
 const shadows = { invoices:{}, projects:{}, subunternehmer:{}, einstellungen:{} };
@@ -2133,6 +2184,7 @@ function renderSuppliers(){
         <div>
           <div class="pname">🏢 ${escapeHtml(name)}</div>
           <div class="paddr">${projectIds.size} Auftrag/Aufträge · ${invs.length} Rechnung(en)</div>
+          ${extLine(extFor(null, p), true)}
           <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
         </div>
         <div class="pmeta">
@@ -2280,6 +2332,7 @@ function renderSupplierDetail(name){
 }
 
 function renderProjects(){
+  loadExtern();
   if(!DB.projects.length){
     mainEl.innerHTML = `
       <h1>Aufträge</h1>
@@ -2331,11 +2384,12 @@ function renderProjects(){
     const myTodos = allTodos.filter(t=>t.projectId===p.id || t.otherId===p.id);
     const houses = projectHouses(p);
     return `
-      <div class="proj-list-item" data-id="${p.id}" data-search="${escapeAttr((p.name+" "+(p.address||"")+" "+houses.join(" ")).toLowerCase())}">
+      <div class="proj-list-item" data-id="${p.id}" data-search="${escapeAttr((p.name+" "+(p.address||"")+" "+(p.auftragsnummer||"")+" "+(p.abs||[]).map(a=>a.nr+" "+a.anr).join(" ")+" "+houses.join(" ")+" "+extSearchText(null, p)).toLowerCase())}">
         <div style="min-width:0;">
           <div class="pname">${escapeHtml(p.name)}</div>
           ${houses.length ? `<div>${houses.map(h=>`<span class="hchip ${houseNeedsAB(p,h)?"bad":"ok"}">${escapeHtml(h)} ${houseNeedsAB(p,h)?"✗ AB":"✓ AB"}</span>`).join("")}</div>` : ""}
           <div class="paddr">${escapeHtml(p.address||"—")} ${p.auftragsnummer?`· Auftragsnr. ${escapeHtml(p.auftragsnummer)}`:""}</div>
+          ${extLine(extFor(null, p), true)}
           <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
         </div>
         <div class="pmeta">
@@ -2598,6 +2652,7 @@ function splitBeplankungRow(r, p, haus, invs, ab){
 }
 
 function renderProjectDetail(projectId){
+  loadExtern();
   const p = DB.projects.find(x=>x.id===projectId);
   if(!p){ currentView="projects"; render(); return; }
   const invs = DB.invoices.filter(i=>i.projectId===p.id).sort((a,b)=> (parseDateCH(a.datum)||0) - (parseDateCH(b.datum)||0));
@@ -2630,6 +2685,7 @@ function renderProjectDetail(projectId){
         <div class="muted" style="font-size:13px;">${escapeHtml(p.address && p.address!==p.name ? p.address : "")}${p.auftragsnummer ? ` · Auftragsnr. ${escapeHtml(p.auftragsnummer)}` : ""}
           ${abs.length ? `<span class="pill neutral" style="margin-left:6px;">📑 AB vorhanden</span>` : abMissing ? `<span class="pill warn" style="margin-left:6px;">AB fehlt</span>` : `<span class="pill neutral" style="margin-left:6px;">ohne AB ✓</span>`}
           ${houses.map(h=>`<span class="hchip ${houseNeedsAB(p,h)?"bad":"ok"}">${escapeHtml(h)}</span>`).join("")}
+          ${extFor(null, p).length ? `<div style="margin-top:4px;font-size:12.5px;">📅 <b>Aus Kalender/Montage:</b> ${extLine(extFor(null, p), false).replace('class="extline"','class="extline" style="display:inline;font-size:12.5px;"')}</div>` : ""}
         </div>
       </div>
       <button class="small" id="shareProjBtn">📤 Auftrag teilen</button>
@@ -3033,6 +3089,7 @@ function renderInvoices(){
   const keyOf = {}; DB.invoices.forEach(i => keyOf[i.id] = invStatusKey(i));
   const dnum = s => { const d = parseDateCH(s); return d ? d.getTime() : 0; };
   const cnt = k => DB.invoices.filter(i=>keyOf[i.id]===k).length;
+  loadExtern();
   const sorted = DB.invoices.slice()
     .filter(i => invFilter==="alle" || keyOf[i.id]===invFilter)
     .sort((a,b)=> (INV_STATUS_ORDER[keyOf[a.id]] - INV_STATUS_ORDER[keyOf[b.id]]) || (dnum(b.datum) - dnum(a.datum)));
@@ -3059,7 +3116,7 @@ function renderInvoices(){
             return `<tr data-search="${escapeAttr(search)}" class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.lieferant||"—")}</td>
-              <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}${extLine(extFor(inv, p), true)}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}" data-openinv="${inv.id}">${findingsPill(inv)}</td>
@@ -3714,9 +3771,11 @@ function checkInvoice(inv){
     const refObj = inv.objekt || (pr && pr.name) || "";
     const tok = s => String(s||"").toLowerCase().replace(/strasse/g,"str").split(/[^a-zäöü0-9]+/).filter(w => w.length >= 3 && !/^(haus|block|str)$/.test(w));
     const refT = new Set(tok(refObj + " " + (pr ? (pr.address||"") : "")));
-    const fremd = inv.ausmass.filter(s => s.objekt && tok(s.objekt).length && !tok(s.objekt).some(w => refT.has(w)));
+    const fremd = inv.ausmass.filter(s => !s.bestaetigt && s.objekt && tok(s.objekt).length && !tok(s.objekt).some(w => refT.has(w)));
+    const ok = inv.ausmass.filter(s => s.bestaetigt);
+    if(ok.length) f.push({ level:"ok", text:`Ausmassblatt ${ok.map(s=>s.nr).join(" + ")} bestätigt${ok[0].notiz ? ": " + ok[0].notiz : ""}${ok[0].von ? " (" + ok[0].von + ")" : ""}.` });
     if(fremd.length) f.push({ level:"danger", text:`Ausmassblatt ${fremd.map(s=>s.nr).join(" + ")} gehört zu einem anderen Objekt: „${fremd[0].objekt}“${fremd.some(s=>s.m3!=null) ? ` (${fmtQty(fremd.reduce((a,s)=>a+(s.m3||0),0))} m³)` : ""} – die Rechnung lautet auf „${refObj}“.` });
-    const hs = Array.from(new Set(inv.ausmass.map(s=>s.haus).filter(Boolean)));
+    const hs = Array.from(new Set(inv.ausmass.filter(s=>!s.bestaetigt).map(s=>s.haus).filter(Boolean)));
     if(inv.haus && hs.some(h => normHaus(h) !== normHaus(inv.haus))) f.push({ level:"warn", text:`Ausmassblätter für ${hs.join(", ")} – die Rechnung lautet auf ${inv.haus}.` });
     f.push({ level:"info", text:`Ausmassblätter: ${inv.ausmass.map(s => `Nr. ${s.nr}${s.objekt ? " " + s.objekt : ""}${s.haus ? " (" + s.haus + ")" : ""}${s.m3!=null ? ": " + fmtQty(s.m3) + " m³" : ""}`).join(" · ")}` });
   }
@@ -3843,8 +3902,13 @@ function checkInvoice(inv){
     });
     if(!abs.length && !ohneAB) f.push({ level:"danger", code:"ab", text:"AB fehlt – bitte die Auftragsbestätigung hochladen oder „Keine AB vorhanden“ bestätigen." });
   }
+  // Vom Assistenten / Benutzer quittierte Befunde: bleiben sichtbar, zaehlen aber nicht mehr als Fehler
+  (inv.quittiert||[]).forEach(q => f.forEach(x => {
+    if((x.level==="danger" || x.level==="warn") && findingKey(x.text).startsWith(q.key)){ x.level = "ok"; x.text += ` – quittiert: ${q.notiz || "geklärt"}${q.von ? " (" + q.von + ")" : ""}`; }
+  }));
   return f;
 }
+function findingKey(t){ return String(t||"").toLowerCase().replace(/[\d'’.,]+/g,"#").replace(/\s+/g," ").trim().slice(0, 45); }
 
 const FD_ICON = { danger:"✗", warn:"⚠", info:"ℹ", ok:"✓" };
 function findingsHtml(f){
@@ -3894,6 +3958,197 @@ function beanstandungText(inv){
   ].join("\n");
 }
 
+/* ============================= AUFTRAGSVERZEICHNIS AUS KALENDER / MONTAGE ============================= */
+let EXT = { entries: [], loaded: false, loading: false, at: null, errors: [] };
+const extDigits = s => String(s||"").replace(/\/[A-Za-z]{1,5}\s*$/,"").replace(/\D/g,"");
+async function loadExtern(force){
+  if(!window.extern || EXT.loading) return;
+  if(!force && EXT.at && Date.now() - EXT.at < (EXT.loaded ? 10*60*1000 : 60*1000)) return;
+  EXT.loading = true;
+  try{
+    const r = await window.extern.loadAll();
+    // gleiche Auftragsnr. aus mehreren Quellen zusammenfassen
+    const by = new Map();
+    r.entries.forEach(e => {
+      const k = extDigits(e.auftragsNr) || ("adr:" + String(e.adresse||"").toLowerCase().trim());
+      if(k === "adr:") return;
+      const cur = by.get(k);
+      if(!cur) by.set(k, { ...e, nr: extDigits(e.auftragsNr), quellen: [e.quelle], teams: e.team ? [e.team] : [], termine: e.datum ? [e.datum] : [] });
+      else {
+        if(!cur.quellen.includes(e.quelle)) cur.quellen.push(e.quelle);
+        if(e.team && !cur.teams.includes(e.team)) cur.teams.push(e.team);
+        if(e.datum && !cur.termine.includes(e.datum)) cur.termine.push(e.datum);
+        if(!cur.kunde && e.kunde) cur.kunde = e.kunde;
+        if(!cur.adresse && e.adresse) cur.adresse = e.adresse;
+      }
+    });
+    EXT = { entries: Array.from(by.values()), loaded: true, loading: false, at: Date.now(), errors: r.errors };
+    const view = currentView;
+    if(["check","invoices","projects","projectDetail","settings"].includes(view)) render();
+  }catch(e){ console.warn("Kalender-Verbindung:", e); EXT.loading = false; EXT.at = Date.now(); EXT.errors = [String(e.message||e)]; }
+}
+// passende Kalender-/Montage-Eintraege zu einer Rechnung oder einem Auftrag
+function extFor(inv, p){
+  if(!EXT.entries.length) return [];
+  p = p || (inv ? DB.projects.find(x=>x.id===inv.projectId) : null);
+  const nums = new Set([inv && inv.auftragsnummer, p && p.auftragsnummer, ...((p && p.abs) || []).flatMap(a=>[a.nr, a.anr])].map(extDigits).filter(x => x.length >= 6));
+  let hits = EXT.entries.filter(e => e.nr && (nums.has(e.nr) || [...nums].some(n => n.length >= 8 && (e.nr.endsWith(n) || n.endsWith(e.nr)))));
+  if(!hits.length){
+    const adr = (inv && inv.objekt) || (p && (p.address || p.name)) || "";
+    if(adr){
+      const fake = { name: adr, address: adr };
+      hits = EXT.entries.filter(e => e.adresse && projectAddrScore(e.adresse, fake) >= 2);
+    }
+  }
+  return hits.slice(0, 3);
+}
+function extLine(hits, compact){
+  if(!hits || !hits.length) return "";
+  const e = hits[0];
+  const termin = (e.termine||[]).filter(Boolean).sort().slice(-1)[0];
+  const parts = [
+    e.kunde ? `👤 ${escapeHtml(e.kunde)}` : "",
+    e.adresse ? `📍 ${escapeHtml(e.adresse)}` : "",
+    e.auftragsNr ? `# ${escapeHtml(e.auftragsNr)}` : "",
+    !compact && e.teams.length ? `👷 ${escapeHtml(e.teams.join(", "))}` : "",
+    !compact && termin ? `📅 ${escapeHtml(termin.split("-").reverse().join("."))}` : "",
+  ].filter(Boolean);
+  return `<div class="extline" title="Aus ${escapeAttr(e.quellen.join(" + "))}${hits.length > 1 ? " (+" + (hits.length-1) + " weitere)" : ""}">${parts.join(" · ")}</div>`;
+}
+function extSearchText(inv, p){ return extFor(inv, p).map(e => [e.kunde, e.adresse, e.auftragsNr, e.memo, (e.teams||[]).join(" ")].join(" ")).join(" "); }
+
+/* ============================= ASSISTENT (Text-Befehle pro Rechnung) ============================= */
+const ASSI_MODEL = "claude-sonnet-5-5";
+function assiKey(){ try{ return localStorage.getItem("pe_assistent_key") || ""; }catch(e){ return ""; } }
+function assiContext(inv){
+  const p = DB.projects.find(x=>x.id===inv.projectId);
+  return {
+    rechnung: { lieferant: inv.lieferant, rechnungsnr: inv.rechnungsnr, datum: inv.datum, total: inv.total, objekt: inv.objekt, haus: inv.haus, auftragsnummer: inv.auftragsnummer, bezahltAm: inv.bezahltAm||"", status: (inv.pruefung&&inv.pruefung.status)||"offen", keineAB: !!inv.ohneAB },
+    auftrag: p ? { name: p.name, haeuser: projectHouses(p), abs: (p.abs||[]).map(a=>({ nr:a.nr, anr:a.anr, haus:a.haus||"ganzes Objekt", nachtrag: !!a.nachtrag })) } : null,
+    positionen: (inv.items||[]).map(it=>({ id: it.id, kategorie: it.category, text: it.label, menge: it.menge, einheit: it.einheit, ep: it.ep, betrag: it.preis, weiterVerrechnen: !!it.weiterVerrechnen })),
+    kategorien: (DB.categories||DEFAULT_CATEGORIES).map(c=>c.key),
+    ausmassblaetter: (inv.ausmass||[]).map(s=>({ nr: s.nr, objekt: s.objekt, haus: s.haus, m3: s.m3, fr: s.fr, bestaetigt: !!s.bestaetigt })),
+    befunde: checkInvoice(inv).filter(x=>x.level==="danger"||x.level==="warn").map((x,i)=>({ index: i, stufe: x.level==="danger" ? "Fehler" : "Hinweis", text: x.text })),
+    auftraege: DB.projects.map(x=>x.name).slice(0, 300),
+  };
+}
+const ASSI_SYSTEM = `Du bist der Assistent der PE Rechnungskontrolle (Subunternehmer-Rechnungen prüfen). Der Benutzer beschreibt auf Deutsch, was bei EINER Rechnung zu korrigieren oder zu klären ist. Du bekommst die Rechnung als JSON (Felder, Positionen, Ausmassblätter, Befunde).
+Antworte NUR mit JSON, ohne Text davor/danach:
+{"verstanden":"kurze Zusammenfassung auf Deutsch, was du tust","aktionen":[...]}
+Erlaubte Aktionen (nur diese, nur was der Benutzer verlangt):
+{"typ":"feld","feld":"rechnungsnr|datum|total|objekt|haus|auftragsnummer|bezahltAm","wert":"..."}   (datum TT.MM.JJJJ, bezahltAm JJJJ-MM-TT, total als Zahl)
+{"typ":"position","id":"<positions-id>","kategorie":"...","menge":0,"einheit":"...","ep":0,"betrag":0,"weiterVerrechnen":true}   (nur geänderte Felder angeben)
+{"typ":"position_neu","kategorie":"...","text":"...","menge":0,"einheit":"...","ep":0,"betrag":0}
+{"typ":"position_loeschen","id":"<positions-id>"}
+{"typ":"ausmass_bestaetigen","blaetter":["2","3"],"notiz":"Grund"}   (Ausmassblatt gehört doch zu dieser Rechnung, z.B. nur falsch angeschrieben)
+{"typ":"befund_quittieren","index":0,"notiz":"Grund"}   (Befund ist geklärt/in Ordnung)
+{"typ":"status","wert":"ok|beanstandet|offen","kommentar":"..."}
+{"typ":"keine_ab","wert":true}
+{"typ":"auftrag","name":"<exakter Name aus auftraege>"}
+{"typ":"kommentar","text":"..."}
+Ändere nichts, was der Benutzer nicht verlangt. Wenn unklar, gib "aktionen":[] zurück und frage in "verstanden" nach.`;
+async function assiAskClaude(inv, text){
+  const key = assiKey();
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "content-type":"application/json", "x-api-key": key, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
+    body: JSON.stringify({ model: ASSI_MODEL, max_tokens: 1500, system: ASSI_SYSTEM,
+      messages: [{ role:"user", content: `Rechnung:\n${JSON.stringify(assiContext(inv))}\n\nAnweisung des Benutzers:\n${text}` }] }),
+  });
+  if(!res.ok){ const t = await res.text(); throw new Error(`Assistent nicht erreichbar (${res.status}). ${t.slice(0,160)}`); }
+  const data = await res.json();
+  const out = (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n").replace(/```json|```/g,"").trim();
+  const j = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}")+1));
+  return { verstanden: j.verstanden || "", aktionen: Array.isArray(j.aktionen) ? j.aktionen : [] };
+}
+// Ohne API-Schluessel: einfache Befehle direkt verstehen
+function assiLocal(inv, text){
+  const t = text.toLowerCase(), a = [];
+  const bl = t.match(/bl(?:a|ä)tt(?:er)?\s*((?:\d+\s*(?:\+|,|und|&)?\s*)+)/);
+  if(bl && /(korrekt|richtig|stimm|in ordnung|ok\b|gehör|passt|falsch angeschrieben|falsche[nr]? (objekt)?adresse)/.test(t)) a.push({ typ:"ausmass_bestaetigen", blaetter: bl[1].match(/\d+/g), notiz: text.slice(0,120) });
+  const hm = text.match(/\bhaus\s+([A-Za-z]?\d{0,3}[A-Za-z]?)\b/i);
+  if(hm && /(ist|auf|gehört|richtig|korrekt|setz)/i.test(text) && !bl) a.push({ typ:"feld", feld:"haus", wert:"Haus " + hm[1] });
+  if(/keine ab\b/.test(t)) a.push({ typ:"keine_ab", wert:true });
+  if(/weiter\s*verrechnen/.test(t)) (inv.items||[]).filter(x=>x.category==="Regie").forEach(x=>a.push({ typ:"position", id:x.id, weiterVerrechnen:true }));
+  if(/\bfreigeben\b|\bfreigabe\b/.test(t)) a.push({ typ:"status", wert:"ok", kommentar: text.slice(0,120) });
+  else if(/beanstand/.test(t)) a.push({ typ:"status", wert:"beanstandet", kommentar: text.slice(0,160) });
+  return { verstanden: a.length ? "Einfache Befehle erkannt (ohne KI)." : "Das kann ich ohne KI-Schlüssel nicht verstehen. Einfache Befehle: „Blatt 2+3 sind korrekt“, „Haus B“, „keine AB“, „freigeben“, „beanstanden …“, „weiter verrechnen“. Für freie Texte unter Preise & Einstellungen den Assistenten-Schlüssel eintragen.", aktionen: a };
+}
+function assiDescribe(inv, x){
+  const it = id => (inv.items||[]).find(i=>i.id===id);
+  switch(x.typ){
+    case "feld": return `${FIELD_LABELS[x.feld]||x.feld}: „${inv[x.feld] ?? ""}“ → „${x.wert}“`;
+    case "position": { const i = it(x.id); return `Position „${i ? displayLabel(i.label) : x.id}“: ` + Object.entries(x).filter(([k])=>!["typ","id"].includes(k)).map(([k,v])=>`${k} = ${v}`).join(", "); }
+    case "position_neu": return `Neue Position: ${x.kategorie} ${x.menge ?? ""} ${x.einheit ?? ""} „${x.text||""}“ CHF ${x.betrag ?? "–"}`;
+    case "position_loeschen": { const i = it(x.id); return `Position löschen: „${i ? displayLabel(i.label) : x.id}“`; }
+    case "ausmass_bestaetigen": return `Ausmassblatt ${(x.blaetter||[]).join(" + ")} als zu dieser Rechnung gehörend bestätigen${x.notiz ? " – " + x.notiz : ""}`;
+    case "befund_quittieren": { const b = checkInvoice(inv).filter(y=>y.level==="danger"||y.level==="warn")[x.index]; return `Befund quittieren: „${b ? shortText(b.text, 90) : "#" + x.index}“${x.notiz ? " – " + x.notiz : ""}`; }
+    case "status": return `Status: ${x.wert==="ok" ? "freigeben" : x.wert}${x.kommentar ? " – " + x.kommentar : ""}`;
+    case "keine_ab": return x.wert ? "„Keine AB vorhanden“ bestätigen" : "„Keine AB“ aufheben";
+    case "auftrag": return `Anderem Auftrag zuordnen: „${x.name}“`;
+    case "kommentar": return `Kommentar: „${x.text}“`;
+    default: return `(unbekannte Aktion ${x.typ} – wird ignoriert)`;
+  }
+}
+async function assiApply(inv, aktionen, befehl){
+  const who = `${initialsFor(currentUser.email)} ${shortDate(new Date())}`;
+  const befunde = checkInvoice(inv).filter(y=>y.level==="danger"||y.level==="warn");
+  for(const x of aktionen){
+    if(x.typ==="feld" && ["rechnungsnr","datum","total","objekt","haus","auftragsnummer","bezahltAm"].includes(x.feld)){
+      inv[x.feld] = x.feld==="total" ? num(x.wert) : x.feld==="haus" ? normHaus(x.wert) : String(x.wert);
+    } else if(x.typ==="position"){
+      const i = (inv.items||[]).find(y=>y.id===x.id); if(!i) continue;
+      if(x.kategorie) i.category = x.kategorie;
+      ["menge","ep"].forEach(k=>{ if(x[k]!==undefined) i[k] = num(x[k]); });
+      if(x.betrag!==undefined) i.preis = num(x.betrag);
+      if(x.einheit) i.einheit = x.einheit;
+      if(x.weiterVerrechnen!==undefined) i.weiterVerrechnen = !!x.weiterVerrechnen;
+    } else if(x.typ==="position_neu"){
+      inv.items = (inv.items||[]).concat([{ id: uid("it"), category: x.kategorie || "Sonstiges", label: x.text || "Position (Assistent)", menge: num(x.menge), einheit: x.einheit || "", ep: num(x.ep), preis: num(x.betrag) }]);
+    } else if(x.typ==="position_loeschen"){
+      inv.items = (inv.items||[]).filter(y=>y.id!==x.id);
+    } else if(x.typ==="ausmass_bestaetigen"){
+      const nrs = (x.blaetter||[]).map(String);
+      (inv.ausmass||[]).forEach(s => { if(nrs.includes(String(s.nr))){ s.bestaetigt = true; s.notiz = x.notiz || "bestätigt"; s.von = who; } });
+    } else if(x.typ==="befund_quittieren"){
+      const b = befunde[x.index]; if(!b) continue;
+      inv.quittiert = (inv.quittiert||[]).concat([{ key: findingKey(b.text), notiz: x.notiz || "geklärt", von: who }]);
+    } else if(x.typ==="status" && ["ok","beanstandet","offen"].includes(x.wert)){
+      inv.pruefung = { status: x.wert, kommentar: x.kommentar || (inv.pruefung && inv.pruefung.kommentar) || "", by: currentUser.email, at: new Date().toLocaleString("de-CH"), ...(x.wert==="ok" ? freigabeVermerk() : {}) };
+    } else if(x.typ==="keine_ab"){
+      inv.ohneAB = !!x.wert; inv.ohneABvon = x.wert ? who : "";
+    } else if(x.typ==="auftrag"){
+      const p = DB.projects.find(y=>y.name===x.name); if(p) inv.projectId = p.id;
+    } else if(x.typ==="kommentar"){
+      inv.pruefung = { ...(inv.pruefung || { status:"offen" }), kommentar: x.text };
+    }
+  }
+  inv.assistentLog = (inv.assistentLog||[]).concat([{ am: new Date().toLocaleString("de-CH"), von: currentUser.email, befehl: String(befehl).slice(0,300) }]).slice(-20);
+  await saveInvoice(inv);
+}
+function wireAssistent(el, getInv, rerender){
+  const box = el.querySelector("[data-assi]"); if(!box) return;
+  const inp = box.querySelector("textarea"), out = box.querySelector(".assiout"), btn = box.querySelector("[data-assisend]");
+  const run = async ()=>{
+    const inv = getInv(); const text = inp.value.trim(); if(!inv || !text) return;
+    btn.disabled = true; out.innerHTML = `<div class="muted">⏳ Assistent denkt nach…</div>`;
+    let r;
+    try{ r = assiKey() ? await assiAskClaude(inv, text) : assiLocal(inv, text); }
+    catch(err){ console.error(err); r = assiLocal(inv, text); r.verstanden = `⚠ ${escapeHtml(err.message||String(err))} – einfache Befehle wurden lokal ausgewertet. ` + r.verstanden; }
+    btn.disabled = false;
+    const acts = r.aktionen.filter(x => x && x.typ);
+    out.innerHTML = `<div class="assiresp"><div>🤖 ${escapeHtml(r.verstanden)}</div>
+      ${acts.length ? `<ul>${acts.map(x=>`<li>${escapeHtml(assiDescribe(inv, x))}</li>`).join("")}</ul>
+      <div style="display:flex;gap:6px;"><button class="small primary" data-assiok>✓ Ausführen</button><button class="small" data-assino>Verwerfen</button></div>` : ""}</div>`;
+    const ok = out.querySelector("[data-assiok]");
+    if(ok) ok.addEventListener("click", async ()=>{ const i = getInv(); if(!i) return; await assiApply(i, acts, text); toast("Erledigt – Änderungen gespeichert."); inp.value = ""; rerender(); });
+    const no = out.querySelector("[data-assino]");
+    if(no) no.addEventListener("click", ()=>{ out.innerHTML = ""; });
+  };
+  btn.addEventListener("click", run);
+  inp.addEventListener("keydown", e=>{ if(e.key==="Enter" && (e.ctrlKey || e.metaKey)) run(); });
+}
+
 function renderPruefPanel(el, getInv){
   const inv = getInv(); if(!inv || !el) return;
   const st = (inv.pruefung && inv.pruefung.status) || "offen";
@@ -3904,6 +4159,14 @@ function renderPruefPanel(el, getInv){
         <span class="muted" style="margin-left:auto;font-size:11.5px;">${st!=="offen" && inv.pruefung && inv.pruefung.by ? `Status von ${escapeHtml(inv.pruefung.by)}${inv.pruefung.at?" · "+escapeHtml(inv.pruefung.at):""}` : ""}</span>
       </div>
       ${findingsHtml(f)}
+      <div class="assibox" data-assi>
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <textarea rows="2" placeholder="🤖 Assistent: z.B. „Blatt 2+3 vom Ausmass sind nur mit falscher Objektadresse angeschrieben, gehören aber zu dieser Rechnung“ (Ctrl+Enter)"></textarea>
+          <button class="small primary" data-assisend style="white-space:nowrap;">Senden</button>
+        </div>
+        <div class="assiout"></div>
+        ${(inv.assistentLog||[]).length ? `<details style="margin-top:4px;"><summary class="muted" style="font-size:11.5px;cursor:pointer;">Bisherige Anweisungen (${inv.assistentLog.length})</summary><ul style="font-size:12px;margin:4px 0 0 0;padding-left:18px;">${inv.assistentLog.slice().reverse().map(e=>`<li><b>${escapeHtml(e.am)}</b> – ${escapeHtml(nameFromEmail(e.von))}: ${escapeHtml(e.befehl)}</li>`).join("")}</ul></details>` : ""}
+      </div>
       <div class="row" style="margin-top:12px;align-items:flex-end;flex-wrap:wrap;">
         <label class="field" style="flex:3;min-width:220px;margin:0;"><span>Kommentar zur Prüfung</span>
           <input type="text" data-pk value="${escapeAttr((inv.pruefung && inv.pruefung.kommentar)||"")}" placeholder="z.B. Gutschrift verlangt am …"></label>
@@ -3939,6 +4202,11 @@ function renderPruefPanel(el, getInv){
     });
   });
   wireDupButtons(el);
+  wireAssistent(el, getInv, ()=>{
+    renderPruefPanel(el, getInv);
+    const tbl = el.parentElement && el.parentElement.querySelector(".itemsSlot");
+    if(tbl) renderItemsTable(tbl, getInv, ()=>renderPruefPanel(el, getInv));
+  });
   const wva = el.querySelector("[data-wvall]");
   if(wva) wva.addEventListener("click", async ()=>{
     const i = getInv(); if(!i) return;
@@ -4302,6 +4570,17 @@ function renderSettings(){
         </div>`;
       }).join("") : `<div class="empty">Noch keine Subunternehmer. Lege einen an oder lade eine Rechnung hoch.</div>`}
     </div>`;
+  loadExtern();
+  mainEl.insertAdjacentHTML("beforeend", `<div class="card"><h2>📅 Verbindung zu PE-Kalender &amp; Montage Manager</h2>
+    <p class="muted" style="font-size:12.5px;">Kunde, Objektadresse, Auftragsnr., Team und Termin werden (nur lesend) aus den Planungs-Apps geholt und bei Rechnungen und Aufträgen angezeigt. Die Suche findet Rechnungen auch über den Kundennamen.</p>
+    <div style="font-size:13px;">${EXT.loading ? "⏳ wird geladen…" : EXT.loaded ? `✓ ${EXT.entries.length} Aufträge geladen (${new Date(EXT.at).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit"})})` : "noch nicht geladen"}${EXT.errors.length ? `<div class="flag" style="font-size:12px;">${escapeHtml(EXT.errors.join(" · "))}</div>` : ""}</div>
+    <button class="small" id="extReload" style="margin-top:8px;">↻ Jetzt neu laden</button></div>`);
+  document.getElementById("extReload").addEventListener("click", ()=>{ loadExtern(true); toast("Wird geladen…"); });
+  mainEl.insertAdjacentHTML("beforeend", `<div class="card"><h2>🤖 Assistent (freie Text-Anweisungen)</h2>
+    <p class="muted" style="font-size:12.5px;">Mit einem Claude-API-Schlüssel versteht der Assistent bei jeder Rechnung freie Sätze, z.B. „Blatt 2+3 sind korrekt, nur falsch angeschrieben“. Der Schlüssel wird <b>nur in diesem Browser</b> gespeichert, nicht in der Datenbank. Ohne Schlüssel versteht er einfache Befehle.</p>
+    <div class="row" style="align-items:flex-end;"><label class="field" style="flex:1;margin:0;"><span>API-Schlüssel (sk-ant-…)</span><input type="password" id="assiKeyInp" value="${escapeAttr(assiKey())}" placeholder="sk-ant-…"></label>
+    <button id="assiKeySave">Speichern</button></div></div>`);
+  document.getElementById("assiKeySave").addEventListener("click", ()=>{ try{ localStorage.setItem("pe_assistent_key", document.getElementById("assiKeyInp").value.trim()); toast("Gespeichert (nur in diesem Browser)."); }catch(e){ toast("Speichern nicht möglich."); } });
   if(isAdmin()){
     mainEl.insertAdjacentHTML("beforeend", `<div class="card" style="border-color:#f3c7c4;"><h2>Gefahrenbereich (nur Admin)</h2><p class="muted" style="font-size:12.5px;">Löscht alle Aufträge und Rechnungen unwiderruflich.</p><button class="danger" id="resetAllProxy">🗑️ Alle Daten löschen</button></div>`);
     document.getElementById("resetAllProxy").addEventListener("click", ()=> document.getElementById("resetAllBtn").click());
@@ -5328,7 +5607,7 @@ let printQuery = "";
 function invSearchText(inv){
   const p = DB.projects.find(x=>x.id===inv.projectId);
   const d = toDateSafe(inv.createdAt);
-  return [inv.lieferant, inv.rechnungsnr, inv.auftragsnummer, inv.datum, inv.haus, inv.objekt, p && p.name, p && p.address, p && p.auftragsnummer,
+  return [extSearchText(inv), inv.lieferant, inv.rechnungsnr, inv.auftragsnummer, inv.datum, inv.haus, inv.objekt, p && p.name, p && p.address, p && p.auftragsnummer,
     inv.total!=null ? formatCHF(+inv.total) : "", inv.total!=null ? String(inv.total) : "",
     d ? d.toLocaleDateString("de-CH") : "", inv.gedrucktAm, inv.gedrucktVon, inv.pruefung && inv.pruefung.kommentar]
     .filter(Boolean).join(" ").toLowerCase();
@@ -5347,6 +5626,7 @@ function renderPrintCenter(){
   const neuProjects = new Set((groups.neu||[]).map(i=>i.projectId));
   const checkTodos = printTab==="neu" ? computeProjectTodos().filter(t => !(t.kind==="ab" && neuProjects.has(t.projectId))) : [];
   const probs = {};
+  loadExtern();
   if(printTab==="neu"){
     list.forEach(inv => { const f = checkInvoice(inv); probs[inv.id] = { d: f.filter(x=>x.level==="danger"), w: f.filter(x=>x.level==="warn") }; });
     list = list.slice().sort((a,b)=> (probs[b.id].d.length*10 + probs[b.id].w.length) - (probs[a.id].d.length*10 + probs[a.id].w.length));
@@ -5406,7 +5686,7 @@ function renderPrintCenter(){
             <td><input type="checkbox" data-psel="${inv.id}" style="width:auto;" ${printSel.has(inv.id)?"checked":""} ${selectable?"":"disabled"}></td>
             <td>${escapeHtml((toDateSafe(inv.createdAt)||new Date()).toLocaleDateString("de-CH"))}</td>
             <td>${escapeHtml(inv.lieferant||"—")}</td>
-            <td style="cursor:pointer;" data-popen="${inv.id}">${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}</td>
+            <td style="cursor:pointer;" data-popen="${inv.id}">${p?escapeHtml(p.name):"—"}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}${extLine(extFor(inv, p), true)}${inv.auftragsnummer && !extFor(inv,p).length ? `<div class="extline"># ${escapeHtml(inv.auftragsnummer)}</div>` : ""}</td>
             <td>${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}</td>
             <td class="num">${inv.total!=null?formatCHF(+inv.total):"—"}</td>
             <td style="cursor:pointer;" data-popen="${inv.id}">${findingsPill(inv)}</td>
