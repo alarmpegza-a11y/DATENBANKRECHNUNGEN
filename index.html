@@ -302,6 +302,9 @@
   .assiinput{display:flex;gap:6px;padding:8px;border-top:1px solid var(--border);}
   .assiinput textarea{flex:1;font:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;resize:none;}
   @media print{ #assiFab, #assiPanel{display:none !important;} }
+  .kalsuche{background:#f6f8fd;border:1px solid #d9e2f2;border-radius:10px;padding:12px;}
+  .kalres{max-height:420px;overflow:auto;margin-top:10px;background:#fff;border-radius:8px;}
+  .kalres table{font-size:12.5px;}
   .extline{font-size:11.5px;color:#3d5a8a;margin-top:2px;line-height:1.35;}
   .assibox{margin-top:12px;padding:10px;border:1px dashed #b9c6e0;border-radius:8px;background:#f6f8fd;}
   .assibox textarea{flex:1;min-height:42px;font:inherit;font-size:13px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;resize:vertical;}
@@ -3059,12 +3062,15 @@ function renderInvoiceEditPanel(panel, invoiceId){
       <div class="section-title">Positionen</div>
       <div class="itemsSlot"></div>
       <div class="pruefSlot" style="margin-top:14px;"></div>
+      <div style="margin-top:10px;"><button class="small primary" data-kalsearch>📅 Auftrag im Kalender suchen / zuordnen</button></div>
       ${inv.rawText ? `<div style="margin-top:10px;"><button class="small" data-reparse title="Liest Positionen und Betrag mit der aktuellen Erkennung neu aus dem gespeicherten Rechnungstext">↻ Positionen &amp; Betrag neu auslesen</button></div>` : ""}
       ${auditHtml(inv)}
       ${inv.rawText ? `<details style="margin-top:10px;"><summary class="muted" style="cursor:pointer;font-size:12px;">Rohtext der Rechnung anzeigen</summary><textarea class="raw" readonly style="width:100%;margin-top:6px;">${escapeHtml(inv.rawText)}</textarea></details>` : ""}
     </div>
   `;
   const pruefSlot = panel.querySelector(".pruefSlot");
+  const ks = panel.querySelector("[data-kalsearch]");
+  if(ks) ks.addEventListener("click", ()=> openKalSucheModal(getInv(), ()=> render()));
   const rp = panel.querySelector("[data-reparse]");
   if(rp) rp.addEventListener("click", async ()=>{
     const i = getInv(); if(!i) return;
@@ -4000,7 +4006,7 @@ async function loadExtern(force){
         if(!cur.adresse && e.adresse) cur.adresse = e.adresse;
       }
     });
-    EXT = { entries: Array.from(by.values()), loaded: true, loading: false, at: Date.now(), errors: r.errors };
+    EXT = { entries: Array.from(by.values()), raw: r.entries, loaded: true, loading: false, at: Date.now(), errors: r.errors };
     const view = currentView;
     if(["check","invoices","projects","projectDetail","settings"].includes(view)) render();
   }catch(e){ console.warn("Kalender-Verbindung:", e); EXT.loading = false; EXT.at = Date.now(); EXT.errors = [String(e.message||e)]; }
@@ -4034,6 +4040,111 @@ function extLine(hits, compact){
   return `<div class="extline" title="Aus ${escapeAttr(e.quellen.join(" + "))}${hits.length > 1 ? " (+" + (hits.length-1) + " weitere)" : ""}">${parts.join(" · ")}</div>`;
 }
 function extSearchText(inv, p){ return extFor(inv, p).map(e => [e.kunde, e.adresse, e.auftragsNr, e.memo, (e.teams||[]).join(" ")].join(" ")).join(" "); }
+
+/* ============================= KALENDER-SUCHE PRO SUBUNTERNEHMER ============================= */
+let KAL = { sub: "", team: "", q: "", open: true };
+function kalTeams(){
+  const m = new Map();
+  (EXT.raw||[]).forEach(e => { const k = e.team || e.quelle; m.set(k, (m.get(k)||0) + 1); });
+  return Array.from(m.entries()).sort((a,b)=>a[0].localeCompare(b[0])).map(([name, n]) => ({ name, n }));
+}
+// Welches Kalender-Team gehoert zu diesem Sub? (gespeicherte Zuordnung, sonst Namensaehnlichkeit)
+function teamForSub(subName){
+  if(!subName) return "";
+  const s = getSubFor(subName);
+  if(s && s.kalenderTeam) return s.kalenderTeam;
+  const toks = tokensT(subName).filter(w => w.length >= 4 && !/^(gmbh|montagen?|element|haustechnik|brandschutz|gipser|bau|und)$/.test(w));
+  const all = (s && s.aliases ? s.aliases : []).flatMap(a => tokensT(a)).filter(w => w.length >= 4);
+  const want = new Set([...toks, ...all]);
+  const hit = kalTeams().find(t => tokensT(t.name).some(w => want.has(w)));
+  return hit ? hit.name : "";
+}
+function kalEntries(){
+  const q = KAL.q.trim();
+  return (EXT.raw||[])
+    .filter(e => !KAL.team || (e.team || e.quelle) === KAL.team)
+    .filter(e => matchesQuery([e.kunde, e.adresse, e.auftragsNr, e.memo, e.team, e.datum].join(" ").toLowerCase(), q.toLowerCase()))
+    .sort((a,b) => String(b.datum||"").localeCompare(String(a.datum||"")));
+}
+function invoicesForEntry(e){
+  const nr = extDigits(e.auftragsNr);
+  return DB.invoices.filter(i => {
+    const p = DB.projects.find(x=>x.id===i.projectId);
+    const nums = [i.auftragsnummer, p && p.auftragsnummer, ...((p && p.abs) || []).flatMap(a=>[a.nr, a.anr])].map(extDigits).filter(x=>x.length>=6);
+    return nr && nums.includes(nr);
+  });
+}
+async function assignEntryToInvoice(inv, e){
+  const nr = String(e.auftragsNr||"").replace(/\/[A-Za-z]{1,5}\s*$/,"").trim();
+  const adr = e.adresse || e.kunde || "";
+  let p = findMatchingProject({ objekt: adr, auftragsnummer: nr });
+  const oldPid = inv.projectId;
+  if(!p){
+    const pid = await createProject({ name: stripHaus(adr) || nr, address: stripHaus(adr), auftragsnummer: nr, soll:{}, haeuser:[] });
+    p = { id: pid };
+  } else if(!p.auftragsnummer && nr){ p.auftragsnummer = nr; await saveProject(p); }
+  inv.projectId = p.id;
+  inv.auftragsnummer = nr || inv.auftragsnummer;
+  if(!inv.objekt || /diverse|schweiz/i.test(inv.objekt)) inv.objekt = adr;
+  await saveInvoice(inv);
+  if(oldPid && oldPid !== p.id) await removeProjectIfEmpty(oldPid);
+  toast(`Zugeordnet: ${adr}${nr ? " · " + nr : ""}`);
+}
+// Baustein: oben Sub waehlen -> dessen Kalender durchsuchen. opts.inv = Rechnung, der man einen Auftrag zuordnen kann
+function renderKalSuche(container, opts){
+  opts = opts || {};
+  loadExtern();
+  if(opts.inv && !KAL._forInv){ KAL.sub = opts.inv.lieferant || ""; KAL.team = teamForSub(KAL.sub); KAL._forInv = opts.inv.id; }
+  const subs = DB.subs.slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const teams = kalTeams();
+  const list = kalEntries();
+  container.innerHTML = `
+    <div class="kalsuche">
+      <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap;">
+        <label class="field" style="margin:0;min-width:200px;flex:1;"><span>Subunternehmer</span>
+          <select data-k="sub"><option value="">– alle –</option>${subs.map(s=>`<option ${s.name===KAL.sub?"selected":""}>${escapeHtml(s.name)}</option>`).join("")}</select></label>
+        <label class="field" style="margin:0;min-width:200px;flex:1;"><span>Kalender / Gruppe</span>
+          <select data-k="team"><option value="">– alle Kalender –</option>${teams.map(t=>`<option value="${escapeAttr(t.name)}" ${t.name===KAL.team?"selected":""}>${escapeHtml(t.name)} (${t.n})</option>`).join("")}</select></label>
+        <label class="field" style="margin:0;flex:2;min-width:240px;"><span>Suchen (Kunde, Adresse, Auftragsnr., Notiz)</span>
+          <input type="text" data-k="q" value="${escapeAttr(KAL.q)}" placeholder="z.B. Sada, Witellikerstrasse, 24123830 …"></label>
+      </div>
+      ${KAL.sub && KAL.team && (getSubFor(KAL.sub)||{}).kalenderTeam !== KAL.team ? `<div style="margin-top:6px;font-size:12px;"><a href="#" data-k="savemap">💾 „${escapeHtml(KAL.team)}“ fest als Kalender von ${escapeHtml(KAL.sub)} merken</a></div>` : ""}
+      <div class="kalres">
+        ${EXT.loading && !EXT.loaded ? `<div class="muted" style="padding:10px;">⏳ Kalender wird geladen…</div>` :
+          !EXT.loaded ? `<div class="flag" style="padding:10px;">Kalender nicht verbunden${EXT.errors.length ? ": " + escapeHtml(EXT.errors.join(" · ")) : ""}</div>` :
+          !list.length ? `<div class="muted" style="padding:10px;">Keine Aufträge gefunden.</div>` :
+          `<table><thead><tr><th>Termin</th><th>Kunde</th><th>Adresse / Objekt</th><th>Auftragsnr.</th><th>Notiz</th><th>Rechnungen</th><th></th></tr></thead><tbody>
+          ${list.slice(0, 60).map((e, k) => { const invs = invoicesForEntry(e); return `<tr>
+            <td style="white-space:nowrap;">${escapeHtml(String(e.datum||"").split("-").reverse().join("."))}${e.team ? `<div class="muted" style="font-size:11px;">${escapeHtml(e.team)}</div>` : ""}</td>
+            <td>${escapeHtml(e.kunde||"–")}</td><td>${escapeHtml(e.adresse||"–")}</td>
+            <td class="num">${escapeHtml(e.auftragsNr||"–")}</td>
+            <td style="font-size:12px;max-width:220px;">${escapeHtml(shortText(e.memo||"", 70))}</td>
+            <td>${invs.length ? invs.map(i=>`<a href="#" data-kopen="${i.id}">${escapeHtml(i.rechnungsnr||"?")}</a>`).join(", ") : `<span class="muted">–</span>`}</td>
+            <td>${opts.inv ? `<button class="small primary" data-kassign="${k}">→ Dieser Rechnung zuordnen</button>` : ""}</td></tr>`; }).join("")}
+          </tbody></table>${list.length > 60 ? `<div class="muted" style="font-size:12px;padding:6px;">… ${list.length - 60} weitere – Suche verfeinern.</div>` : ""}`}
+      </div>
+    </div>`;
+  const rerender = () => renderKalSuche(container, opts);
+  container.querySelector('[data-k="sub"]').addEventListener("change", e => { KAL.sub = e.target.value; KAL.team = teamForSub(KAL.sub); rerender(); });
+  container.querySelector('[data-k="team"]').addEventListener("change", e => { KAL.team = e.target.value; rerender(); });
+  const qi = container.querySelector('[data-k="q"]');
+  let tmo; qi.addEventListener("input", () => { clearTimeout(tmo); tmo = setTimeout(() => { KAL.q = qi.value; const pos = qi.selectionStart; rerender(); const n = container.querySelector('[data-k="q"]'); n.focus(); n.setSelectionRange(pos, pos); }, 250); });
+  const sm = container.querySelector('[data-k="savemap"]');
+  if(sm) sm.addEventListener("click", async e => { e.preventDefault(); const s = getSubFor(KAL.sub); if(!s){ toast("Subunternehmer nicht gefunden."); return; } s.kalenderTeam = KAL.team; await saveSub(s); toast("Gemerkt."); rerender(); });
+  container.querySelectorAll("[data-kopen]").forEach(a => a.addEventListener("click", e => { e.preventDefault(); closeModal(); openLink({ type:"invoice", id: a.dataset.kopen }); }));
+  container.querySelectorAll("[data-kassign]").forEach(b => b.addEventListener("click", async () => {
+    const inv = DB.invoices.find(i=>i.id===opts.inv.id); if(!inv) return;
+    await assignEntryToInvoice(inv, list[+b.dataset.kassign]);
+    if(opts.onAssigned) opts.onAssigned();
+  }));
+}
+function openKalSucheModal(inv, onAssigned){
+  KAL._forInv = null; KAL.q = "";
+  showModal(`<h2>📅 Auftrag im Kalender suchen</h2><p class="subtitle" style="margin-bottom:8px;">${inv ? `Rechnung ${escapeHtml(inv.rechnungsnr||"")} · ${escapeHtml(inv.lieferant||"")} – passenden Auftrag anklicken, um ihn zuzuordnen.` : ""}</p><div id="kalModalSlot"></div><div style="text-align:right;margin-top:10px;"><button id="kalClose">Schliessen</button></div>`);
+  const m = document.getElementById("modalRoot"); if(m){ const box = m.firstElementChild; if(box) box.style.maxWidth = "1100px"; }
+  document.getElementById("kalClose").addEventListener("click", closeModal);
+  renderKalSuche(document.getElementById("kalModalSlot"), { inv, onAssigned: () => { closeModal(); if(onAssigned) onAssigned(); } });
+}
 
 /* ============================= ASSISTENT (schwebend, kontextbezogen) ============================= */
 const ASSI_MODEL = "claude-sonnet-5-5";
@@ -4707,6 +4818,7 @@ function cleanSubForSave(s){
     tarife: (s.tarife||[]).map(t=>({ id:t.id||uid("tf"), category:t.category||"Sonstiges", bezeichnung:t.bezeichnung||"", material:t.material||"",
       einheit:t.einheit||"", preis: num(t.preis), gueltigAb:t.gueltigAb||"", keywords:t.keywords||"" })),
     rnrMuster: s.rnrMuster || null,
+    kalenderTeam: s.kalenderTeam || "",
     updatedAt: new Date().toISOString(), updatedBy: currentUser ? currentUser.email : "",
   };
 }
@@ -5826,6 +5938,7 @@ function renderPrintCenter(){
   mainEl.innerHTML = `
     ${printTab==="neu"
       ? `<h1>② Prüfen</h1><p class="subtitle">Neu eingelesene Rechnungen. Jede Rechnung braucht eine <b>AB</b> (oder die Bestätigung „Keine AB vorhanden“). <b>Klick auf eine Zeile</b> öffnet den Prüfbericht. Alles ohne Auffälligkeiten mit einem Klick freigeben – danach erscheint es unter ③ Drucken.</p>
+         <details class="card" id="kalCard" ${KAL.open ? "open" : ""} style="padding:12px 16px;"><summary style="cursor:pointer;font-weight:700;">📅 Aufträge im Kalender des Subunternehmers suchen</summary><div id="kalSlot" style="margin-top:10px;"></div></details>
          ${checkTodos.length ? `<div class="todobanner"><h2><span class="nbadge" style="display:inline-flex;margin:0;">${checkTodos.length}</span> Offene Punkte bei Objekten</h2><div id="checkTodoSlot">${todosHtml(checkTodos, true)}</div></div>` : ""}`
       : `<h1>③ Drucken</h1><p class="subtitle">Freigegebene Rechnungen sind schon markiert. Ein Klick auf <b>„Drucken“</b> – alle werden mit Eingangsstempel gedruckt. Danach nur noch Barcode-Sticker aufkleben. Die gespeicherten PDFs werden nach dem Drucken gelöscht.</p>`}
     ${printTab==="neu" ? "" : `<div class="tabs">
@@ -5889,6 +6002,8 @@ function renderPrintCenter(){
       ${printTab==="neu" ? `<p class="muted" style="font-size:12px;">„Markierte freigeben“ gibt nur Rechnungen ohne Fehler frei – Rechnungen mit Fehlern einzeln prüfen (Klick auf die Zeile).</p>` : ""}
       ${printTab==="gedruckt" ? `<p class="muted" style="font-size:12px;">Nach dem Drucken wird die PDF gelöscht, um Speicher zu sparen. Nochmals drucken geht nur, wenn das Original noch vorhanden ist.</p>` : ""}`
     : `<div class="empty">${printQuery ? `Keine Treffer für „${escapeHtml(printQuery)}“ in diesem Tab.` : printTab==="bereit" ? "Keine freigegebenen Rechnungen zum Drucken." : printTab==="neu" ? "Keine neuen Rechnungen." : "Keine Einträge."}</div>`}`;
+  const kc = document.getElementById("kalCard");
+  if(kc){ kc.addEventListener("toggle", ()=>{ KAL.open = kc.open; }); KAL._forInv = null; renderKalSuche(document.getElementById("kalSlot"), {}); }
   const cts = document.getElementById("checkTodoSlot");
   if(cts) wireTodos(cts, checkTodos, renderPrintCenter);
   mainEl.querySelectorAll("[data-abup]").forEach(b=>b.addEventListener("click", (e)=>{ e.stopPropagation(); uploadABForProject(b.dataset.abup, renderPrintCenter); }));
