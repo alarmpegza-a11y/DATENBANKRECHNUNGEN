@@ -343,8 +343,8 @@ const DEFAULT_CATEGORIES = [
   { key: "Ausflockung", label: "Ausflockung", unit: "m³", keywords: ["ausflock","ausgeflockt"] },
   { key: "SilentPanel", label: "Geberit SilentPanel", unit: "Stk", keywords: ["silentpanel","silent panel","silent-panel"] },
   { key: "Verbinden", label: "Leitungen verbinden", unit: "Stk", keywords: ["verbinden","verschweissen"] },
-  { key: "Regie", label: "Regie (Stunden)", unit: "h", keywords: ["regie"] },
-  { key: "Anfahrt", label: "Anfahrt / Installation", unit: "Stk", keywords: ["anfahrt","parking","fahrtspesen","installationspauschale","einrichtungspauschale","baustelleneinrichtung","installation pauschal"] },
+  { key: "Regie", label: "Regie (Stunden)", unit: "h", keywords: ["regie","regia"] },
+  { key: "Anfahrt", label: "Anfahrt / Installation", unit: "Stk", keywords: ["anfahrt","parking","fahrtspesen","installationspauschale","einrichtungspauschale","baustelleneinrichtung","installation pauschal","weg inkl","weg pauschal","inkl. km","inkl km"] },
   { key: "Entsorgung", label: "Entsorgung", unit: "Stk", keywords: ["entsorgung","abfall"] },
   { key: "Material", label: "Material (kg / l)", unit: "kg", keywords: ["material","flocken","steinwolle sack"] },
   { key: "Elemente", label: "Elemente (allg.)", unit: "Stk", keywords: ["element"] },
@@ -536,16 +536,37 @@ async function removeProjectIfEmpty(projectId){
 let emptyCleanupDone = false;
 async function fixFallbackProjects(){
   const re = /^.+\s–\s\d{1,2}\.\d{1,2}\.\d{4}$/;
+  // falsche Rechnungsnummern (PLZ wie "8572") korrigieren, Positionen nachlesen
+  for(const inv of DB.invoices){
+    if(!inv.rawText || inv.gedrucktAm) continue;
+    const r = parseInvoiceText(inv.rawText);
+    const upd = {};
+    if(/^\d{4}$/.test(cleanRnr(inv.rechnungsnr)) && r.rechnungsnr && r.rechnungsnr !== inv.rechnungsnr) upd.rechnungsnr = r.rechnungsnr;
+    if(!inv.auftragsnummer && r.auftragsnummer) upd.auftragsnummer = r.auftragsnummer;
+    if(!inv.ausmass && r.ausmass) upd.ausmass = r.ausmass;
+    const manuell = (inv.verlauf||[]).some(e => /Positionen|Betrag/.test(e.was||""));
+    const sumOld = (inv.items||[]).reduce((s,x)=>s+(num(x.preis)||0),0), sumNew = r.items.reduce((s,x)=>s+(num(x.preis)||0),0);
+    if(!manuell && r.items.length && r.total!=null && Math.abs(sumNew - r.total/1.081) <= Math.max(2, r.total*0.01) && Math.abs(sumOld - sumNew) > 0.5){
+      upd.items = r.items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: it.ep!==undefined ? it.ep : null }));
+    }
+    // Doppel-Vermerke aus einer ANDEREN Rechnung (Dateiname mit anderer Nummer) entfernen
+    if((inv.duplikatVersuche||[]).length){
+      const own = cleanRnr(upd.rechnungsnr || inv.rechnungsnr).replace(/\D/g,"").replace(/^0+/,"");
+      const keep = inv.duplikatVersuche.filter(d => { const m = String(d.datei||"").match(/(\d{3,})/g); return !m || !own || m.some(x => x.replace(/^0+/,"") === own); });
+      if(keep.length !== inv.duplikatVersuche.length) upd.duplikatVersuche = keep;
+    }
+    if(Object.keys(upd).length){ Object.assign(inv, upd); try{ await window.fb.setDocMerge("invoices", inv.id, upd); }catch(e){} }
+  }
   for(const p of DB.projects.slice()){
-    if(!re.test(p.name||"") || (p.abs||[]).length) continue;
+    if(!(re.test(p.name||"") || COUNTRY_RE.test(String(p.name||"").trim())) || (p.abs||[]).length) continue;
     const invs = DB.invoices.filter(i=>i.projectId===p.id && i.rawText);
     for(const inv of invs){
       const r = parseInvoiceText(inv.rawText);
       if(!r.objekt || /diverse/i.test(r.objekt)) continue;
-      let target = findMatchingProject({ objekt: r.objekt, auftragsnummer: "" });
+      let target = findMatchingProject({ objekt: r.objekt, auftragsnummer: r.auftragsnummer || "" });
       if(target && target.id === p.id) target = null;
-      const pid = target ? target.id : await createProject({ name: stripHaus(r.objekt), address: stripHaus(r.objekt), auftragsnummer:"", soll:{}, haeuser:[] });
-      const upd = { projectId: pid, objekt: r.objekt };
+      const pid = target ? target.id : await createProject({ name: stripHaus(buildProjectName(r)), address: stripHaus(r.objekt), auftragsnummer: String(r.auftragsnummer||""), soll:{}, haeuser:[] });
+      const upd = { projectId: pid, objekt: r.objekt, ...(r.auftragsnummer ? { auftragsnummer: r.auftragsnummer } : {}) };
       const manuell = (inv.verlauf||[]).some(e => /Positionen|Betrag/.test(e.was||""));
       if(!manuell && r.items.length){ upd.items = r.items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: it.ep!==undefined ? it.ep : null })); if(r.total!=null) upd.total = r.total; }
       Object.assign(inv, upd);
@@ -932,9 +953,12 @@ async function extractPagesFromPDF(file, onProgress){
     } else if(/total\s*m\s*[3³]|total\s*fr|summe|total/i.test(entry.text) && !/zahlteil|empfangsschein/i.test(entry.text)){
       // Beilage (Ausmassblatt): nur den unteren Teil mit den Totalen neu lesen -> sehr schnell
       jobs.push(async ()=>{
-        const strip = await ocrCanvasLines(await renderPageCanvas(page, OCR_SCALE, [0.72, 1.0]));
-        const keep = entry.text.split("\n").filter(l => !/total\s*m\s*[3³]|total\s*fr|totalm/i.test(l));
-        entry.text = keep.concat(strip).join("\n");
+        const [head, strip] = await Promise.all([
+          ocrCanvasLines(await renderPageCanvas(page, OCR_SCALE, [0.0, 0.2])),
+          ocrCanvasLines(await renderPageCanvas(page, OCR_SCALE, [0.72, 1.0])),
+        ]);
+        const keep = entry.text.split("\n").filter(l => !/total\s*m\s*[3³]|total\s*fr|totalm|bjekt\s*:|ausmassblatt|auftrag\s*nr/i.test(l));
+        entry.text = head.concat(keep, strip).join("\n");
         entry.source = "ocr";
       });
     }
@@ -997,6 +1021,26 @@ function normalizeDigits(text){
     .replace(/(\d)[’‘`´ʼ′](?=\d{3}\b)/g, "$1'")
     .replace(/(\d)[\u00A0\u202F\u2009](?=\d{3}\b)/g, "$1'");
 }
+function parseAusmassSheets(text){
+  const lines = String(text||"").split("\n");
+  const sheets = []; let cur = null;
+  const pushCur = () => { if(cur && (cur.objekt || cur.m3 != null || cur.fr != null)) sheets.push(cur); };
+  lines.forEach(l => {
+    const t = l.trim();
+    const isHead = /ausmassblatt\s*n/i.test(t);
+    if(isHead){ pushCur(); cur = { nr: (t.match(/ausmassblatt\s*nr\.?\s*:?\s*(\d{1,2})\b/i)||[])[1] || String(sheets.length + 1), objekt:"", haus:"", m3:null, fr:null }; return; }
+    if(!cur) return;
+    const om = t.match(/(?:^|\s)[O0]?bjekt\s*:\s*(.+?)(?:\s+T[äa]t(?:igkeit)?\b.*)?$/i) || t.match(/^(?:[O0]?bjekt\s*:?\s*)?([A-ZÄÖÜ][^:]{3,60}?)\s+T[äa]tigkeit\s*:/i);
+    if(om && !cur.objekt) cur.objekt = om[1].replace(/\s{2,}/g," ").trim();
+    if(!cur.haus){ const hm = t.match(/^(Haus|Block|Geb[äa]ude)\s+([A-Z]?\d{0,3}[A-Za-z]?)\s*$/i); if(hm && hm[2]) cur.haus = normHaus(hm[1] + " " + hm[2]); }
+    const mm = t.match(/total\s*m\s*[3³]\s*:?\s*([\d'’.,]+)/i); if(mm && cur.m3 == null) cur.m3 = parseSwissNumber(mm[1]);
+    const fm = t.match(/total\s*fr\.?\s*:?\s*([\d'’.,]+)/i); if(fm && cur.fr == null) cur.fr = parseSwissNumber(fm[1]);
+  });
+  pushCur();
+  // Blatt ohne lesbares Objekt: vom vorherigen Blatt (gleiches Haus) uebernehmen
+  sheets.forEach((x, k) => { if(!x.objekt && k > 0 && (!x.haus || !sheets[k-1].haus || x.haus === sheets[k-1].haus)) x.objekt = sheets[k-1].objekt; });
+  return sheets;
+}
 function parseInvoiceText(text){
   text = normalizeDigits(text);
   const rawLines = text.split("\n").map(l=>l.trim()).filter(l=>l.length>0);
@@ -1047,6 +1091,7 @@ function parseInvoiceText(text){
   // --- Rechnungsnummer (gelerntes Muster des Subs > beschriftete Nummer > Nummer unter Kopfzeile) ---
   let m;
   result.rechnungsnr = findRechnungsnr(text, result.lieferant);
+  { const an = findAuftragsNr(text); if(an && !result.auftragsnummer) result.auftragsnummer = an; }
 
   // --- Datum ---
   m = text.match(/Datum:?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i);
@@ -1083,6 +1128,7 @@ function parseInvoiceText(text){
     if(m) result.objekt = sanitizeObjekt(m[1]);
   }
   if(!result.objekt) result.objekt = objektFromLabels(rawLines, isOwnCompanyLine, result.lieferant);
+  if(!result.objekt) result.objekt = objektAfterTitle(rawLines);
   if(!result.objekt) result.objekt = objektAfterRecipient(rawLines);
   if(!result.objekt){
     // Manche Rechnungen nennen das Objekt ganz ohne Label -- einfach als eigene Zeile direkt
@@ -1119,14 +1165,42 @@ function parseInvoiceText(text){
   const catSonstiges = categories.find(c=>c.key==="Sonstiges");
 
   const sameish = (a,b) => Math.abs(a-b) <= Math.max(1, Math.abs(b)*0.01);
-  rawLines.forEach(line => {
+  // Zeilen der Ausmassblaetter (Massetabellen) sind keine Rechnungspositionen
+  const ausLines = new Set();
+  { let inAus = false;
+    rawLines.forEach((ln, k) => {
+      if(/ausmassblatt\s*n|abmessung\s+in\s+m|l[äa]nge\s+breite|t[äa]tigkeit\s*:/i.test(ln)) inAus = true;
+      else if(/^(zahlteil|empfangsschein|vor der einzahlung|rechnung\b)/i.test(ln.trim())) inAus = false;
+      if(inAus) ausLines.add(k);
+    }); }
+  rawLines.forEach((line, lineNo) => {
+    if(ausLines.has(lineNo)) return;
     const l = line.toLowerCase();
     if(/^(bezeichnung|pos\.|menge|einheit|preis|total$|zzgl|zwischensumme|zwischentotal|summe|mwst-?nr|iban|bic|telefon|rechnungsbetrag)/i.test(l)) return;
     // Verweis auf das Ausmassblatt selbst ueberspringen -- die Menge wird separat ueber
     // den "Total m3"-Wert des Ausmassblatts erfasst, sonst wuerde doppelt gezaehlt.
     if(l.includes("ausmassblatt")) return;
 
-    const unitMatch = line.match(/(\d+(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|st\.?|std\.?|stunden|h|app\.?|apparate?|le|psch\.?|pauschal|pau\.?|gl|kg\.?|lt\.?|l)(?=\s|$|[,;:)])/i);
+    // Tabellenzeile: "2 Regia 5.00 ore 55.00 275.00" / "2 85 stk. Silent Panel montiert 3.00 55.00 165.00"
+    let tri = line.match(/^(.*?\S)\s+(-?\d[\d']*(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|st\.?|std\.?|stunden|ore|h|app\.?|psch\.?|pauschal|le|kg|lt)?\s+(?:CHF\s*)?(-?[\d']+[.,]\d{2})\s+(?:CHF\s*)?(-?[\d']+[.,]\d{2})\s*(?:CHF)?\s*$/i);
+    // keine Ausmass-Zeilen ("4.OG 3.00 2.75 0.30 1 2.48 150.00 371.25"): Beschreibung braucht Text und hoechstens eine Dezimalzahl
+    if(tri && (!/[A-Za-zÄÖÜäöü]{3,}/.test(tri[1]) || (tri[1].match(/\d+[.,]\d+/g)||[]).length >= 2)) tri = null;
+    if(tri){
+      const m0 = parseSwissNumber(tri[2]), e0 = parseSwissNumber(tri[4]), t0 = parseSwissNumber(tri[5]);
+      if(m0 && e0!=null && t0!=null && Math.abs(m0 * e0 - t0) <= Math.max(1, Math.abs(t0) * 0.01) && t0 !== 0){
+        const desc = tri[1].toLowerCase();
+        const u = tri[3] ? (/^ore$/i.test(tri[3]) ? "h" : normalizeUnit(tri[3])) : "";
+        let c = u==="h" ? categories.find(x=>x.key==="Regie") : u==="m²" ? catBeplankung : u==="m³" ? catAusflockung : null;
+        if(!c) c = categories.find(x => !["Beplankung","Ausflockung","Sonstiges"].includes(x.key) && x.keywords.some(kw => desc.includes(kw)));
+        if(!c && /beplank/.test(desc)) c = catBeplankung;
+        if(!c && /ausflock|einblas/.test(desc)) c = catAusflockung;
+        if(!c) c = catSonstiges;
+        result.items.push({ id: uid("it"), category: c.key, label: line.slice(0,90), menge: m0, einheit: u || c.unit, preis: t0, ep: e0 });
+        return;
+      }
+    }
+
+    const unitMatch = line.match(/(\d+(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|st\.?|std\.?|stunden|h|app\.?|apparate?|le|psch\.?|pauschal|pau\.?|gl|kg\.?|lt\.?|liter)(?=\s|$|[,;:)])/i);
     let cat = null, menge = null, einheit = null, preis = null, ep = null;
 
     if(unitMatch){
@@ -1181,10 +1255,22 @@ function parseInvoiceText(text){
   });
 
   // Ausmassblaetter: "Total m3" aller Blaetter zusammenzaehlen (Blatt 1 + Blatt 2 …)
-  const m3vals = [...text.matchAll(/Total\s*m[3³]\s*:?\s*([\d'’.,]+\d)/gi)].map(m=>parseSwissNumber(m[1])).filter(v=>v!=null && v>0);
+  const sheets = parseAusmassSheets(text);
+  if(sheets.length) result.ausmass = sheets;
+  let m3vals = [...text.matchAll(/Total\s*m[3³]\s*:?\s*([\d'’.,]+\d)/gi)].map(m=>parseSwissNumber(m[1])).filter(v=>v!=null && v>0);
+  let frSum = null;
+  if(sheets.length){
+    // pro Blatt: fehlt "Total m3" (unleserlich), aus "Total Fr." / Ansatz der anderen Blaetter berechnen
+    const rates = sheets.filter(x=>x.m3 && x.fr).map(x=>x.fr/x.m3);
+    let rate = rates.length ? rates.sort((a,b)=>a-b)[Math.floor(rates.length/2)] : null;
+    if(rate && Math.abs(rate - Math.round(rate)) < 0.1) rate = Math.round(rate);
+    sheets.forEach(x => { if(x.m3 == null && x.fr && rate) { x.m3 = roundNum(x.fr / rate); x.m3berechnet = true; } });
+    if(sheets.every(x => x.m3 != null)) m3vals = sheets.map(x => x.m3);
+    if(sheets.every(x => x.fr != null)) frSum = roundNum(sheets.reduce((a,x)=>a+x.fr,0));
+  }
   if(m3vals.length && !result.items.some(it=>it.category==="Ausflockung")){
     const sumM3 = roundNum(m3vals.reduce((a,b)=>a+b,0));
-    result.items.push({ id: uid("it"), category: "Ausflockung", label: `Total m³ (Ausmassblatt${m3vals.length>1?` ${m3vals.length} Blätter: ${m3vals.join(" + ")}`:""})`, menge: sumM3, einheit: "m³", preis: null, ep: null });
+    result.items.push({ id: uid("it"), category: "Ausflockung", label: `Total m³ (Ausmassblatt${m3vals.length>1?` ${m3vals.length} Blätter: ${m3vals.join(" + ")}`:""})`, menge: sumM3, einheit: "m³", preis: frSum, ep: frSum && sumM3 ? roundNum(frSum/sumM3) : null });
   }
 
   // Folgezeile einer Position = Beschreibung ("Vorwand", "Raumtrenner", "Gis + Duofix 16'000.00")
@@ -1303,13 +1389,23 @@ function creditorFromQR(rawLines, isOwn){
   return "";
 }
 // Objekt ueber typische Beschriftungen; Wert steht in derselben Zeile oder direkt darunter
+const COUNTRY_RE = /^(schweiz|suisse|svizzera|switzerland|ch|liechtenstein|deutschland|österreich)$/i;
+const OBJ_SKIP_RE = /^(datum|nummer|rechnung|mwst|unser|kontakt|telefon|tel\.|e-mail|web|pos\.|seite|kunden|ihre?|referenz|zahlbar|guten|sehr|danke|betreff)/i;
+// Objekt in der Zeile direkt unter dem Rechnungstitel ("Rechnung RE-00266" / "Kilchberg")
+function objektAfterTitle(rawLines){
+  const i = rawLines.findIndex(l => /^\s*Rechnung\s+(Nr\.?\s*)?[A-Z]{0,4}-?\d{3,}\s*$/i.test(l));
+  if(i < 0) return "";
+  const t = String(rawLines[i+1] || "").trim();
+  if(!t || OBJ_SKIP_RE.test(t) || COUNTRY_RE.test(t) || /\d{1,2}\.\d{1,2}\.\d{4}/.test(t) || t.length > 60 || !/^[A-ZÄÖÜa-zäöü]/.test(t)) return "";
+  return sanitizeObjekt(t.replace(/^(regia|regie)\s+/i, ""));
+}
 // Viele Subs schreiben das Objekt ohne Beschriftung direkt unter unsere Adresse
 function objektAfterRecipient(rawLines){
   const i = rawLines.findIndex(l => /^\s*8853\s+Lachen\b/i.test(l));
   if(i < 0) return "";
   for(const l of rawLines.slice(i+1, i+3)){
     const t = String(l||"").trim();
-    if(!t || /^(datum|nummer|rechnung|mwst|mwst\.|unser|kontakt|telefon|e-mail|web|pos\.|seite|kunden|ihre|referenz)/i.test(t)) continue;
+    if(!t || OBJ_SKIP_RE.test(t) || COUNTRY_RE.test(t)) continue;
     if(/\d{1,2}\.\d{1,2}\.\d{4}/.test(t) || t.length > 60) continue;
     if(!/^[A-ZÄÖÜ]/.test(t)) continue;
     return sanitizeObjekt(t);
@@ -1380,7 +1476,7 @@ function sanitizeObjekt(s){
   t = t.replace(/\s{2,}/g," ").replace(/[,\s]+$/,"").trim();
   // Ergebnis verwerfen, wenn es nicht wie eine echte Adresse aussieht (zu kurz oder keine
   // zusammenhaengende Buchstabenfolge -- z.B. Reste wie "SLI ,Fibu" oder blosse Ziffern).
-  if(t.length < 5) return "";
+  if(t.length < 4) return "";
   if(!/[A-Za-zÄÖÜäöü]{3,}/.test(t)) return "";
   return t;
 }
@@ -1408,7 +1504,7 @@ function parseSwissNumber(s){
 
 /* ============================= RECHNUNGSNUMMER ============================= */
 
-const RNR_VAL = "([A-Z]{0,4}[-\\s]?\\d[\\dA-Z.\\-\\/]{2,})";
+const RNR_VAL = "([A-Z]{0,4}[- ]?\\d[\\dA-Z.\\-\\/]{2,})";
 function rnrValid(v){
   v = String(v||"").trim();
   const digits = v.replace(/\D/g,"");
@@ -1442,8 +1538,8 @@ function rnrCandidates(text, lieferant){
     if(i > -1 && lines[i+1]){ const tok = lines[i+1].split(/\s+/)[L.idx||0]; if(tok) add(tok, "gelernt"); }
   }
   // 2) beschriftete Rechnungsnummer
-  for(const mm of text.matchAll(new RegExp("Rechnungs?\\s*[-.]?\\s*(?:Nr|Nummer|No)\\.?\\s*[:#]?\\s*" + RNR_VAL, "gi"))) add(mm[1], "Rechnung Nr.");
-  for(const mm of text.matchAll(new RegExp("\\bRechnung\\s*[:#]?\\s+" + RNR_VAL, "gi"))) add(mm[1], "Rechnung");
+  for(const mm of text.matchAll(new RegExp("Rechnungs?[ \\t]*[-.]?[ \\t]*(?:Nr|Nummer|No)\\.?[ \\t]*[:#]?[ \\t]*" + RNR_VAL, "gi"))) add(mm[1], "Rechnung Nr.");
+  for(const mm of text.matchAll(new RegExp("\\bRechnung[ \\t]*[:#]?[ \\t]+" + RNR_VAL, "gi"))) add(mm[1], "Rechnung");
   for(const mm of text.matchAll(new RegExp("\\b(?:Beleg|Faktura|Invoice|Rg)\\s*[-.]?\\s*(?:Nr|Nummer|No)\\.?\\s*[:#]?\\s*" + RNR_VAL, "gi"))) add(mm[1], "Beleg");
   for(const mm of text.matchAll(/(?:^|\s)Nummer\s*:\s*([A-Z]{1,4}-?\d{4,})/gm)) add(mm[1], "Nummer");
   // 3) Nummer in der Zeile unter einer Kopfzeile "Rechnung Nr. | Datum | …"
@@ -1458,6 +1554,17 @@ function rnrCandidates(text, lieferant){
     if(cand && rnrValid(cleanRnr(cand))) add(cand, "unter Kopfzeile");
   });
   return out;
+}
+// Unsere Auftrags-/AB-Nummern: 9-stellig mit 20… (AB-Nr. 202620851) oder 8-stellig mit 24…29 (A-25088457)
+function findAuftragsNr(text){
+  const t = String(text||"");
+  const lab = t.match(/(?:\bRif|\bRef|Referenz|Ihre\s+Referenz|Auf(?:trags?)?\s*-?\s*n(?:r|ummer)|Bestell-?\s*Nr|Projekt-?\s*Nr|Ihr\s+Auftrag|\bAB)\.?\s*[:#]?\s*(?:A-?\s?)?(2\d{7,8})\b/i);
+  if(lab) return lab[1];
+  // ohne Beschriftung: Nummer, die zu einer hinterlegten AB passt
+  const known = new Set();
+  (DB.projects||[]).forEach(p => (p.abs||[]).forEach(a => { if(a.nr) known.add(String(a.nr)); if(a.anr) known.add(String(a.anr).replace(/\D/g,"")); }));
+  for(const m of t.matchAll(/\b(20\d{7}|2[4-9]\d{6})\b/g)) if(known.has(m[1])) return m[1];
+  return "";
 }
 function findRechnungsnr(text, lieferant){
   const c = rnrCandidates(text, lieferant);
@@ -1498,7 +1605,12 @@ async function learnRechnungsnr(inv){
 /* ============================= AUFTRAG MATCHING ============================= */
 
 function buildProjectName(parsed){
-  if(parsed.objekt) return parsed.objekt.trim();
+  if(parsed.objekt){
+    const base = parsed.objekt.trim();
+    const an = String(parsed.auftragsnummer||"").trim();
+    if(an && DB.projects.some(p => stripHaus(p.name||"").toLowerCase() === stripHaus(base).toLowerCase())) return `${base} · Auftrag ${an}`;
+    return base;
+  }
   const lief = (parsed.lieferant||"").trim();
   const auf = (parsed.auftragsnummer||"").trim();
   if(lief && auf) return `${lief} – Auftrag ${auf}`;
@@ -1514,12 +1626,15 @@ function findMatchingProject(parsed){
     const byNum = DB.projects.find(p => p.auftragsnummer && p.auftragsnummer === parsed.auftragsnummer);
     if(byNum) return byNum;
     // Subunternehmer schreiben oft unsere AB-Nummer als "Auftragsnr." auf die Rechnung (z.B. 202417612)
-    const byAB = an.length >= 6 && DB.projects.find(p => (p.abs||[]).some(a => a.nr === an || String(a.anr||"").replace(/[^0-9A-Za-z]/g,"") === an));
+    const byAB = an.length >= 6 && DB.projects.find(p => (p.abs||[]).some(a => a.nr === an || String(a.anr||"").replace(/[^0-9A-Za-z]/g,"") === an || String(a.anr||"").replace(/\D/g,"") === an.replace(/\D/g,"")));
     if(byAB) return byAB;
   }
   if(objLower){
     let best = null, bestScore = 0;
+    const an0 = String(parsed.auftragsnummer||"").replace(/\D/g,"");
     for(const p of DB.projects){
+      const pNums = [p.auftragsnummer, ...(p.abs||[]).flatMap(a=>[a.nr, a.anr])].map(x=>String(x||"").replace(/\D/g,"")).filter(Boolean);
+      if(an0 && pNums.length && !pNums.includes(an0)) continue; // andere Auftragsnummer = anderer Auftrag
       const s = projectAddrScore(parsed.objekt, p);
       if(s > bestScore){ best = p; bestScore = s; }
     }
@@ -1785,7 +1900,7 @@ async function appendReviewCard(parsed){
     projectId = match.id;
   } else {
     const name = buildProjectName(parsed);
-    projectId = await createProject({ name: stripHaus(name), address: stripHaus(parsed.objekt||""), auftragsnummer: "", soll: {}, haeuser: [] });
+    projectId = await createProject({ name: stripHaus(name), address: stripHaus(parsed.objekt||""), auftragsnummer: String(parsed.auftragsnummer||""), soll: {}, haeuser: [] });
   }
   const items = parsed.items.length ? parsed.items.slice() : [];
   const invoiceData = {
@@ -1796,6 +1911,7 @@ async function appendReviewCard(parsed){
     total: parsed.total,
     objekt: parsed.objekt || "",
     sammel: parsed.sammel || null,
+    ausmass: parsed.ausmass || null,
     auftragsnummer: String(parsed.auftragsnummer || auftragsNrFromText(parsed._rawText) || ""),
     haus: detectInvoiceHaus({ rawText: parsed._rawText, objekt: parsed.objekt, auftragsnummer: parsed.auftragsnummer }, projectId),
     rawText: String(parsed._rawText||"").slice(0, 30000),
@@ -1914,7 +2030,7 @@ async function appendReviewCard(parsed){
     let newProjectId = e.target.value;
     if(!newProjectId){
       const name = buildProjectName(parsed);
-      newProjectId = await createProject({ name: stripHaus(name), address: stripHaus(parsed.objekt||""), auftragsnummer: "", soll: {}, haeuser: [] });
+      newProjectId = await createProject({ name: stripHaus(name), address: stripHaus(parsed.objekt||""), auftragsnummer: String(parsed.auftragsnummer||""), soll: {}, haeuser: [] });
     }
     inv.projectId = newProjectId;
     saveInvoice(inv);
@@ -3592,6 +3708,18 @@ function checkInvoice(inv){
   const invHaus = inv.haus || "";
   let scopeHaus; // undefined = ganzes Objekt
   if(wvItems(inv).length) f.push({ level:"info", text:`↗ Weiter verrechnen an Kunde: ${wvKurztext(inv)} · CHF ${fmt(wvSumme(inv))} – erscheint beim Drucken als roter Stempel.` });
+  // Ausmassblaetter: gehoeren sie zu diesem Objekt / Haus?
+  if((inv.ausmass||[]).length){
+    const pr = DB.projects.find(x=>x.id===inv.projectId);
+    const refObj = inv.objekt || (pr && pr.name) || "";
+    const tok = s => String(s||"").toLowerCase().replace(/strasse/g,"str").split(/[^a-zäöü0-9]+/).filter(w => w.length >= 3 && !/^(haus|block|str)$/.test(w));
+    const refT = new Set(tok(refObj + " " + (pr ? (pr.address||"") : "")));
+    const fremd = inv.ausmass.filter(s => s.objekt && tok(s.objekt).length && !tok(s.objekt).some(w => refT.has(w)));
+    if(fremd.length) f.push({ level:"danger", text:`Ausmassblatt ${fremd.map(s=>s.nr).join(" + ")} gehört zu einem anderen Objekt: „${fremd[0].objekt}“${fremd.some(s=>s.m3!=null) ? ` (${fmtQty(fremd.reduce((a,s)=>a+(s.m3||0),0))} m³)` : ""} – die Rechnung lautet auf „${refObj}“.` });
+    const hs = Array.from(new Set(inv.ausmass.map(s=>s.haus).filter(Boolean)));
+    if(inv.haus && hs.some(h => normHaus(h) !== normHaus(inv.haus))) f.push({ level:"warn", text:`Ausmassblätter für ${hs.join(", ")} – die Rechnung lautet auf ${inv.haus}.` });
+    f.push({ level:"info", text:`Ausmassblätter: ${inv.ausmass.map(s => `Nr. ${s.nr}${s.objekt ? " " + s.objekt : ""}${s.haus ? " (" + s.haus + ")" : ""}${s.m3!=null ? ": " + fmtQty(s.m3) + " m³" : ""}`).join(" · ")}` });
+  }
   const ohneAB = invOhneAB(inv);
   (inv.duplikatVersuche||[]).forEach(d => f.push({ level:"info", text:`Diese Rechnung wurde am ${d.am} erneut zugestellt (${d.datei||"Datei"}) – nicht doppelt gespeichert.` }));
   if(ohneAB) f.push({ level:"ok", text:`Keine AB vorhanden – bestätigt${inv.ohneAB && inv.ohneABvon ? ` von ${inv.ohneABvon}` : (!inv.ohneAB ? " (für das ganze Objekt)" : "")}. Preise werden trotzdem geprüft.` });
@@ -4003,6 +4131,13 @@ async function detachAB(projectId, key){
 }
 async function autoAssignAB(ab){
   const sameNr = DB.projects.find(p=>(p.abs||[]).some(a=>a.nr && a.nr===ab.nr));
+  // Rechnungen mit unserer Auftragsnummer ("Rif. 202620851") -> dieser Auftrag bekommt die AB
+  if(!sameNr){
+    const d = x => String(x||"").replace(/\D/g,"");
+    const byRef = DB.projects.find(p => !(p.abs||[]).length && p.auftragsnummer && (d(p.auftragsnummer)===d(ab.nr) || (ab.anr && d(p.auftragsnummer)===d(ab.anr))))
+      || DB.projects.find(p => !(p.abs||[]).length && DB.invoices.some(i => i.projectId===p.id && i.auftragsnummer && (d(i.auftragsnummer)===d(ab.nr) || (ab.anr && d(i.auftragsnummer)===d(ab.anr)))));
+    if(byRef){ await attachAB(byRef.id, ab); return { projectId: byRef.id, how:"auto" }; }
+  }
   if(sameNr){
     const isRev = (sameNr.abs||[]).some(a=>abKey(a)===abKey(ab));
     await attachAB(sameNr.id, ab);
@@ -4499,8 +4634,9 @@ function computeProjectTodos(){
     for(let j=i+1;j<DB.projects.length;j++){
       const a = DB.projects[i], b = DB.projects[j];
       if((a.notDup||[]).includes(b.id) || (b.notDup||[]).includes(a.id)) continue;
+      if(a.auftragsnummer && b.auftragsnummer && String(a.auftragsnummer).replace(/\D/g,"") !== String(b.auftragsnummer).replace(/\D/g,"")) continue;
       const active = x => DB.invoices.some(i=>i.projectId===x.id && !i.gedrucktAm) || (x.abs||[]).length;
-      if(/\s–\s\d{1,2}\.\d{1,2}\.\d{4}$/.test(a.name||"") || /\s–\s\d{1,2}\.\d{1,2}\.\d{4}$/.test(b.name||"")) continue;
+      if(/\s–\s\d{1,2}\.\d{1,2}\.\d{4}$/.test(a.name||"") || /\s–\s\d{1,2}\.\d{1,2}\.\d{4}$/.test(b.name||"") || COUNTRY_RE.test(String(a.name||"").trim()) || COUNTRY_RE.test(String(b.name||"").trim())) continue;
       if(!active(a) || !active(b)) continue; // leere Objekte nicht melden
       const s = Math.max(scoreAddress(a.address||a.name, b.address||b.name), scoreAddress(a.name, b.name));
       if(s >= 1) t.push({ kind:"dup", projectId:a.id, otherId:b.id, text:`Gleiches Objekt? „${a.name}“ und „${b.name}“`, hint:"Gleiche Strasse – falls es dasselbe Objekt ist (evtl. andere Häuser): zusammenführen, dann gilt eine AB für alle Subunternehmer.", share:`Bitte prüfen, ob „${a.name}“ und „${b.name}“ dasselbe Objekt sind, und ggf. zusammenführen.` });
@@ -5072,6 +5208,7 @@ function findExistingInvoice(parsed){
   const sameSup = DB.invoices.filter(i => sameSupplier(i.lieferant, parsed.lieferant));
   // Widerspruch = sicher eine ANDERE Rechnung (anderer Betrag oder anderes Objekt)
   const contradicts = i => {
+    if(nr && i.rechnungsnr && cleanRnr(i.rechnungsnr).toLowerCase() !== nr && !invoiceUnreliable(i) && !/^\d{4}$/.test(cleanRnr(i.rechnungsnr))) return true;
     if(!invoiceUnreliable(i) && num(i.total)!=null && parsed.total!=null && Math.abs(+i.total - +parsed.total) > 0.01) return true;
     const oi = i.objekt || (DB.projects.find(p=>p.id===i.projectId)||{}).address || "";
     if(oi && parsed.objekt && scoreAddress(stripHaus(oi), stripHaus(parsed.objekt)) === 0) return true;
@@ -5191,7 +5328,7 @@ let printQuery = "";
 function invSearchText(inv){
   const p = DB.projects.find(x=>x.id===inv.projectId);
   const d = toDateSafe(inv.createdAt);
-  return [inv.lieferant, inv.rechnungsnr, inv.datum, inv.haus, inv.objekt, p && p.name, p && p.address, p && p.auftragsnummer,
+  return [inv.lieferant, inv.rechnungsnr, inv.auftragsnummer, inv.datum, inv.haus, inv.objekt, p && p.name, p && p.address, p && p.auftragsnummer,
     inv.total!=null ? formatCHF(+inv.total) : "", inv.total!=null ? String(inv.total) : "",
     d ? d.toLocaleDateString("de-CH") : "", inv.gedrucktAm, inv.gedrucktVon, inv.pruefung && inv.pruefung.kommentar]
     .filter(Boolean).join(" ").toLowerCase();
