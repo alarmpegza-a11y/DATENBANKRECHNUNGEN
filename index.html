@@ -286,6 +286,22 @@
   .ptabs .tab .tdot{display:inline-block;margin:0 0 0 6px;}
   details.help{font-size:12.5px;color:var(--text-dim);margin:8px 0 0 0;}
   details.help summary{cursor:pointer;color:var(--accent);font-weight:600;}
+  #assiFab{position:fixed;right:22px;bottom:22px;width:56px;height:56px;border-radius:50%;border:none;background:var(--accent,#1e3a5f);color:#fff;font-size:26px;box-shadow:0 6px 18px rgba(0,0,0,.25);cursor:pointer;z-index:900;}
+  #assiFab.open{background:#334155;}
+  #assiPanel{position:fixed;right:22px;bottom:88px;width:min(430px,calc(100vw - 30px));max-height:min(640px,calc(100vh - 120px));background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 36px rgba(0,0,0,.22);z-index:900;flex-direction:column;overflow:hidden;}
+  .assihead{display:flex;justify-content:space-between;align-items:flex-start;padding:10px 12px;border-bottom:1px solid var(--border);background:#f6f8fd;}
+  #assiBody{flex:1;overflow:auto;padding:10px 12px;font-size:13px;}
+  .assisec{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);margin:6px 0 4px;}
+  .assisug{border-left:3px solid #cbd5e1;padding:6px 8px;margin-bottom:6px;background:#fafbfc;border-radius:4px;}
+  .assisug.danger{border-left-color:var(--danger);} .assisug.warn{border-left-color:var(--warn);} .assisug.ok{border-left-color:var(--ok,#1f8a4c);}
+  .assibtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px;}
+  .assimsg{padding:7px 9px;border-radius:8px;margin:6px 0;max-width:92%;}
+  .assimsg.ich{background:#e8eefb;margin-left:auto;}
+  .assimsg.assi{background:#f3f4f6;}
+  .assimsg ul{margin:5px 0;padding-left:18px;}
+  .assiinput{display:flex;gap:6px;padding:8px;border-top:1px solid var(--border);}
+  .assiinput textarea{flex:1;font:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;resize:none;}
+  @media print{ #assiFab, #assiPanel{display:none !important;} }
   .extline{font-size:11.5px;color:#3d5a8a;margin-top:2px;line-height:1.35;}
   .assibox{margin-top:12px;padding:10px;border:1px dashed #b9c6e0;border-radius:8px;background:#f6f8fd;}
   .assibox textarea{flex:1;min-height:42px;font:inherit;font-size:13px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;resize:vertical;}
@@ -394,7 +410,7 @@ const DEFAULT_CATEGORIES = [
   { key: "SilentPanel", label: "Geberit SilentPanel", unit: "Stk", keywords: ["silentpanel","silent panel","silent-panel"] },
   { key: "Verbinden", label: "Leitungen verbinden", unit: "Stk", keywords: ["verbinden","verschweissen"] },
   { key: "Regie", label: "Regie (Stunden)", unit: "h", keywords: ["regie","regia"] },
-  { key: "Anfahrt", label: "Anfahrt / Installation", unit: "Stk", keywords: ["anfahrt","parking","fahrtspesen","installationspauschale","einrichtungspauschale","baustelleneinrichtung","installation pauschal","weg inkl","weg pauschal","inkl. km","inkl km"] },
+  { key: "Anfahrt", label: "Anfahrt / Installation", unit: "Stk", keywords: ["anfahrt","parking","fahrtspesen","installationspauschale","einrichtungspauschale","baustelleneinrichtung","installation pauschal","weg inkl","weg pauschal","inkl. km","inkl km","parkplatz","parkgeb"] },
   { key: "Entsorgung", label: "Entsorgung", unit: "Stk", keywords: ["entsorgung","abfall"] },
   { key: "Material", label: "Material (kg / l)", unit: "kg", keywords: ["material","flocken","steinwolle sack"] },
   { key: "Elemente", label: "Elemente (allg.)", unit: "Stk", keywords: ["element"] },
@@ -596,7 +612,8 @@ async function fixFallbackProjects(){
     if(!inv.ausmass && r.ausmass) upd.ausmass = r.ausmass;
     const manuell = (inv.verlauf||[]).some(e => /Positionen|Betrag/.test(e.was||""));
     const sumOld = (inv.items||[]).reduce((s,x)=>s+(num(x.preis)||0),0), sumNew = r.items.reduce((s,x)=>s+(num(x.preis)||0),0);
-    if(!manuell && r.items.length && r.total!=null && Math.abs(sumNew - r.total/1.081) <= Math.max(2, r.total*0.01) && Math.abs(sumOld - sumNew) > 0.5){
+    const sig = its => (its||[]).map(x=>x.category+":"+(num(x.preis)||0)).sort().join("|");
+    if(!manuell && r.items.length && r.total!=null && Math.abs(sumNew - r.total/1.081) <= Math.max(2, r.total*0.01) && (Math.abs(sumOld - sumNew) > 0.5 || sig(inv.items) !== sig(r.items))){
       upd.items = r.items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: it.ep!==undefined ? it.ep : null }));
     }
     // Doppel-Vermerke aus einer ANDEREN Rechnung (Dateiname mit anderer Nummer) entfernen
@@ -1739,6 +1756,7 @@ function render(){
   else if(currentView==="home") renderHome();
   else if(currentView==="admin") renderAdmin();
   lastRenderedView = currentView;
+  setTimeout(()=>{ if(currentUser) { assiInit(); if(ASSI.open) assiRender(); } }, 0);
 }
 
 // Datenbank-Updates nicht mitten in eine Eingabe hinein rendern (Fokus/Cursor ginge verloren)
@@ -4017,89 +4035,186 @@ function extLine(hits, compact){
 }
 function extSearchText(inv, p){ return extFor(inv, p).map(e => [e.kunde, e.adresse, e.auftragsNr, e.memo, (e.teams||[]).join(" ")].join(" ")).join(" "); }
 
-/* ============================= ASSISTENT (Text-Befehle pro Rechnung) ============================= */
+/* ============================= ASSISTENT (schwebend, kontextbezogen) ============================= */
 const ASSI_MODEL = "claude-sonnet-5-5";
+const ASSI = { focus: null, open: false, history: [] };
 function assiKey(){ try{ return localStorage.getItem("pe_assistent_key") || ""; }catch(e){ return ""; } }
-function assiContext(inv){
-  const p = DB.projects.find(x=>x.id===inv.projectId);
-  return {
-    rechnung: { lieferant: inv.lieferant, rechnungsnr: inv.rechnungsnr, datum: inv.datum, total: inv.total, objekt: inv.objekt, haus: inv.haus, auftragsnummer: inv.auftragsnummer, bezahltAm: inv.bezahltAm||"", status: (inv.pruefung&&inv.pruefung.status)||"offen", keineAB: !!inv.ohneAB },
-    auftrag: p ? { name: p.name, haeuser: projectHouses(p), abs: (p.abs||[]).map(a=>({ nr:a.nr, anr:a.anr, haus:a.haus||"ganzes Objekt", nachtrag: !!a.nachtrag })) } : null,
-    positionen: (inv.items||[]).map(it=>({ id: it.id, kategorie: it.category, text: it.label, menge: it.menge, einheit: it.einheit, ep: it.ep, betrag: it.preis, weiterVerrechnen: !!it.weiterVerrechnen })),
-    kategorien: (DB.categories||DEFAULT_CATEGORIES).map(c=>c.key),
-    ausmassblaetter: (inv.ausmass||[]).map(s=>({ nr: s.nr, objekt: s.objekt, haus: s.haus, m3: s.m3, fr: s.fr, bestaetigt: !!s.bestaetigt })),
-    befunde: checkInvoice(inv).filter(x=>x.level==="danger"||x.level==="warn").map((x,i)=>({ index: i, stufe: x.level==="danger" ? "Fehler" : "Hinweis", text: x.text })),
-    auftraege: DB.projects.map(x=>x.name).slice(0, 300),
-  };
+function assiFocusInv(){
+  const f = ASSI.focus;
+  if(f && f.el && document.body.contains(f.el)){ const i = DB.invoices.find(x=>x.id===f.invId); if(i) return i; }
+  return null;
 }
-const ASSI_SYSTEM = `Du bist der Assistent der PE Rechnungskontrolle (Subunternehmer-Rechnungen prüfen). Der Benutzer beschreibt auf Deutsch, was bei EINER Rechnung zu korrigieren oder zu klären ist. Du bekommst die Rechnung als JSON (Felder, Positionen, Ausmassblätter, Befunde).
-Antworte NUR mit JSON, ohne Text davor/danach:
-{"verstanden":"kurze Zusammenfassung auf Deutsch, was du tust","aktionen":[...]}
-Erlaubte Aktionen (nur diese, nur was der Benutzer verlangt):
-{"typ":"feld","feld":"rechnungsnr|datum|total|objekt|haus|auftragsnummer|bezahltAm","wert":"..."}   (datum TT.MM.JJJJ, bezahltAm JJJJ-MM-TT, total als Zahl)
-{"typ":"position","id":"<positions-id>","kategorie":"...","menge":0,"einheit":"...","ep":0,"betrag":0,"weiterVerrechnen":true}   (nur geänderte Felder angeben)
-{"typ":"position_neu","kategorie":"...","text":"...","menge":0,"einheit":"...","ep":0,"betrag":0}
-{"typ":"position_loeschen","id":"<positions-id>"}
-{"typ":"ausmass_bestaetigen","blaetter":["2","3"],"notiz":"Grund"}   (Ausmassblatt gehört doch zu dieser Rechnung, z.B. nur falsch angeschrieben)
-{"typ":"befund_quittieren","index":0,"notiz":"Grund"}   (Befund ist geklärt/in Ordnung)
-{"typ":"status","wert":"ok|beanstandet|offen","kommentar":"..."}
-{"typ":"keine_ab","wert":true}
-{"typ":"auftrag","name":"<exakter Name aus auftraege>"}
-{"typ":"kommentar","text":"..."}
-Ändere nichts, was der Benutzer nicht verlangt. Wenn unklar, gib "aktionen":[] zurück und frage in "verstanden" nach.`;
-async function assiAskClaude(inv, text){
-  const key = assiKey();
+// Wo bin ich? -> { art, titel, inv?, project?, invs? }
+function assiWhere(){
+  const inv = assiFocusInv();
+  if(inv){ const p = DB.projects.find(x=>x.id===inv.projectId); return { art:"rechnung", titel:`Rechnung ${inv.rechnungsnr||"?"} · ${inv.lieferant||""}${p ? " · " + p.name : ""}`, inv, project:p }; }
+  if(currentView==="projectDetail"){ const p = DB.projects.find(x=>x.id===currentProjectId); if(p) return { art:"auftrag", titel:`Auftrag ${p.name}`, project:p, invs: DB.invoices.filter(i=>i.projectId===p.id) }; }
+  if(currentView==="check") return { art:"pruefen", titel:"② Prüfen", invs: DB.invoices.filter(i=>invPrintState(i)==="neu") };
+  if(currentView==="print") return { art:"drucken", titel:"③ Drucken", invs: DB.invoices.filter(i=>invPrintState(i)==="bereit") };
+  return { art:"allgemein", titel: ({ upload:"① Hochladen", projects:"Aufträge", invoices:"Alle Rechnungen", settings:"Preise & Einstellungen", home:"Übersicht" })[currentView] || "App", invs: DB.invoices.filter(i=>invPrintState(i)==="neu") };
+}
+const befundeOf = inv => checkInvoice(inv).filter(y=>y.level==="danger"||y.level==="warn");
+const normT = s => String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[„“"'’`]/g," ");
+const tokensT = s => normT(s).split(/[^a-z0-9.]+/).filter(w => w.length >= 3 || /^\d/.test(w));
+function bestMatch(list, text, getText){
+  const tt = new Set(tokensT(text));
+  // starke Woerter (lang, keine Zahl) zaehlen doppelt
+  const scores = list.map(x => { const tk = new Set(tokensT(getText(x))); let sc = 0; tt.forEach(w => { if(tk.has(w)) sc += (w.length >= 5 && !/^\d/.test(w)) ? 2 : 1; }); return sc; });
+  const max = Math.max(0, ...scores);
+  if(!max) return null;
+  const tops = scores.filter(v => v === max).length;
+  if(tops > 1) return null;
+  return max >= 2 || list.length === 1 ? scores.indexOf(max) : null;
+}
+// ---- Sprachverstaendnis ohne KI: Absicht + Bezug (Befund / Position) erkennen ----
+function assiLocal(where, text){
+  const t = normT(text), acts = [];
+  const inv = where.inv;
+  const OK_RE = /(korrekt|stimmt|stimmen|in ordnung|i\.o\.|\bok\b|okay|passt|passen|geklart|richtig|akzeptier|einverstanden|vereinbart|abgemacht|so lassen|ist so)/;
+  const num1 = s => { const m = String(s).match(/(\d[\d']*(?:[.,]\d+)?)/); return m ? parseSwissNumber(m[1]) : null; };
+  if(inv){
+    const bef = befundeOf(inv), items = inv.items || [];
+    const itemIdx = bestMatch(items, text, i => i.label + " " + i.category);
+    const befIdx = bestMatch(bef, text, b => b.text);
+    // Ausmassblaetter
+    const bl = t.match(/bl(?:a|ae)tt(?:er)?\s*((?:\d+\s*(?:\+|,|und|&)?\s*)+)/);
+    if(bl && OK_RE.test(t) || bl && /(gehor|falsch angeschrieben|falsche[nr]? (objekt)?adresse)/.test(t)) acts.push({ typ:"ausmass_bestaetigen", blaetter: bl[1].match(/\d+/g), notiz: text.slice(0,140) });
+    // Preis: "100 ist vereinbart", "neuer Preis 100", "Preis stimmt"
+    const priceBef = bef.map((b,i)=>({b,i})).filter(x => /statt vereinbart|vereinbarte[nr]? preis|kein preis/i.test(x.b.text));
+    const wantsPrice = /(preis|ansatz|tarif|vereinbart|abgemacht|kostet|immer)/.test(t);
+    const pr = (t.match(/(?:chf|fr\.?)\s*(\d[\d']*(?:[.,]\d+)?)|(\d[\d']*(?:[.,]\d+)?)\s*(?:chf|fr\b|franken)/) || []);
+    const newPrice = pr.length ? parseSwissNumber(pr[1] || pr[2]) : null;
+    let targetItem = itemIdx != null ? items[itemIdx] : null;
+    if(!targetItem && befIdx != null && bef[befIdx].itemId) targetItem = items.find(i=>i.id===bef[befIdx].itemId);
+    if(!targetItem && priceBef.length === 1 && priceBef[0].b.itemId) targetItem = items.find(i=>i.id===priceBef[0].b.itemId);
+    if(targetItem && wantsPrice && (OK_RE.test(t) || newPrice != null)){
+      const p = newPrice != null ? newPrice : num(targetItem.ep);
+      if(p != null) acts.push({ typ:"preis_vereinbaren", id: targetItem.id, preis: p, einheit: targetItem.einheit || "", bezeichnung: displayLabel(targetItem.label).split(" – ")[0].replace(/\s+\d[\d.,'\s]*$/,"").slice(0,60), kategorie: targetItem.category });
+    }
+    // Befund ist korrekt / geklaert
+    if(OK_RE.test(t) && !acts.some(a=>a.typ==="ausmass_bestaetigen")){
+      let idxs = [];
+      if(befIdx != null) idxs = [befIdx];
+      else if(targetItem) idxs = bef.map((b,i)=>b.itemId===targetItem.id ? i : -1).filter(i=>i>=0);
+      else if(bef.filter(b=>b.level==="danger").length === 1) idxs = [bef.findIndex(b=>b.level==="danger")];
+      idxs.forEach(i => acts.push({ typ:"befund_quittieren", index:i, notiz: text.slice(0,140) }));
+    }
+    // Kategorie aendern: "ist eine Anfahrt", "als Regie"
+    const cats = (DB.categories||DEFAULT_CATEGORIES);
+    const catHit = cats.find(c => new RegExp("\\b(ist|sind|als|zu|kategorie)\\s+(eine?\\s+|ein\\s+)?" + normT(c.key).replace(/[^a-z]/g,"") + "\\b").test(t.replace(/-/g,"")) || new RegExp("\\b(ist|sind|als|kategorie)\\s+(eine?\\s+)?" + normT(c.label.split(" ")[0]) + "\\b").test(t));
+    if(catHit && targetItem && catHit.key !== targetItem.category) acts.push({ typ:"position", id: targetItem.id, kategorie: catHit.key });
+    // Menge / Stunden
+    const mm = t.match(/(?:menge|nur|sind|waren|statt\s+\d+[.,]?\d*\s*)\s*(\d+(?:[.,]\d+)?)\s*(stunden|std|h|stk|stuck|m2|m3)?\b/);
+    if(mm && targetItem && /(menge|stunden|std|nur|statt)/.test(t)){ const q = parseSwissNumber(mm[1]); if(q != null && q !== num(targetItem.menge)) acts.push({ typ:"position", id: targetItem.id, menge: q, ...(num(targetItem.ep)!=null ? { betrag: roundNum(q * num(targetItem.ep)) } : {}) }); }
+    // Position loeschen
+    if(/(losch|entfern|streich|doppelt)/.test(t) && targetItem) acts.push({ typ:"position_loeschen", id: targetItem.id });
+    // Haus
+    const hm = text.match(/\bhaus\s+([A-Za-z]?\d{0,3}[A-Za-z]?)\b/i);
+    if(hm && hm[1] && !bl && !/blatt/.test(t)) acts.push({ typ:"feld", feld:"haus", wert:"Haus " + hm[1] });
+    if(/keine ab\b|ohne ab\b/.test(t)) acts.push({ typ:"keine_ab", wert:true });
+    if(/weiter\s*verrechn/.test(t)) (targetItem ? [targetItem] : items.filter(x=>x.category==="Regie")).forEach(x=>acts.push({ typ:"position", id:x.id, weiterVerrechnen:true }));
+    if(/\b(freigeben|freigabe|zahlen|bezahlen)\b/.test(t)) acts.push({ typ:"status", wert:"ok", kommentar: text.slice(0,140) });
+    else if(/beanstand|reklamier|gutschrift/.test(t)) acts.push({ typ:"status", wert:"beanstandet", kommentar: text.slice(0,180) });
+    // Auftrag
+    const am = text.match(/(?:gehort|gehört|gehoert|auftrag|objekt)\s+(?:zu[mr]?\s+|ist\s+)?[„"]?([A-ZÄÖÜ][^"“]{3,60})/);
+    if(am && /gehort|gehört|gehoert|zuordnen|verschieb/.test(t)){ const pIdx = bestMatch(DB.projects, am[1], p=>p.name + " " + (p.address||"")); if(pIdx != null) acts.push({ typ:"auftrag", name: DB.projects[pIdx].name }); }
+  } else {
+    const invs = where.invs || [];
+    if(/(alle|sammel).*(freigeb)/.test(t)){
+      const clean = invs.filter(i => !befundeOf(i).length);
+      if(clean.length) acts.push({ typ:"alle_freigeben", ids: clean.map(i=>i.id) });
+    }
+    if(/(zeig|offne|offen|such|finde|wo ist)/.test(t)){
+      const i = bestMatch(DB.invoices, text, x => [x.rechnungsnr, x.lieferant, x.objekt, x.auftragsnummer, extSearchText(x)].join(" "));
+      if(i != null) acts.push({ typ:"oeffnen", id: DB.invoices[i].id });
+    }
+  }
+  return { verstanden: acts.length ? "So habe ich dich verstanden:" : "Das habe ich leider nicht verstanden. Unten findest du die offenen Punkte zum direkten Anklicken – oder formuliere es z.B. so: „Weg inkl. Km 100.– ist korrekt (neuer vereinbarter Preis)“, „Parkplatz ist eine Anfahrt“, „Blatt 2+3 sind korrekt“, „nur 6 Stunden“, „freigeben“." + (assiKey() ? "" : " Mit KI-Schlüssel (Preise & Einstellungen) verstehe ich auch freie Sätze."), aktionen: acts.map(a => inv && !a.inv ? { ...a, inv: inv.id } : a) };
+}
+// ---- mit KI ----
+function assiContext(where){
+  const one = inv => { const p = DB.projects.find(x=>x.id===inv.projectId); return {
+    id: inv.id, lieferant: inv.lieferant, rechnungsnr: inv.rechnungsnr, datum: inv.datum, total: inv.total, objekt: inv.objekt, haus: inv.haus, auftragsnummer: inv.auftragsnummer, status: (inv.pruefung&&inv.pruefung.status)||"offen", keineAB: !!inv.ohneAB,
+    auftrag: p ? p.name : null, kalender: extFor(inv, p).map(e=>({ kunde:e.kunde, adresse:e.adresse, nr:e.auftragsNr })),
+    positionen: (inv.items||[]).map(it=>({ id: it.id, kategorie: it.category, text: it.label, menge: it.menge, einheit: it.einheit, ep: it.ep, betrag: it.preis, weiterVerrechnen: !!it.weiterVerrechnen })),
+    vereinbartePreise: ((getSubFor(inv.lieferant)||{}).tarife||[]).map(t=>({ kategorie:t.category, bezeichnung:t.bezeichnung, einheit:t.einheit, preis:t.preis })),
+    ausmassblaetter: (inv.ausmass||[]).map(s=>({ nr: s.nr, objekt: s.objekt, haus: s.haus, m3: s.m3, bestaetigt: !!s.bestaetigt })),
+    befunde: befundeOf(inv).map((x,i)=>({ index: i, stufe: x.level==="danger" ? "Fehler" : "Hinweis", text: x.text })) }; };
+  return { ort: where.titel, art: where.art, kategorien: (DB.categories||DEFAULT_CATEGORIES).map(c=>c.key),
+    rechnung: where.inv ? one(where.inv) : null,
+    rechnungen: !where.inv ? (where.invs||[]).slice(0, 40).map(i => ({ id:i.id, lieferant:i.lieferant, rechnungsnr:i.rechnungsnr, auftrag:(DB.projects.find(p=>p.id===i.projectId)||{}).name, befunde: befundeOf(i).map(b=>b.text).slice(0,3) })) : null,
+    auftraege: DB.projects.map(x=>x.name).slice(0, 300) };
+}
+const ASSI_SYSTEM = `Du bist der Assistent der PE Rechnungskontrolle (Subunternehmer-Rechnungen gegen Auftragsbestätigungen prüfen, Firma PE Fabrikations AG). Der Benutzer schreibt kurz und umgangssprachlich auf Deutsch (Schweiz). Du bekommst, wo er sich in der App befindet, und die Daten dazu.
+Antworte NUR mit JSON: {"verstanden":"kurz auf Deutsch, was du tust","aktionen":[...]}
+Aktionen (bei Rechnungs-Aktionen immer "inv":"<rechnungs-id>"):
+{"typ":"feld","inv":"..","feld":"rechnungsnr|datum|total|objekt|haus|auftragsnummer|bezahltAm","wert":".."}
+{"typ":"position","inv":"..","id":"<pos-id>","kategorie":"..","menge":0,"einheit":"..","ep":0,"betrag":0,"weiterVerrechnen":true}  (nur geänderte Felder)
+{"typ":"position_neu","inv":"..","kategorie":"..","text":"..","menge":0,"einheit":"..","ep":0,"betrag":0}
+{"typ":"position_loeschen","inv":"..","id":".."}
+{"typ":"preis_vereinbaren","inv":"..","id":"<pos-id>","preis":0,"einheit":"..","bezeichnung":"..","kategorie":".."}  (Preis dauerhaft in die Preisliste des Subunternehmers übernehmen – wenn der Benutzer sagt, der Preis stimmt/ist so abgemacht)
+{"typ":"ausmass_bestaetigen","inv":"..","blaetter":["2","3"],"notiz":".."}
+{"typ":"befund_quittieren","inv":"..","index":0,"notiz":".."}  (Befund ist geklärt)
+{"typ":"status","inv":"..","wert":"ok|beanstandet|offen","kommentar":".."}
+{"typ":"keine_ab","inv":"..","wert":true}
+{"typ":"auftrag","inv":"..","name":"<exakt aus auftraege>"}
+{"typ":"alle_freigeben","ids":["..",".."]}   (nur Rechnungen ohne Befunde)
+{"typ":"oeffnen","id":"<rechnungs-id>"}
+Wenn der Benutzer sagt, ein Preis sei korrekt: quittiere den Preis-Befund UND übernimm den Preis mit preis_vereinbaren. Ändere nichts Ungefragtes. Wenn unklar: aktionen [] und kurz nachfragen.`;
+async function assiAskClaude(where, text){
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: { "content-type":"application/json", "x-api-key": key, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
+    headers: { "content-type":"application/json", "x-api-key": assiKey(), "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
     body: JSON.stringify({ model: ASSI_MODEL, max_tokens: 1500, system: ASSI_SYSTEM,
-      messages: [{ role:"user", content: `Rechnung:\n${JSON.stringify(assiContext(inv))}\n\nAnweisung des Benutzers:\n${text}` }] }),
+      messages: [{ role:"user", content: `Kontext:\n${JSON.stringify(assiContext(where))}\n\nBenutzer:\n${text}` }] }),
   });
-  if(!res.ok){ const t = await res.text(); throw new Error(`Assistent nicht erreichbar (${res.status}). ${t.slice(0,160)}`); }
+  if(!res.ok){ const tx = await res.text(); throw new Error(`KI nicht erreichbar (${res.status}). ${tx.slice(0,140)}`); }
   const data = await res.json();
   const out = (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n").replace(/```json|```/g,"").trim();
   const j = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}")+1));
   return { verstanden: j.verstanden || "", aktionen: Array.isArray(j.aktionen) ? j.aktionen : [] };
 }
-// Ohne API-Schluessel: einfache Befehle direkt verstehen
-function assiLocal(inv, text){
-  const t = text.toLowerCase(), a = [];
-  const bl = t.match(/bl(?:a|ä)tt(?:er)?\s*((?:\d+\s*(?:\+|,|und|&)?\s*)+)/);
-  if(bl && /(korrekt|richtig|stimm|in ordnung|ok\b|gehör|passt|falsch angeschrieben|falsche[nr]? (objekt)?adresse)/.test(t)) a.push({ typ:"ausmass_bestaetigen", blaetter: bl[1].match(/\d+/g), notiz: text.slice(0,120) });
-  const hm = text.match(/\bhaus\s+([A-Za-z]?\d{0,3}[A-Za-z]?)\b/i);
-  if(hm && /(ist|auf|gehört|richtig|korrekt|setz)/i.test(text) && !bl) a.push({ typ:"feld", feld:"haus", wert:"Haus " + hm[1] });
-  if(/keine ab\b/.test(t)) a.push({ typ:"keine_ab", wert:true });
-  if(/weiter\s*verrechnen/.test(t)) (inv.items||[]).filter(x=>x.category==="Regie").forEach(x=>a.push({ typ:"position", id:x.id, weiterVerrechnen:true }));
-  if(/\bfreigeben\b|\bfreigabe\b/.test(t)) a.push({ typ:"status", wert:"ok", kommentar: text.slice(0,120) });
-  else if(/beanstand/.test(t)) a.push({ typ:"status", wert:"beanstandet", kommentar: text.slice(0,160) });
-  return { verstanden: a.length ? "Einfache Befehle erkannt (ohne KI)." : "Das kann ich ohne KI-Schlüssel nicht verstehen. Einfache Befehle: „Blatt 2+3 sind korrekt“, „Haus B“, „keine AB“, „freigeben“, „beanstanden …“, „weiter verrechnen“. Für freie Texte unter Preise & Einstellungen den Assistenten-Schlüssel eintragen.", aktionen: a };
-}
-function assiDescribe(inv, x){
-  const it = id => (inv.items||[]).find(i=>i.id===id);
+// ---- Beschreiben / Ausfuehren ----
+function assiDescribe(x){
+  const inv = DB.invoices.find(i=>i.id===x.inv);
+  const it = id => inv && (inv.items||[]).find(i=>i.id===id);
+  const pre = inv && x.typ !== "alle_freigeben" && ASSI.multi ? `[${inv.rechnungsnr}] ` : "";
   switch(x.typ){
-    case "feld": return `${FIELD_LABELS[x.feld]||x.feld}: „${inv[x.feld] ?? ""}“ → „${x.wert}“`;
-    case "position": { const i = it(x.id); return `Position „${i ? displayLabel(i.label) : x.id}“: ` + Object.entries(x).filter(([k])=>!["typ","id"].includes(k)).map(([k,v])=>`${k} = ${v}`).join(", "); }
-    case "position_neu": return `Neue Position: ${x.kategorie} ${x.menge ?? ""} ${x.einheit ?? ""} „${x.text||""}“ CHF ${x.betrag ?? "–"}`;
-    case "position_loeschen": { const i = it(x.id); return `Position löschen: „${i ? displayLabel(i.label) : x.id}“`; }
-    case "ausmass_bestaetigen": return `Ausmassblatt ${(x.blaetter||[]).join(" + ")} als zu dieser Rechnung gehörend bestätigen${x.notiz ? " – " + x.notiz : ""}`;
-    case "befund_quittieren": { const b = checkInvoice(inv).filter(y=>y.level==="danger"||y.level==="warn")[x.index]; return `Befund quittieren: „${b ? shortText(b.text, 90) : "#" + x.index}“${x.notiz ? " – " + x.notiz : ""}`; }
-    case "status": return `Status: ${x.wert==="ok" ? "freigeben" : x.wert}${x.kommentar ? " – " + x.kommentar : ""}`;
-    case "keine_ab": return x.wert ? "„Keine AB vorhanden“ bestätigen" : "„Keine AB“ aufheben";
-    case "auftrag": return `Anderem Auftrag zuordnen: „${x.name}“`;
-    case "kommentar": return `Kommentar: „${x.text}“`;
+    case "feld": return pre + `${FIELD_LABELS[x.feld]||x.feld}: „${inv ? (inv[x.feld] ?? "") : ""}“ → „${x.wert}“`;
+    case "position": { const i = it(x.id); return pre + `Position „${i ? shortText(displayLabel(i.label), 50) : x.id}“: ` + Object.entries(x).filter(([k])=>!["typ","id","inv"].includes(k)).map(([k,v])=>`${({kategorie:"Kategorie",menge:"Menge",betrag:"Betrag",ep:"EP",einheit:"Einheit",weiterVerrechnen:"weiter verrechnen"})[k]||k} → ${v===true?"ja":v}`).join(", "); }
+    case "position_neu": return pre + `Neue Position: ${x.kategorie} ${x.menge ?? ""} ${x.einheit ?? ""} „${x.text||""}“ CHF ${x.betrag ?? "–"}`;
+    case "position_loeschen": { const i = it(x.id); return pre + `Position löschen: „${i ? shortText(displayLabel(i.label), 60) : x.id}“`; }
+    case "preis_vereinbaren": return pre + `Vereinbarten Preis bei ${inv ? inv.lieferant : "Sub"} speichern: „${x.bezeichnung}“ = CHF ${fmt(x.preis)}${x.einheit ? " / " + x.einheit : ""} (gilt ab sofort für alle Rechnungen)`;
+    case "ausmass_bestaetigen": return pre + `Ausmassblatt ${(x.blaetter||[]).join(" + ")} gehört zu dieser Rechnung (bestätigt)`;
+    case "befund_quittieren": { const b = inv && befundeOf(inv)[x.index]; return pre + `Als geklärt markieren: „${b ? shortText(b.text, 90) : "#" + x.index}“`; }
+    case "status": return pre + `Status: ${x.wert==="ok" ? "freigeben" : x.wert}${x.kommentar ? " – " + shortText(x.kommentar, 80) : ""}`;
+    case "keine_ab": return pre + (x.wert ? "„Keine AB vorhanden“ bestätigen" : "„Keine AB“ aufheben");
+    case "auftrag": return pre + `Anderem Auftrag zuordnen: „${x.name}“`;
+    case "alle_freigeben": return `${(x.ids||[]).length} Rechnung(en) ohne Auffälligkeiten freigeben`;
+    case "oeffnen": { const i = DB.invoices.find(y=>y.id===x.id); return `Öffnen: ${i ? `${i.lieferant} ${i.rechnungsnr}` : x.id}`; }
     default: return `(unbekannte Aktion ${x.typ} – wird ignoriert)`;
   }
 }
-async function assiApply(inv, aktionen, befehl){
+async function assiApply(aktionen, befehl){
   const who = `${initialsFor(currentUser.email)} ${shortDate(new Date())}`;
-  const befunde = checkInvoice(inv).filter(y=>y.level==="danger"||y.level==="warn");
+  const touched = new Map(), subsTouched = new Set();
+  const befCache = {};
   for(const x of aktionen){
+    if(x.typ==="alle_freigeben"){
+      for(const id of (x.ids||[])){ const i = DB.invoices.find(y=>y.id===id); if(i && !befundeOf(i).length){ i.pruefung = { status:"ok", kommentar:"", by: currentUser.email, at: new Date().toLocaleString("de-CH"), ...freigabeVermerk() }; touched.set(i.id, i); } }
+      continue;
+    }
+    if(x.typ==="oeffnen"){ const i = DB.invoices.find(y=>y.id===x.id); if(i) setTimeout(()=>openLink({ type:"invoice", id:i.id }), 50); continue; }
+    const inv = DB.invoices.find(i=>i.id===x.inv); if(!inv) continue;
+    befCache[inv.id] = befCache[inv.id] || befundeOf(inv);
+    touched.set(inv.id, inv);
     if(x.typ==="feld" && ["rechnungsnr","datum","total","objekt","haus","auftragsnummer","bezahltAm"].includes(x.feld)){
       inv[x.feld] = x.feld==="total" ? num(x.wert) : x.feld==="haus" ? normHaus(x.wert) : String(x.wert);
     } else if(x.typ==="position"){
       const i = (inv.items||[]).find(y=>y.id===x.id); if(!i) continue;
       if(x.kategorie) i.category = x.kategorie;
-      ["menge","ep"].forEach(k=>{ if(x[k]!==undefined) i[k] = num(x[k]); });
+      if(x.menge!==undefined) i.menge = num(x.menge);
+      if(x.ep!==undefined) i.ep = num(x.ep);
       if(x.betrag!==undefined) i.preis = num(x.betrag);
       if(x.einheit) i.einheit = x.einheit;
       if(x.weiterVerrechnen!==undefined) i.weiterVerrechnen = !!x.weiterVerrechnen;
@@ -4107,11 +4222,23 @@ async function assiApply(inv, aktionen, befehl){
       inv.items = (inv.items||[]).concat([{ id: uid("it"), category: x.kategorie || "Sonstiges", label: x.text || "Position (Assistent)", menge: num(x.menge), einheit: x.einheit || "", ep: num(x.ep), preis: num(x.betrag) }]);
     } else if(x.typ==="position_loeschen"){
       inv.items = (inv.items||[]).filter(y=>y.id!==x.id);
+    } else if(x.typ==="preis_vereinbaren"){
+      if(!hasPerm("editPreise")){ toast("Keine Berechtigung, Preise zu ändern – nur quittiert."); continue; }
+      let sub = getSubFor(inv.lieferant);
+      if(!sub){ sub = { id: uid("sub"), name: inv.lieferant, aliases: [], tarife: [] }; DB.subs.push(sub); }
+      const it = (inv.items||[]).find(y=>y.id===x.id);
+      const kat = x.kategorie || (it && it.category) || "Sonstiges";
+      const bez = String(x.bezeichnung || (it ? displayLabel(it.label) : "Position")).slice(0,60);
+      const ex = (sub.tarife||[]).find(tf => tf.category===kat && normT(tf.bezeichnung)===normT(bez));
+      if(ex) ex.preis = num(x.preis);
+      else sub.tarife = (sub.tarife||[]).concat([{ id: uid("tf"), category: kat, bezeichnung: bez, einheit: x.einheit || (it && it.einheit) || "", preis: num(x.preis), keywords: tokensT(bez).filter(w=>!/^\d/.test(w)).slice(0,3).join(", "), gueltigAb:"", material:"" }]);
+      if(it){ it.tarifId = undefined; delete it.tarifId; }
+      subsTouched.add(sub);
     } else if(x.typ==="ausmass_bestaetigen"){
       const nrs = (x.blaetter||[]).map(String);
       (inv.ausmass||[]).forEach(s => { if(nrs.includes(String(s.nr))){ s.bestaetigt = true; s.notiz = x.notiz || "bestätigt"; s.von = who; } });
     } else if(x.typ==="befund_quittieren"){
-      const b = befunde[x.index]; if(!b) continue;
+      const b = befCache[inv.id][x.index]; if(!b) continue;
       inv.quittiert = (inv.quittiert||[]).concat([{ key: findingKey(b.text), notiz: x.notiz || "geklärt", von: who }]);
     } else if(x.typ==="status" && ["ok","beanstandet","offen"].includes(x.wert)){
       inv.pruefung = { status: x.wert, kommentar: x.kommentar || (inv.pruefung && inv.pruefung.kommentar) || "", by: currentUser.email, at: new Date().toLocaleString("de-CH"), ...(x.wert==="ok" ? freigabeVermerk() : {}) };
@@ -4119,34 +4246,99 @@ async function assiApply(inv, aktionen, befehl){
       inv.ohneAB = !!x.wert; inv.ohneABvon = x.wert ? who : "";
     } else if(x.typ==="auftrag"){
       const p = DB.projects.find(y=>y.name===x.name); if(p) inv.projectId = p.id;
-    } else if(x.typ==="kommentar"){
-      inv.pruefung = { ...(inv.pruefung || { status:"offen" }), kommentar: x.text };
     }
   }
-  inv.assistentLog = (inv.assistentLog||[]).concat([{ am: new Date().toLocaleString("de-CH"), von: currentUser.email, befehl: String(befehl).slice(0,300) }]).slice(-20);
-  await saveInvoice(inv);
+  for(const s of subsTouched) await saveSub(s);
+  for(const inv of touched.values()){
+    if(aktionen.some(a=>a.inv===inv.id)) inv.assistentLog = (inv.assistentLog||[]).concat([{ am: new Date().toLocaleString("de-CH"), von: currentUser.email, befehl: String(befehl).slice(0,300) }]).slice(-20);
+    await saveInvoice(inv);
+  }
 }
-function wireAssistent(el, getInv, rerender){
-  const box = el.querySelector("[data-assi]"); if(!box) return;
-  const inp = box.querySelector("textarea"), out = box.querySelector(".assiout"), btn = box.querySelector("[data-assisend]");
-  const run = async ()=>{
-    const inv = getInv(); const text = inp.value.trim(); if(!inv || !text) return;
-    btn.disabled = true; out.innerHTML = `<div class="muted">⏳ Assistent denkt nach…</div>`;
+// "Was ist hier zu tun?" – Vorschlaege ohne Tippen
+function assiSuggestions(where){
+  const out = [];
+  if(where.inv){
+    const inv = where.inv;
+    befundeOf(inv).forEach((b, i) => {
+      const acts = [{ label:"✓ Ist geklärt", a:[{ typ:"befund_quittieren", inv:inv.id, index:i, notiz:"geklärt" }] }];
+      const it = b.itemId && (inv.items||[]).find(x=>x.id===b.itemId);
+      if(it && /statt vereinbart|kein preis/i.test(b.text) && num(it.ep)!=null) acts.push({ label:`💰 CHF ${fmt(it.ep)} als vereinbarten Preis übernehmen`, a:[{ typ:"preis_vereinbaren", inv:inv.id, id:it.id, preis:num(it.ep), einheit:it.einheit, bezeichnung: displayLabel(it.label).split(" – ")[0].replace(/\s+\d[\d.,'\s]*$/,"").slice(0,60), kategorie: it.category }, { typ:"befund_quittieren", inv:inv.id, index:i, notiz:"Preis übernommen" }] });
+      if(/ausmassblatt .* anderen objekt/i.test(b.text)){ const nrs = (inv.ausmass||[]).filter(s=>!s.bestaetigt).map(s=>s.nr); acts.unshift({ label:"✓ Blätter gehören dazu", a:[{ typ:"ausmass_bestaetigen", inv:inv.id, blaetter:nrs, notiz:"gehören zu dieser Rechnung" }] }); }
+      if(/^AB fehlt/i.test(b.text)) acts.unshift({ label:"🚫 Keine AB vorhanden", a:[{ typ:"keine_ab", inv:inv.id, wert:true }] });
+      out.push({ text: b.text, level: b.level, acts });
+    });
+    if(!befundeOf(inv).length && (!inv.pruefung || inv.pruefung.status!=="ok")) out.push({ text:"Keine Auffälligkeiten – Rechnung kann freigegeben werden.", level:"ok", acts:[{ label:"✓ Freigeben", a:[{ typ:"status", inv:inv.id, wert:"ok" }] }] });
+  } else {
+    const invs = where.invs || [];
+    const clean = invs.filter(i => !befundeOf(i).length), bad = invs.filter(i => befundeOf(i).length);
+    if(clean.length && where.art !== "drucken") out.push({ text:`${clean.length} Rechnung(en) ohne Auffälligkeiten`, level:"ok", acts:[{ label:`✓ Alle ${clean.length} freigeben`, a:[{ typ:"alle_freigeben", ids: clean.map(i=>i.id) }] }] });
+    bad.slice(0, 8).forEach(i => out.push({ text:`${i.lieferant} ${i.rechnungsnr}: ${shortText(befundeOf(i)[0].text, 90)}${befundeOf(i).length>1 ? ` (+${befundeOf(i).length-1})` : ""}`, level:"danger", acts:[{ label:"Öffnen", a:[{ typ:"oeffnen", id:i.id }] }] }));
+    if(!out.length) out.push({ text:"Hier ist nichts offen. 👍", level:"ok", acts:[] });
+  }
+  return out;
+}
+function assiRefresh(){
+  const f = ASSI.focus;
+  if(f && f.el && document.body.contains(f.el)){
+    renderPruefPanel(f.el, f.getInv);
+    const tbl = f.el.parentElement && f.el.parentElement.querySelector(".itemsSlot");
+    if(tbl) renderItemsTable(tbl, f.getInv, ()=>renderPruefPanel(f.el, f.getInv));
+  } else render();
+  updateBadges();
+}
+function assiInit(){
+  if(document.getElementById("assiFab")) return;
+  document.body.insertAdjacentHTML("beforeend", `
+    <button id="assiFab" title="Assistent – weiss, wo du bist">🤖</button>
+    <div id="assiPanel" style="display:none;">
+      <div class="assihead"><div><b>🤖 Assistent</b><div class="muted" id="assiWhere" style="font-size:11.5px;"></div></div><button class="close-x" id="assiClose">✕</button></div>
+      <div id="assiBody"></div>
+      <div class="assiinput"><textarea id="assiText" rows="2" placeholder="Schreib, was Sache ist … (Enter = senden)"></textarea><button class="primary small" id="assiSend">Senden</button></div>
+    </div>`);
+  document.getElementById("assiFab").addEventListener("click", ()=>{ ASSI.open = !ASSI.open; assiRender(); });
+  document.getElementById("assiClose").addEventListener("click", ()=>{ ASSI.open = false; assiRender(); });
+  const send = async ()=>{
+    const ta = document.getElementById("assiText"); const text = ta.value.trim(); if(!text) return;
+    const where = assiWhere();
+    ASSI.history.push({ who:"ich", text });
+    ASSI.history.push({ who:"assi", text:"⏳ …", pending:true });
+    assiRender(); ta.value = "";
     let r;
-    try{ r = assiKey() ? await assiAskClaude(inv, text) : assiLocal(inv, text); }
-    catch(err){ console.error(err); r = assiLocal(inv, text); r.verstanden = `⚠ ${escapeHtml(err.message||String(err))} – einfache Befehle wurden lokal ausgewertet. ` + r.verstanden; }
-    btn.disabled = false;
-    const acts = r.aktionen.filter(x => x && x.typ);
-    out.innerHTML = `<div class="assiresp"><div>🤖 ${escapeHtml(r.verstanden)}</div>
-      ${acts.length ? `<ul>${acts.map(x=>`<li>${escapeHtml(assiDescribe(inv, x))}</li>`).join("")}</ul>
-      <div style="display:flex;gap:6px;"><button class="small primary" data-assiok>✓ Ausführen</button><button class="small" data-assino>Verwerfen</button></div>` : ""}</div>`;
-    const ok = out.querySelector("[data-assiok]");
-    if(ok) ok.addEventListener("click", async ()=>{ const i = getInv(); if(!i) return; await assiApply(i, acts, text); toast("Erledigt – Änderungen gespeichert."); inp.value = ""; rerender(); });
-    const no = out.querySelector("[data-assino]");
-    if(no) no.addEventListener("click", ()=>{ out.innerHTML = ""; });
+    try{ r = assiKey() ? await assiAskClaude(where, text) : assiLocal(where, text); }
+    catch(err){ console.error(err); r = assiLocal(where, text); r.verstanden = `⚠ ${err.message} – ohne KI ausgewertet. ` + r.verstanden; }
+    const acts = (r.aktionen||[]).filter(x=>x && x.typ).map(x => where.inv && !x.inv && x.typ!=="alle_freigeben" && x.typ!=="oeffnen" ? { ...x, inv: where.inv.id } : x);
+    ASSI.history.pop();
+    ASSI.history.push({ who:"assi", text: r.verstanden, acts, befehl: text });
+    assiRender();
   };
-  btn.addEventListener("click", run);
-  inp.addEventListener("keydown", e=>{ if(e.key==="Enter" && (e.ctrlKey || e.metaKey)) run(); });
+  document.getElementById("assiSend").addEventListener("click", send);
+  document.getElementById("assiText").addEventListener("keydown", e=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); } });
+}
+function assiRender(){
+  assiInit();
+  const panel = document.getElementById("assiPanel");
+  panel.style.display = ASSI.open ? "flex" : "none";
+  document.getElementById("assiFab").classList.toggle("open", ASSI.open);
+  if(!ASSI.open) return;
+  const where = assiWhere();
+  ASSI.multi = !where.inv;
+  document.getElementById("assiWhere").textContent = "📍 " + where.titel;
+  const sug = assiSuggestions(where);
+  const body = document.getElementById("assiBody");
+  body.innerHTML = `
+    <div class="assisec">Was ist hier zu tun?</div>
+    ${sug.map((s, k) => `<div class="assisug ${s.level}"><div>${s.level==="danger"?"✗":s.level==="warn"?"⚠":"✓"} ${escapeHtml(s.text)}</div>${s.acts.length ? `<div class="assibtns">${s.acts.map((a, j)=>`<button class="small" data-sug="${k}:${j}">${escapeHtml(a.label)}</button>`).join("")}</div>` : ""}</div>`).join("")}
+    ${ASSI.history.length ? `<div class="assisec">Gespräch</div>` : ""}
+    ${ASSI.history.map((h, k) => `<div class="assimsg ${h.who}">${escapeHtml(h.text)}${h.acts && h.acts.length && !h.done ? `<ul>${h.acts.map(x=>`<li>${escapeHtml(assiDescribe(x))}</li>`).join("")}</ul><div class="assibtns"><button class="small primary" data-run="${k}">✓ Ausführen</button><button class="small" data-drop="${k}">Verwerfen</button></div>` : ""}${h.done ? `<div class="muted" style="font-size:11.5px;margin-top:4px;">✓ erledigt</div>` : ""}</div>`).join("")}`;
+  body.querySelectorAll("[data-sug]").forEach(b => b.addEventListener("click", async ()=>{
+    const [k, j] = b.dataset.sug.split(":").map(Number);
+    const a = sug[k].acts[j]; await assiApply(a.a, a.label); toast("Erledigt."); assiRefresh(); assiRender();
+  }));
+  body.querySelectorAll("[data-run]").forEach(b => b.addEventListener("click", async ()=>{
+    const h = ASSI.history[+b.dataset.run]; await assiApply(h.acts, h.befehl); h.done = true; toast("Erledigt – gespeichert."); assiRefresh(); assiRender();
+  }));
+  body.querySelectorAll("[data-drop]").forEach(b => b.addEventListener("click", ()=>{ const h = ASSI.history[+b.dataset.drop]; h.acts = []; h.text += " (verworfen)"; assiRender(); }));
+  body.scrollTop = body.scrollHeight;
 }
 
 function renderPruefPanel(el, getInv){
@@ -4159,14 +4351,7 @@ function renderPruefPanel(el, getInv){
         <span class="muted" style="margin-left:auto;font-size:11.5px;">${st!=="offen" && inv.pruefung && inv.pruefung.by ? `Status von ${escapeHtml(inv.pruefung.by)}${inv.pruefung.at?" · "+escapeHtml(inv.pruefung.at):""}` : ""}</span>
       </div>
       ${findingsHtml(f)}
-      <div class="assibox" data-assi>
-        <div style="display:flex;gap:8px;align-items:flex-start;">
-          <textarea rows="2" placeholder="🤖 Assistent: z.B. „Blatt 2+3 vom Ausmass sind nur mit falscher Objektadresse angeschrieben, gehören aber zu dieser Rechnung“ (Ctrl+Enter)"></textarea>
-          <button class="small primary" data-assisend style="white-space:nowrap;">Senden</button>
-        </div>
-        <div class="assiout"></div>
-        ${(inv.assistentLog||[]).length ? `<details style="margin-top:4px;"><summary class="muted" style="font-size:11.5px;cursor:pointer;">Bisherige Anweisungen (${inv.assistentLog.length})</summary><ul style="font-size:12px;margin:4px 0 0 0;padding-left:18px;">${inv.assistentLog.slice().reverse().map(e=>`<li><b>${escapeHtml(e.am)}</b> – ${escapeHtml(nameFromEmail(e.von))}: ${escapeHtml(e.befehl)}</li>`).join("")}</ul></details>` : ""}
-      </div>
+      ${(inv.assistentLog||[]).length ? `<details style="margin-top:6px;"><summary class="muted" style="font-size:11.5px;cursor:pointer;">🤖 Anweisungen an den Assistenten (${inv.assistentLog.length})</summary><ul style="font-size:12px;margin:4px 0 0 0;padding-left:18px;">${inv.assistentLog.slice().reverse().map(e=>`<li><b>${escapeHtml(e.am)}</b> – ${escapeHtml(nameFromEmail(e.von))}: ${escapeHtml(e.befehl)}</li>`).join("")}</ul></details>` : ""}
       <div class="row" style="margin-top:12px;align-items:flex-end;flex-wrap:wrap;">
         <label class="field" style="flex:3;min-width:220px;margin:0;"><span>Kommentar zur Prüfung</span>
           <input type="text" data-pk value="${escapeAttr((inv.pruefung && inv.pruefung.kommentar)||"")}" placeholder="z.B. Gutschrift verlangt am …"></label>
@@ -4202,11 +4387,8 @@ function renderPruefPanel(el, getInv){
     });
   });
   wireDupButtons(el);
-  wireAssistent(el, getInv, ()=>{
-    renderPruefPanel(el, getInv);
-    const tbl = el.parentElement && el.parentElement.querySelector(".itemsSlot");
-    if(tbl) renderItemsTable(tbl, getInv, ()=>renderPruefPanel(el, getInv));
-  });
+  // Fokus fuer den schwebenden Assistenten: diese Rechnung ist gerade offen
+  ASSI.focus = { invId: inv.id, el, getInv };
   const wva = el.querySelector("[data-wvall]");
   if(wva) wva.addEventListener("click", async ()=>{
     const i = getInv(); if(!i) return;
