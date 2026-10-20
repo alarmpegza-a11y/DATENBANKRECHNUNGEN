@@ -420,6 +420,14 @@ const DEFAULT_CATEGORIES = [
   { key: "Sonstiges", label: "⚠ Nicht zugeordnet", unit: "Stk", keywords: [] },
 ];
 
+// Kuerzel VW (Vorwand) / TW (Trennwand) erkennen -- auch alleinstehend ("VW" in eigener Zeile, "2 TW 1.00 …")
+function vwTwKat(text){
+  const t = String(text||"").toLowerCase();
+  if(/\b(tw|trw)\b|trennwand|raumtrenner/.test(t)) return "TW";
+  if(/\bvw\b|vorwand/.test(t)) return "VW";
+  return null;
+}
+
 // Bekannte Subunternehmer -> sauberer Anzeigename (hilft bei Logos/Stilschriften, die OCR schlecht liest)
 const KNOWN_SUPPLIERS = [
   { hint: "froh haustechnik", name: "Froh Haustechnik GmbH" },
@@ -513,6 +521,7 @@ function startDataListeners(){
     setTimeout(fillMissingHouses, 1500);
     setTimeout(cleanupEmptyProjects, 2500);
     setTimeout(autoReparseBroken, 3500);
+    setTimeout(fixVwTwCategories, 5000);
     renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
@@ -1367,7 +1376,7 @@ function parseInvoiceText(text){
         if(m){ const amt = parseSwissNumber(m[1]); if(it.preis!=null && it.menge && Math.abs(it.menge * it.preis - amt) <= Math.max(1, amt * 0.01)){ it.ep = it.preis; it.preis = amt; } }
       }
       if(["Elemente","Sonstiges"].includes(it.category)){
-        const c = /raumtrenner|trennwand/.test(nlc) ? "TW" : /vorwand/.test(nlc) ? "VW" : /duofix/.test(nlc) ? "Duofix" : /beplank/.test(nlc) ? "Beplankung" : /ausflock/.test(nlc) ? "Ausflockung" : null;
+        const c = vwTwKat(nlc) || (/duofix/.test(nlc) ? "Duofix" : /beplank/.test(nlc) ? "Beplankung" : /ausflock/.test(nlc) ? "Ausflockung" : null);
         if(c) it.category = c;
       }
       const desc = nl.replace(/(-?[\d']+[.,]\d{2})\s*$/, "").trim();
@@ -1376,6 +1385,22 @@ function parseInvoiceText(text){
     });
     result.items = result.items.filter(it => !consumed.has(idxOf.get(it)));
   }
+
+  // Allgemeine Element-Positionen mit Kuerzel VW/TW im Text (inkl. Folgezeile) der richtigen Kategorie zuordnen
+  result.items.forEach(it=>{
+    if(!["Elemente","Sonstiges"].includes(it.category)) return;
+    let k = vwTwKat(it.label);
+    if(!k){
+      // mehrzeilige Beschreibung ("Elementmontage" / "GiS OST" / "TW"): die naechsten Zeilen bis zur naechsten Position pruefen
+      const li = rawLines.findIndex(l => it.label.startsWith(l.slice(0,90)));
+      for(let j = li + 1; li >= 0 && j <= li + 3 && j < rawLines.length; j++){
+        const nl = rawLines[j];
+        if(/^\d{1,2}\s+\S/.test(nl) || /^(total|zzgl|mwst|rundung|betrag|subtotal|zwischensumme|summe)/i.test(nl)) break;
+        k = vwTwKat(nl); if(k) break;
+      }
+    }
+    if(k && categories.some(c=>c.key===k)){ it.category = k; it.einheit = it.einheit || "Stk"; }
+  });
 
   // Sammelrechnung ("Diverse Objekte"): Positionskopf "1 Feldblumenweg, Zürich …" -> Objekt pro Position
   {
@@ -2205,7 +2230,6 @@ function renderSuppliers(){
         <div>
           <div class="pname">🏢 ${escapeHtml(name)}</div>
           <div class="paddr">${projectIds.size} Auftrag/Aufträge · ${invs.length} Rechnung(en)</div>
-          ${extLine(extFor(null, p), true)}
           <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
         </div>
         <div class="pmeta">
@@ -2473,6 +2497,27 @@ async function autoReparseBroken(){
     if(Math.abs(sumNew - r.total/1.081) > Math.max(2, r.total*0.01)) continue; // neue Lesung passt auch nicht -> lassen
     inv.items = r.items; inv.total = r.total;
     try{ await saveInvoice(inv); }catch(e){}
+  }
+}
+// Einmalig: bestehende, noch nicht gedruckte Rechnungen -- "Elemente (allg.)" mit VW/TW im Text umstellen
+let vwTwFixDone = false;
+async function fixVwTwCategories(){
+  if(vwTwFixDone || !DB.invoices.length) return; vwTwFixDone = true;
+  for(const inv of DB.invoices){
+    if(inv.gedrucktAm || !(inv.items||[]).length) continue;
+    let fresh = null, changed = false;
+    inv.items.forEach((it, i)=>{
+      if(!["Elemente","Sonstiges"].includes(it.category) || it.tarifId) return;
+      let k = vwTwKat(it.label);
+      if(!k && inv.rawText){
+        // aelter gelesene Position ohne Folgezeile im Text: Kategorie aus neuer Lesung uebernehmen, wenn Menge/Betrag gleich sind
+        if(fresh === null) fresh = (reparseInvoice(inv) || {}).items || [];
+        const f = fresh[i];
+        if(f && ["VW","TW"].includes(f.category) && num(f.menge)===num(it.menge) && num(f.preis)===num(it.preis)){ k = f.category; if(!/\b(vw|tw)\b/i.test(it.label)) it.label = f.label; }
+      }
+      if(k){ it.category = k; changed = true; }
+    });
+    if(changed){ try{ await saveInvoice(inv); }catch(e){ console.error(e); } }
   }
 }
 // Material einer Beplankungs-Position: aus dem Text, sonst aus dem gewaehlten/erkannten vereinbarten Preis
@@ -3775,9 +3820,16 @@ function checkInvoice(inv){
     }
   }
   if(num(inv.total)!=null && inv.datum){
+    // Gleicher Betrag allein ist kein Hinweis (viele Rechnungen haben denselben Betrag) --
+    // nur warnen, wenn auch Objekt/Auftrag und Positionen uebereinstimmen und nur die Rechnungsnr. abweicht
+    const objOf = o => o.objekt || (DB.projects.find(x=>x.id===o.projectId)||{}).address || "";
+    const sameObj = o => (o.projectId && o.projectId===inv.projectId)
+      || (!!objOf(o) && !!objOf(inv) && scoreAddress(stripHaus(objOf(o)), stripHaus(objOf(inv))) >= 2);
+    const posKey = x => (x.items||[]).map(it=>`${it.category}|${num(it.menge)}|${num(it.preis)}`).sort().join(";");
     const dup2 = DB.invoices.find(o => o.id!==inv.id && sameLief(o) && o.datum===inv.datum && sameTotal(o)
-      && String(o.rechnungsnr||"").trim().toLowerCase()!==String(inv.rechnungsnr||"").trim().toLowerCase());
-    if(dup2) f.push({ level:"warn", text:`Gleicher Betrag (CHF ${fmt(inv.total)}) und gleiches Datum wie Rechnung ${dup2.rechnungsnr||"ohne Nr."} – evtl. doppelt?` });
+      && String(o.rechnungsnr||"").trim().toLowerCase()!==String(inv.rechnungsnr||"").trim().toLowerCase()
+      && sameObj(o) && posKey(o)===posKey(inv));
+    if(dup2) f.push({ level:"warn", text:`Gleiches Objekt, Datum, Betrag (CHF ${fmt(inv.total)}) und gleiche Positionen wie Rechnung ${dup2.rechnungsnr||"ohne Nr."} – nur die Rechnungsnr. ist verschieden. Evtl. doppelt?` });
   }
 
   // --- Stammdaten vorhanden? ---
