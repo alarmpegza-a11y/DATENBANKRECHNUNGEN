@@ -4002,6 +4002,21 @@ function checkInvoice(inv){
           return;
         }
       }
+      // Rechnung sagt nur "Elementmontage" (ohne VW/TW), AB hat VW + TW: gegen die Summe VW + TW pruefen
+      if(cat==="Elemente" && !getSoll(p, "Elemente", scopeHaus)){
+        const sv = getSoll(p, "VW", scopeHaus), stw = getSoll(p, "TW", scopeHaus);
+        if(sv || stw){
+          const sollE = roundNum((sv ? sv.menge : 0) + (stw ? stw.menge : 0));
+          const istE = projInvs.reduce((s,o)=> s + (o.items||[]).filter(x=>["Elemente","VW","TW"].includes(x.category)).reduce((a,x)=>a+(num(x.menge)||0),0), 0);
+          const teil = [sv ? `${fmtQty(sv.menge)} VW` : "", stw ? `${fmtQty(stw.menge)} TW` : ""].filter(Boolean).join(" + ");
+          if(istE > sollE * (1 + S.mengenTolProzent/100) + 1e-9)
+            f.push({ level:"danger", text:`Elemente${hTxt}: kumuliert ${fmtQty(istE)} Stk verrechnet (VW + TW zusammen), Soll laut AB ${fmtQty(sollE)} Stk (${teil}) → ${fmtQty(istE - sollE)} Stk zu viel.` });
+          else f.push({ level:"ok", text:`Elemente${hTxt}: kumuliert ${fmtQty(istE)} von ${fmtQty(sollE)} Stk (AB: ${teil}).` });
+          const lab = (items.find(x=>x.category==="Elemente")||{}).label || "";
+          f.push({ level:"warn", text:`Rechnung unterscheidet nicht zwischen Vorwand und Trennwand („${shortText(lab, 50)}“) – laut AB ${teil}. Bitte Position in VW/TW aufteilen (Preise sind verschieden) oder beim Sub nachfragen.` });
+          return;
+        }
+      }
       const ist = projInvs.reduce((s,o)=> s + (o.items||[]).filter(x=>x.category===cat).reduce((a,x)=>a+(num(x.menge)||0),0), 0);
       const soll = getSoll(p, cat, scopeHaus);
       const u = catUnit(cat);
