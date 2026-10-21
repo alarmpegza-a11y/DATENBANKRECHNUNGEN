@@ -2557,7 +2557,8 @@ function abDatumKey(a){ const d = parseDateCH(a.offertdatum); return d ? d.getTi
 function abIsNachtrag(p, ab){
   if(ab.nachtrag) return true;
   const abs = (p && p.abs) || [];
-  return abs.some(b => b !== ab && !b.nachtrag && b.nr && b.nr === ab.nr
+  if(ab.version) return false;
+  return abs.some(b => b !== ab && !b.nachtrag && !b.version && b.nr && b.nr === ab.nr && b.anr !== ab.anr
     && (abDatumKey(b) < abDatumKey(ab) || (abDatumKey(b) === abDatumKey(ab) && String(b.anr||"") < String(ab.anr||""))));
 }
 function missingBaseABs(p){
@@ -2848,7 +2849,7 @@ function renderProjectDetail(projectId){
         const open = expandedABs.has(p.id+"|"+abKey(ab));
         return `<div class="abbox">
           <div class="abhead">
-            <div>${ab.nachtrag ? `<span class="pill warnok" style="margin-right:6px;">± Mehr-/Minderpreis${ab.zuAnr ? " zu " + escapeHtml(ab.zuAnr) : ""}</span>` : abIsNachtrag(p, ab) ? `<span class="pill warnok" style="margin-right:6px;">+ Nachtrag zu AB ${escapeHtml(ab.nr)} – wird dazugezählt</span>` : ""}<b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}${ab.haus?` · <span class="hchip ok">${escapeHtml(ab.haus)}</span>`:""}${ab.los?` <span class="muted">Los ${escapeHtml(ab.los)}</span>`:""}
+            <div>${abIsErsetzt(p, ab) ? `<span class="pill" style="margin-right:6px;background:#eee;color:#666;">ersetzt durch Rek. AB – zählt nicht</span>` : ab.version ? `<span class="pill ok" style="margin-right:6px;">Rek. AB${ab.offertdatum ? " vom " + escapeHtml(ab.offertdatum) : ""} – gilt</span>` : ""}${ab.nachtrag ? `<span class="pill warnok" style="margin-right:6px;">± Mehr-/Minderpreis${ab.zuAnr ? " zu " + escapeHtml(ab.zuAnr) : ""}</span>` : abIsNachtrag(p, ab) ? `<span class="pill warnok" style="margin-right:6px;">+ Nachtrag zu AB ${escapeHtml(ab.nr)} – wird dazugezählt</span>` : ""}<b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}${ab.haus?` · <span class="hchip ok">${escapeHtml(ab.haus)}</span>`:""}${ab.los?` <span class="muted">Los ${escapeHtml(ab.los)}</span>`:""}
               <div class="muted" style="font-size:12px;">Kunde: ${escapeHtml(ab.kunde||"—")}${ab.kontakt?" ("+escapeHtml(ab.kontakt)+")":""} · Offerte ${escapeHtml(ab.offertdatum||"—")} · ${ab.einheiten!=null?ab.einheiten+" Einheiten · ":""}CHF ${fmt(ab.auftragswert)} exkl. MwSt · eingelesen ${escapeHtml(ab.importedAt||"")}</div>
             </div>
             <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">
@@ -3558,7 +3559,7 @@ function findTarif(sub, inv, it){
 
 /* ============================= AUFTRAGSBESTAETIGUNG (AB) LESEN ============================= */
 
-const AB_PARSER_VERSION = 4;
+const AB_PARSER_VERSION = 5;
 // Bereits gespeicherte ABs mit dem aktuellen Leser neu auswerten (Rohtext ist gespeichert -> kein erneuter Upload noetig)
 let abMigrationDone = false;
 let supplierFixDone = false;
@@ -3591,6 +3592,7 @@ async function migrateABs(){
       ab.parserVersion = AB_PARSER_VERSION;
       if(!ab.haus) ab.haus = hausFromText(String(old.filename||"").replace(/_+/g," "));
       if(old.haus) ab.haus = old.haus; // manuelle Haus-Zuordnung behalten
+      if(old.hausBestaetigt) ab.hausBestaetigt = true;
       ab.positionen.forEach(np=>{
         const op = (old.positionen||[]).find(o=>o.pos===np.pos && o.artikel===np.artikel);
         if(op && op.categoryManual){ np.category = op.category; np.categoryManual = true; }
@@ -3624,13 +3626,19 @@ function suggestABCategory(pos){
   const t = (pos.artikel + " " + pos.beschreibung).toLowerCase();
   const art = String(pos.artikel||"").toLowerCase();
   if(/anfahrt|parking/.test(t)) return "Anfahrt";
-  if(/entsorgung|abfall/.test(t)) return "Entsorgung";
+  // Montage-Codes zuerst (TWM, VWM, VWMH, TWMH …) – deren Text enthaelt oft "inkl. Entsorgung"
+  if(/^twm/.test(art)) return "TW";
+  if(/^vwm/.test(art)) return "VW";
+  // "Element" = Vorfabrikation durch PE (Material), keine Sub-Leistung – auch wenn "Montagezeit/Gruppe … Trennwand" im Text steht
+  if(/^element\b/.test(art)) return "";
+  if(/entsorgung|abfall/.test(t) && !/inkl\.?\s*(der\s+)?entsorgung/.test(t)) return "Entsorgung";
   if(pos.einheit==="m²" || /beplank/.test(t)) return "Beplankung";
   if(pos.einheit==="m³" || /ausflock/.test(t)) return "Ausflockung";
   if(/silent\s*-?panel/.test(t)) return "SilentPanel";
   if(/duofix/.test(t)) return "Duofix";
-  if(/^twm\b/.test(art) || (/montage/.test(t) && /trennwand/.test(t))) return "TW";
-  if(/^vwm\b/.test(art) || (/montage/.test(t) && /vorwand/.test(t))) return "VW";
+  if(/montage(?!zeit)/.test(t) && /trennwand/.test(t)) return "TW";
+  if(/montage(?!zeit)/.test(t) && /vorwand/.test(t)) return "VW";
+  if(/entsorgung|abfall/.test(t)) return "Entsorgung";
   if(/verbinden/.test(t) && /(schweiss|press|anschliess)/.test(t)) return "Verbinden";
   if(pos.einheit==="h" && /regie/.test(t)) return "Regie";
   return ""; // nicht Sub-relevant (z.B. Vorfabrikation / Material PE)
@@ -3646,7 +3654,9 @@ function parseABText(text){
   m = text.match(/Baustelle\s*:\s*([^\n]+)/i);
   if(m) ab.baustelle = m[1].trim();
   // Nachtrag: "Mehr- /Minderpreis … zur Auftragsbestätigung 202417673 / A- 24123830" oder Bestell-Nr. "MeMi"
-  ab.nachtrag = /Mehr-?\s*\/?\s*Minderpreis|Minderpreis\s+\w+|Mehrpreis\s+\w+|Nachtrag\s+zu\s+AB|\bMeMi\b/i.test(text);
+  ab.nachtrag = /Mehr-?\s*\/?\s*Minderpreis|(?<!\bein\s)(?:Minder|Mehr)preis\s+(?!pro\b|von\b|nach\b|wird\b|verrechnet\b)\w+|Nachtrag\s+zu\s+AB|\bMeMi\b/i.test(text);
+  // Rek. AB = korrigierte AB mit gleicher Nummer -> ersetzt die urspruengliche AB (wird gespeichert, alte bleibt als "ersetzt" sichtbar)
+  ab.rek = /\bRek\.?\s*AB\b|\bRektifi|korrigierte\s+Auftragsbest/i.test(text);
   m = text.match(/zur\s+Auftragsbest[äa]tigung\s+\d+\s*\/\s*(A-?\s*\d+)/i) || text.match(/Nachtrag\s+zu\s+AB[-\s]*(A-?\s*\d{6,}|\d{6,})/i);
   ab.zuAnr = m ? ("A-" + m[1].replace(/^A-?\s*/i,"")) : "";
   m = text.match(/^Fax[\s\d]+?\s([A-ZÄÖÜ][^\n]+)$/m);
@@ -3656,8 +3666,13 @@ function parseABText(text){
     if(i>-1 && lines[i+1] && !/Auftragsbest/i.test(lines[i+1])) ab.kunde = lines[i+1];
   }
   m = text.match(/Ihr Kontakt\s*:\s*(.+?)(?:\s+Kunden-Nr|\n|$)/i); if(m) ab.kontakt = m[1].trim();
-  m = text.match(/Bestellung vom\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.bestelldatum = m[1];
-  m = text.match(/Offert-Datum\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.offertdatum = m[1];
+  m = text.match(/Bestellung vom\s*:[\s:]*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.bestelldatum = m[1];
+  m = text.match(/Offert-Datum\s*:[\s:]*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.offertdatum = m[1];
+  if(!ab.offertdatum){ // Kopf als Tabelle gelesen: "02.11.2020 03.11.2020" bzw. "10.04.2026 / E-Mail 14.04.2026"
+    const dl = lines.slice(0, 40).map(l => l.match(/^(\d{1,2}\.\d{1,2}\.\d{4})\b.*?\s(\d{1,2}\.\d{1,2}\.\d{4})$/)).find(Boolean);
+    if(dl){ ab.bestelldatum = ab.bestelldatum || dl[1]; ab.offertdatum = dl[2]; }
+  }
+  ab.version = ab.rek ? ("Rek" + (ab.offertdatum ? " " + ab.offertdatum : "")) : "";
   m = text.match(/f[üu]r\s+(\d+)\s+Einheiten/i); if(m) ab.einheiten = +m[1];
   m = text.match(/Bestell-Nr\s*:\s*(.+?)(?:\s+Versandart|\n|$)/i); ab.bestellnr = m ? m[1].trim() : "";
   m = ab.bestellnr.match(/\bLos\s*(\d+)/i) || text.match(/\bLos\s+(\d+)\b/i); ab.los = m ? m[1] : "";
@@ -3767,7 +3782,7 @@ function parseABText(text){
 // Soll-Werte aus den ABs eines Auftrags (Summe pro Kategorie); haus = nur ABs dieses Hauses
 function abSoll(p, haus){
   const out = {};
-  (p && p.abs || []).filter(ab => haus===undefined || ab.haus===haus).forEach(ab => (ab.positionen||[]).forEach(pos=>{
+  (p && p.abs || []).filter(ab => (haus===undefined || ab.haus===haus) && !abIsErsetzt(p, ab)).forEach(ab => (ab.positionen||[]).forEach(pos=>{
     if(!pos.category) return;
     const o = out[pos.category] || (out[pos.category] = { menge:0, erloes:0, einheit:pos.einheit, materials:[], positionen:[] });
     o.menge += +pos.menge || 0;
@@ -4778,7 +4793,14 @@ function bestProjectForAddress(addr){
   return { project: best, score: bestScore };
 }
 
-function abKey(ab){ return `${ab.nr||""}|${ab.anr||""}`; }
+function abKey(ab){ return `${ab.nr||""}|${ab.anr||""}${ab.version ? "|" + ab.version : ""}`; }
+// Urspruengliche AB, zu der eine Rek. AB (gleiche Nr. + A-Nr.) vorliegt -> zaehlt nicht mehr
+function abIsErsetzt(p, ab){
+  if(ab.version) { // aeltere Rek. AB, wenn es eine neuere gibt
+    return ((p && p.abs) || []).some(b => b !== ab && b.version && b.nr===ab.nr && b.anr===ab.anr && abDatumKey(b) > abDatumKey(ab));
+  }
+  return ((p && p.abs) || []).some(b => b !== ab && b.version && b.nr===ab.nr && b.anr===ab.anr);
+}
 async function attachAB(projectId, ab){
   const p = DB.projects.find(x=>x.id===projectId);
   if(!p) throw new Error("Auftrag nicht gefunden.");
@@ -4814,7 +4836,7 @@ async function autoAssignAB(ab){
   if(sameNr){
     const isRev = (sameNr.abs||[]).some(a=>abKey(a)===abKey(ab));
     await attachAB(sameNr.id, ab);
-    return { projectId: sameNr.id, how: isRev ? "revision" : (ab.nachtrag ? "nachtrag" : "auto") };
+    return { projectId: sameNr.id, how: isRev ? "revision" : ab.version ? "rek" : (ab.nachtrag ? "nachtrag" : "auto") };
   }
   const { project, score } = bestProjectForAddress(ab.baustelle);
   if(project && score >= 1){ await attachAB(project.id, ab); return { projectId: project.id, how: score>=2 ? "auto" : "unsicher" }; }
@@ -4849,7 +4871,7 @@ function appendABCard(ab, res){
   wrap.className = "card";
   wrap.style.borderLeft = "4px solid var(--accent)";
   let projectId = res.projectId;
-  const howTxt = { nachtrag:"Nachtrag zur bestehenden AB – wird zur AB dazugerechnet (Mehr- und Minderpreise).", revision:"Neue Version einer bereits vorhandenen AB – ersetzt.", auto:"Automatisch über die Baustellenadresse zugeordnet.",
+  const howTxt = { nachtrag:"Nachtrag zur bestehenden AB – wird zur AB dazugerechnet (Mehr- und Minderpreise).", revision:"Neue Version einer bereits vorhandenen AB – ersetzt.", rek:"Rek. AB – gilt ab jetzt; die ursprüngliche AB bleibt sichtbar, zählt aber nicht mehr.", auto:"Automatisch über die Baustellenadresse zugeordnet.",
                    unsicher:"⚠ Zuordnung unsicher (nur teilweise Adressübereinstimmung) – bitte bestätigen oder ändern.", neu:"Kein passender Auftrag gefunden – neuer Auftrag angelegt." }[res.how] || "";
   function draw(){
     wrap.innerHTML = `
