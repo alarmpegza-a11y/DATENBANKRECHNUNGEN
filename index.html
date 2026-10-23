@@ -360,6 +360,11 @@
   .pstamp{position:absolute;cursor:grab;touch-action:none;outline:1px dashed rgba(30,90,200,.55);outline-offset:4px;}
   .wvstamp{position:absolute;right:calc(100% + 6%);top:0;width:62%;}
   .wvstamp.below{right:auto;left:0;top:calc(100% + 8%);}
+  .pstamp{container-type:inline-size;}
+  .anrstamp{position:absolute;left:0;right:0;top:calc(100% + 1.5cqw);text-align:center;color:#1d3f8f;background:#fff;border:1.5px solid #1d3f8f;border-radius:4px;
+    padding:0.6cqw 1.5cqw;font-family:Arial,Helvetica,sans-serif;font-weight:700;font-size:11px;font-size:6.2cqw;line-height:1.25;white-space:nowrap;letter-spacing:.2px;}
+  .anrstamp small{font-weight:400;font-size:.8em;margin-right:.3em;}
+  .pstamp.hasanr .wvstamp.below{top:calc(100% + 16cqw);}
   tr.wvrow td{background:#fff3f3;}
   .pstamp:active{cursor:grabbing;}
   @media print{
@@ -5480,6 +5485,24 @@ function wvKurztext(inv){
 }
 function wvTag(inv){ return wvItems(inv).length ? ` <span class="pill danger" title="An Kunde weiter verrechnen: ${escapeAttr(wvKurztext(inv))}">↗ weiter verr. CHF ${formatCHF(wvSumme(inv))}</span>` : ""; }
 // Roter Zusatzstempel neben dem Eingangsstempel
+// Auftragsnummer neben dem Stempel, wenn sie nicht auf der Rechnung steht
+function stampAuftragsNr(inv){
+  const p = DB.projects.find(x=>x.id===inv.projectId);
+  if(!p) return "";
+  const ab = (p.abs||[]).find(a => a.nr && !abIsErsetzt(p, a) && !abIsNachtrag(p, a)) || (p.abs||[]).find(a => a.nr);
+  const nr = ab ? ab.nr : "";
+  const anr = ab ? (ab.anr || "") : String(p.auftragsnummer || "");
+  if(!nr && !anr) return "";
+  const d = x => String(x||"").replace(/\D/g, "");
+  const txt = d(inv.rawText || "") , own = d(inv.auftragsnummer);
+  const onInvoice = [nr, anr].some(x => { const k = d(x); return k.length >= 6 && (txt.includes(k) || own === k); });
+  if(onInvoice) return "";
+  return [nr, anr].filter(Boolean).join(" / ");
+}
+function anrStampHtml(inv){
+  const t = stampAuftragsNr(inv);
+  return t ? `<div class="anrstamp"><small>Auftrag</small>${escapeHtml(t)}</div>` : "";
+}
 function wvStampHtml(inv, posX){
   if(!wvItems(inv).length) return "";
   const below = posX < 24;
@@ -6327,7 +6350,7 @@ async function openPrintPreview(invs){
       body.innerHTML = imgs.map((src, n)=>`
         <div class="ppage" data-inv="${inv.id}">
           <img src="${src}" alt="">
-          ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}${wvStampHtml(inv, pos.x)}</div>` : ""}
+          ${n===0 ? `<div class="pstamp${stampAuftragsNr(inv) ? " hasanr" : ""}" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}${anrStampHtml(inv)}${wvStampHtml(inv, pos.x)}</div>` : ""}
         </div>`).join("");
       body.querySelectorAll(".pstamp").forEach(wireStamp);
       msg.textContent = `– ${imgs.length} Seite(n), Stempel verschiebbar`;
