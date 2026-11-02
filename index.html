@@ -2038,7 +2038,7 @@ async function appendReviewCard(parsed){
     objekt: parsed.objekt || "",
     sammel: parsed.sammel || null,
     ausmass: parsed.ausmass || null,
-    auftragsnummer: String(parsed.auftragsnummer || auftragsNrFromText(parsed._rawText) || ""),
+    auftragsnummer: String(parsed.auftragsnummer || auftragsNrFromText(parsed._rawText) || auftragsNrOf(DB.projects.find(p=>p.id===projectId)) || ""),
     haus: detectInvoiceHaus({ rawText: parsed._rawText, objekt: parsed.objekt, auftragsnummer: parsed.auftragsnummer }, projectId),
     rawText: String(parsed._rawText||"").slice(0, 30000),
     filename: parsed._filename || "",
@@ -2259,7 +2259,6 @@ function renderSuppliers(){
         <div>
           <div class="pname">🏢 ${escapeHtml(name)}</div>
           <div class="paddr">${projectIds.size} Auftrag/Aufträge · ${invs.length} Rechnung(en)</div>
-          ${extLine(extFor(null, p), true)}
           <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
         </div>
         <div class="pmeta">
@@ -2463,7 +2462,7 @@ function renderProjects(){
         <div style="min-width:0;">
           <div class="pname">${escapeHtml(p.name)}</div>
           ${houses.length ? `<div>${houses.map(h=>`<span class="hchip ${houseNeedsAB(p,h)?"bad":"ok"}">${escapeHtml(h)} ${houseNeedsAB(p,h)?"✗ AB":"✓ AB"}</span>`).join("")}</div>` : ""}
-          <div class="paddr">${escapeHtml(p.address||"—")} ${p.auftragsnummer?`· Auftragsnr. ${escapeHtml(p.auftragsnummer)}`:""}</div>
+          <div class="paddr">${escapeHtml(p.address||"—")} ${auftragsNrOf(p)?`· Auftragsnr. ${escapeHtml(auftragsNrOf(p))}`:""}</div>
           ${extLine(extFor(null, p), true)}
           <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
         </div>
@@ -2759,7 +2758,7 @@ function renderProjectDetail(projectId){
     <div class="phead">
       <div>
         <h1>🏗️ ${escapeHtml(p.name)}</h1>
-        <div class="muted" style="font-size:13px;">${escapeHtml(p.address && p.address!==p.name ? p.address : "")}${p.auftragsnummer ? ` · Auftragsnr. ${escapeHtml(p.auftragsnummer)}` : ""}
+        <div class="muted" style="font-size:13px;">${escapeHtml(p.address && p.address!==p.name ? p.address : "")}${auftragsNrOf(p) ? ` · Auftragsnr. ${escapeHtml(auftragsNrOf(p))}${extFor(null, p).some(e=>e.auftragsNr) ? ` <span class="muted" style="font-size:11px;">(aus Kalender)</span>` : ""}` : ""}
           ${abs.length ? `<span class="pill neutral" style="margin-left:6px;">📑 AB vorhanden</span>` : abMissing ? `<span class="pill warn" style="margin-left:6px;">AB fehlt</span>` : `<span class="pill neutral" style="margin-left:6px;">ohne AB ✓</span>`}
           ${houses.map(h=>`<span class="hchip ${houseNeedsAB(p,h)?"bad":"ok"}">${escapeHtml(h)}</span>`).join("")}
           ${extFor(null, p).length ? `<div style="margin-top:4px;font-size:12.5px;">📅 <b>Aus Kalender/Montage:</b> ${extLine(extFor(null, p), false).replace('class="extline"','class="extline" style="display:inline;font-size:12.5px;"')}</div>` : ""}
@@ -4089,6 +4088,15 @@ function beanstandungText(inv){
 /* ============================= AUFTRAGSVERZEICHNIS AUS KALENDER / MONTAGE ============================= */
 let EXT = { entries: [], loaded: false, loading: false, at: null, errors: [] };
 const extDigits = s => String(s||"").replace(/\/[A-Za-z]{1,5}\s*$/,"").replace(/\D/g,"");
+function extNums(s){ return Array.from(new Set((String(s||"").match(/(?<!\d)2\d{7,8}(?!\d)/g) || []))); }
+// Auftragsnummer eines Auftrags: zuerst aus Kalender/Montage, sonst aus Auftrag bzw. AB
+function auftragsNrOf(p){
+  const k = p ? extFor(null, p).find(e => e.auftragsNr) : null;
+  if(k) return String(k.auftragsNr).trim();
+  if(p && p.auftragsnummer) return p.auftragsnummer;
+  const ab = p && (p.abs||[]).find(a => !a.nachtrag && (a.nr || a.anr));
+  return ab ? (ab.nr || ab.anr) : "";
+}
 async function loadExtern(force){
   if(!window.extern || EXT.loading) return;
   if(!force && EXT.at && Date.now() - EXT.at < (EXT.loaded ? 10*60*1000 : 60*1000)) return;
@@ -4098,10 +4106,10 @@ async function loadExtern(force){
     // gleiche Auftragsnr. aus mehreren Quellen zusammenfassen
     const by = new Map();
     r.entries.forEach(e => {
-      const k = extDigits(e.auftragsNr) || ("adr:" + String(e.adresse||"").toLowerCase().trim());
+      const k = extNums(e.auftragsNr).sort().join("+") || ("adr:" + String(e.adresse||"").toLowerCase().trim());
       if(k === "adr:") return;
       const cur = by.get(k);
-      if(!cur) by.set(k, { ...e, nr: extDigits(e.auftragsNr), quellen: [e.quelle], teams: e.team ? [e.team] : [], termine: e.datum ? [e.datum] : [] });
+      if(!cur) by.set(k, { ...e, nr: extNums(e.auftragsNr)[0] || "", nrs: extNums(e.auftragsNr), quellen: [e.quelle], teams: e.team ? [e.team] : [], termine: e.datum ? [e.datum] : [] });
       else {
         if(!cur.quellen.includes(e.quelle)) cur.quellen.push(e.quelle);
         if(e.team && !cur.teams.includes(e.team)) cur.teams.push(e.team);
@@ -4119,13 +4127,14 @@ async function loadExtern(force){
 function extFor(inv, p){
   if(!EXT.entries.length) return [];
   p = p || (inv ? DB.projects.find(x=>x.id===inv.projectId) : null);
-  const nums = new Set([inv && inv.auftragsnummer, p && p.auftragsnummer, ...((p && p.abs) || []).flatMap(a=>[a.nr, a.anr])].map(extDigits).filter(x => x.length >= 6));
-  let hits = EXT.entries.filter(e => e.nr && (nums.has(e.nr) || [...nums].some(n => n.length >= 8 && (e.nr.endsWith(n) || n.endsWith(e.nr)))));
+  const nums = new Set([inv && inv.auftragsnummer, p && p.auftragsnummer, ...((p && p.abs) || []).flatMap(a=>[a.nr, a.anr])].flatMap(x => extNums(x).concat(extDigits(x).length >= 8 ? [extDigits(x)] : [])));
+  let hits = EXT.entries.filter(e => (e.nrs || []).some(n => nums.has(n)));
   if(!hits.length){
     const adr = (inv && inv.objekt) || (p && (p.address || p.name)) || "";
     if(adr){
       const fake = { name: adr, address: adr };
-      hits = EXT.entries.filter(e => e.adresse && projectAddrScore(e.adresse, fake) >= 2);
+      // nur per Adresse, wenn keine widersprechenden Nummern vorhanden sind
+      hits = EXT.entries.filter(e => e.adresse && projectAddrScore(e.adresse, fake) >= 2 && (!nums.size || !(e.nrs||[]).length));
     }
   }
   return hits.slice(0, 3);
@@ -4171,15 +4180,16 @@ function kalEntries(){
     .sort((a,b) => String(b.datum||"").localeCompare(String(a.datum||"")));
 }
 function invoicesForEntry(e){
-  const nr = extDigits(e.auftragsNr);
+  const nrs = extNums(e.auftragsNr);
+  if(!nrs.length) return [];
   return DB.invoices.filter(i => {
     const p = DB.projects.find(x=>x.id===i.projectId);
-    const nums = [i.auftragsnummer, p && p.auftragsnummer, ...((p && p.abs) || []).flatMap(a=>[a.nr, a.anr])].map(extDigits).filter(x=>x.length>=6);
-    return nr && nums.includes(nr);
+    const nums = [i.auftragsnummer, p && p.auftragsnummer, ...((p && p.abs) || []).flatMap(a=>[a.nr, a.anr])].flatMap(x => extNums(x).concat(extDigits(x).length >= 8 ? [extDigits(x)] : []));
+    return nrs.some(n => nums.includes(n));
   });
 }
 async function assignEntryToInvoice(inv, e){
-  const nr = String(e.auftragsNr||"").replace(/\/[A-Za-z]{1,5}\s*$/,"").trim();
+  const nr = extNums(e.auftragsNr)[0] || String(e.auftragsNr||"").replace(/\/[A-Za-z]{1,5}\s*$/,"").trim();
   const adr = e.adresse || e.kunde || "";
   let p = findMatchingProject({ objekt: adr, auftragsnummer: nr });
   const oldPid = inv.projectId;
