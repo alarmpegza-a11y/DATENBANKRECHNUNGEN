@@ -3251,7 +3251,7 @@ function renderAdmin(){
     <p class="subtitle">${allUsers.length} Benutzer registriert${pendingCount>0 ? ` — <b style="color:var(--danger)">${pendingCount} warten auf Freischaltung</b>` : ""}.</p>
     <div class="card">
       <table>
-        <thead><tr><th>E-Mail</th><th>Status</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th><th>Preise bearbeiten</th><th title="Darf im Tab „Stempel“ eigene Dokumente abstempeln">Stempeln</th><th title="Sieht nur den Tab „Stempel“ (keine Rechnungsprüfung)">Nur Stempel</th><th>Eigener Stempel</th><th title="Erscheinen im Stempel bei Mat.preis">Initialen</th><th title="Wird in Briefen, E-Mails und Nachrichten verwendet">Name</th></tr></thead>
+        <thead><tr><th>E-Mail</th><th>Status</th><th>Rolle</th><th>Aufträge löschen</th><th>Subunternehmer löschen</th><th>Beliebige Rechnung löschen</th><th>Preise bearbeiten</th><th title="Darf im Tab „Stempel“ eigene Dokumente abstempeln">Stempeln</th><th title="Sieht nur den Tab „Stempel“ (keine Rechnungsprüfung)">Nur Stempel</th><th title="Erscheinen im Stempel bei Mat.preis">Initialen</th><th title="Wird in Briefen, E-Mails und Nachrichten verwendet">Name</th></tr></thead>
         <tbody>
           ${allUsers.map(u=>`
             <tr data-uid="${u.id}" class="${u.role!=="admin" && !u.approved ? "needs-review" : ""}">
@@ -3278,7 +3278,6 @@ function renderAdmin(){
               <td><input type="checkbox" data-perm="editPreise" ${u.permissions?.editPreise?"checked":""} ${u.role==="admin"?"disabled":""}></td>
               <td><input type="checkbox" data-perm="stempeln" ${u.permissions?.stempeln||u.role==="admin"?"checked":""} ${u.role==="admin"?"disabled":""}></td>
               <td><input type="checkbox" data-perm="nurStempel" ${u.permissions?.nurStempel?"checked":""} ${u.role==="admin"?"disabled":""}></td>
-              <td><button class="small" data-stempelcfg="${u.id}">🔖 ${u.stempel && u.stempel.titel ? escapeHtml(u.stempel.titel) : "Einrichten"}</button></td>
               <td><input type="text" data-initialen="${u.id}" value="${escapeAttr(u.initialen||"")}" placeholder="${escapeAttr(defaultInitials(u.email))}" maxlength="5" style="width:70px;text-transform:uppercase;"></td>
               <td><input type="text" data-anzeigename="${u.id}" value="${escapeAttr(u.anzeigename||"")}" placeholder="z.B. Ajdin Slijepcevic" style="width:180px;"></td>
             </tr>
@@ -4972,6 +4971,11 @@ function renderSettings(){
         </div>`;
       }).join("") : `<div class="empty">Noch keine Subunternehmer. Lege einen an oder lade eine Rechnung hoch.</div>`}
     </div>`;
+  mainEl.insertAdjacentHTML("beforeend", `<div class="card"><h2>👤 Meine Initialen (für den Stempel)</h2>
+    <p class="muted" style="font-size:12.5px;">Erscheinen im Stempel bei „Mat.preis“ zusammen mit dem Datum, z.B. „02.11.26 ${escapeHtml(initialsFor(currentUser.email))}“.</p>
+    <div class="row" style="align-items:flex-end;gap:8px;"><label class="field" style="margin:0;"><span>Initialen</span><input id="myIni" value="${escapeAttr((currentProfile && currentProfile.initialen) || "")}" placeholder="${escapeAttr(defaultInitials(currentUser.email))}" maxlength="5" style="width:110px;text-transform:uppercase;"></label><button id="myIniSave">Speichern</button>
+    <div style="width:230px;margin-left:12px;">${stampSvg(new Date(), matPreisVermerk({ pruefung:{ status:"ok", by: currentUser.email, at: new Date().toLocaleString("de-CH") } }))}</div></div></div>`);
+  document.getElementById("myIniSave").addEventListener("click", ()=> saveMyInitials(document.getElementById("myIni").value, renderSettings));
   loadExtern();
   mainEl.insertAdjacentHTML("beforeend", `<div class="card"><h2>📅 Verbindung zu PE-Kalender &amp; Montage Manager</h2>
     <p class="muted" style="font-size:12.5px;">Kunde, Objektadresse, Auftragsnr., Team und Termin werden (nur lesend) aus den Planungs-Apps geholt und bei Rechnungen und Aufträgen angezeigt. Die Suche findet Rechnungen auch über den Kundennamen.</p>
@@ -5766,14 +5770,15 @@ function stampSvg(d, matText){
       <text x="4" y="88.2">Mat.preis</text>
       <text x="4" y="112.8">Fibu</text>
     </g>
-    ${matText ? `<text x="110" y="89" transform="rotate(-1.5 110 89)" fill="#1f2f8f" font-family="'Segoe Print','Bradley Hand','Ink Free','Comic Sans MS','Chalkboard SE',cursive" font-size="18.5">${escapeHtml(matText)}</text>` : ""}
+    ${matText ? `<text x="110" y="88" fill="#1f2f8f" font-family="Verdana, Arial, Helvetica, sans-serif" font-size="18">${escapeHtml(matText)}</text>` : ""}
   </svg>`;
 }
 
 /* ============================= STEMPEL-TAB: eigene Dokumente abstempeln ============================= */
 const STEMPEL_DEFAULT = { titel: "EPE", zeilen: ["FA erf.", "Mat.preis", "Fibu"], visumZeile: 1, farbe: "#1f1f22" };
 function stempelCfgFor(u){ const s = (u && u.stempel) || {}; return { ...STEMPEL_DEFAULT, ...s, zeilen: (s.zeilen && s.zeilen.length) ? s.zeilen : STEMPEL_DEFAULT.zeilen }; }
-function myStempelCfg(){ return stempelCfgFor(currentProfile); }
+function myStempelCfg(){ return STEMPEL_DEFAULT; }
+function myStampSvg(){ return stampSvg(stpDate(), stpVisum()); }
 // Allgemeiner Stempel: Titel + Datum, darunter Tabelle mit frei waehlbaren Zeilen; Visum (Datum + Initialen) in einer Zeile
 function customStampSvg(cfg, d, visum){
   const ink = cfg.farbe || "#1f1f22";
@@ -5793,6 +5798,16 @@ function customStampSvg(cfg, d, visum){
     <g fill="${ink}" font-family="Arial, Helvetica, sans-serif" font-size="19.5">${rows.map((r, i)=>`<text x="4" y="${top + i*rh + 18.5}" font-size="${Math.min(19.5, 94 / (String(r).length * 0.56)).toFixed(1)}">${escapeHtml(r)}</text>`).join("")}</g>
     ${visum && cfg.visumZeile >= 0 && cfg.visumZeile < rows.length ? `<text x="110" y="${top + cfg.visumZeile*rh + 20}" transform="rotate(-1.5 110 ${top + cfg.visumZeile*rh + 20})" fill="#1f2f8f" font-family="'Segoe Print','Bradley Hand','Ink Free','Comic Sans MS','Chalkboard SE',cursive" font-size="18.5">${escapeHtml(visum)}</text>` : ""}
   </svg>`;
+}
+async function saveMyInitials(v, after){
+  const ini = String(v||"").trim().toUpperCase().slice(0,5);
+  try{
+    await window.fb.updateDoc("users", currentUser.uid, { initialen: ini });
+    if(currentProfile) currentProfile.initialen = ini;
+    const me = allUsers.find(u=>u.id===currentUser.uid); if(me) me.initialen = ini;
+    toast(ini ? `Initialen „${ini}“ gespeichert.` : "Initialen entfernt (Standard wird verwendet).");
+    if(after) after();
+  }catch(e){ console.error(e); toast("Speichern nicht erlaubt – bitte Firestore-Regeln aktualisieren (siehe Anleitung)."); }
 }
 function openStempelConfig(uid2){
   const u = allUsers.find(x=>x.id===uid2); if(!u) return;
@@ -5823,7 +5838,9 @@ function openStempelConfig(uid2){
   document.getElementById("scSave").addEventListener("click", async ()=>{ await window.fb.updateDoc("users", uid2, { stempel: read() }); toast("Stempel gespeichert."); closeModal(); });
 }
 // --- Dokumente ---
-let STP = { docs: [], datum: "" };
+function stpSavedPos(){ try{ const p = JSON.parse(localStorage.getItem("pe_stempel_pos")||"null"); if(p && p.x!=null) return p; }catch(e){} return { x: 62, y: 3, w: 32 }; }
+let STP = { docs: [], datum: "", linked: true, pos: stpSavedPos() };
+function stpRememberPos(s){ STP.pos = { x: s.x, y: s.y, w: s.w }; try{ localStorage.setItem("pe_stempel_pos", JSON.stringify(STP.pos)); }catch(e){} }
 let pdfLibPromise = null;
 function loadPdfLib(){
   if(window.PDFLib) return Promise.resolve(window.PDFLib);
@@ -5854,7 +5871,7 @@ async function stpAddFiles(files){
         await page.render({ canvasContext: ctx, viewport: vp }).promise;
         pages.push({ img: cv.toDataURL("image/jpeg", 0.8), ratio: vp.height / vp.width });
       }
-      STP.docs.push({ id: uid("doc"), name: f.name.replace(/\.[^.]+$/,""), bytes, pages, stamps: [{ page: 0, x: 62, y: 3, w: 32 }] });
+      STP.docs.push({ id: uid("doc"), name: f.name.replace(/\.[^.]+$/,""), bytes, pages, stamps: pages.map((_, i) => ({ page: i, ...STP.pos })) });
     }catch(err){ console.error(err); toast(`${f.name}: konnte nicht gelesen werden`); }
   }
   renderStempel();
@@ -5862,7 +5879,7 @@ async function stpAddFiles(files){
 function stpVisum(){ return `${shortDate(STP.datum ? new Date(STP.datum + "T12:00:00") : new Date())} ${initialsFor(currentUser.email)}`; }
 function stpDate(){ return STP.datum ? new Date(STP.datum + "T12:00:00") : new Date(); }
 async function stampPng(cfg){
-  const svg = customStampSvg(cfg, stpDate(), stpVisum()).replace('style="width:100%;height:auto;display:block;overflow:visible;"', 'width="1168" height="' + Math.round(1168 * (44 + Math.min(6,cfg.zeilen.length)*24.67 + 2) / 292) + '"');
+  const svg = myStampSvg().replace('style="width:100%;height:auto;display:block;overflow:visible;"', 'width="1168" height="480"');
   const img = new Image(); img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
   await new Promise((r, j)=>{ img.onload = r; img.onerror = j; });
   const cv = document.createElement("canvas"); cv.width = img.width; cv.height = img.height;
@@ -5899,12 +5916,18 @@ function renderStempel(){
     <p class="subtitle">Dokumente (PDF oder eingescannte Bilder) hochladen, Stempel platzieren und als gestempeltes PDF herunterladen oder drucken – unabhängig von der Rechnungsprüfung. Es wird nichts gespeichert.</p>
     <div class="card">
       <div class="row" style="gap:12px;align-items:flex-end;flex-wrap:wrap;">
-        <div style="width:220px;">${customStampSvg(cfg, stpDate(), stpVisum())}</div>
+        <div style="width:220px;">${myStampSvg()}</div>
         <label class="field" style="margin:0;"><span>Stempeldatum</span><input type="date" id="stpDatum" value="${escapeAttr(STP.datum)}"></label>
-        <div class="muted" style="font-size:12px;flex:1;min-width:200px;">Dein Stempel „${escapeHtml(cfg.titel)}“${isAdmin() ? " – ändern unter Benutzer → 🔖" : " – Änderungen macht der Admin"}.</div>
+        <label class="field" style="margin:0;"><span>Meine Initialen</span><input id="stpIni" value="${escapeAttr((currentProfile && currentProfile.initialen) || "")}" placeholder="${escapeAttr(defaultInitials(currentUser.email))}" maxlength="5" style="width:90px;text-transform:uppercase;"></label>
+        <button class="small" id="stpIniSave">Speichern</button>
       </div>
       <div class="drop" id="stpDrop" style="margin-top:12px;"><div class="big">📄</div><div><b>PDF oder Scan hierher ziehen</b> oder klicken</div><div class="muted" style="font-size:12px;">Mehrere Dateien möglich · PDF, JPG, PNG</div></div>
       <input type="file" id="stpFile" accept="application/pdf,image/*" multiple style="display:none;">
+      ${STP.docs.length ? `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:12px;padding:8px 10px;background:#f6f8fd;border-radius:8px;">
+        <label style="display:flex;gap:6px;align-items:center;font-weight:600;cursor:pointer;"><input type="checkbox" id="stpLinked" ${STP.linked ? "checked" : ""} style="width:auto;"> 🔗 Alle Stempel gemeinsam verschieben</label>
+        <button class="small" id="stpAllPages">＋ Auf jeder Seite stempeln</button>
+        <button class="small" id="stpNoPages">✕ Alle Stempel entfernen</button>
+        <span class="muted" style="font-size:12px;">${STP.docs.reduce((a,d)=>a+d.stamps.length,0)} Stempel auf ${STP.docs.reduce((a,d)=>a+d.pages.length,0)} Seiten</span></div>` : ""}
       ${STP.docs.length ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
         <button class="primary" id="stpAll">⬇ Alle ${STP.docs.length} gestempelt als ein PDF</button>
         <button id="stpPrint">🖨 Drucken</button>
@@ -5916,10 +5939,10 @@ function renderStempel(){
           <h2 style="margin:0;">${escapeHtml(d.name)} <span class="muted" style="font-size:12px;font-weight:400;">${d.pages.length} Seite(n) · ${d.stamps.length} Stempel</span></h2>
           <div style="display:flex;gap:6px;"><button class="small primary" data-stpdl="${d.id}">⬇ Gestempeltes PDF</button><button class="small" data-stprm="${d.id}">Entfernen</button></div>
         </div>
-        <div class="muted" style="font-size:12px;margin:4px 0 8px;">Stempel mit der Maus verschieben · ✕ entfernt ihn · „+ Stempel“ setzt einen weiteren auf diese Seite</div>
+        <div class="muted" style="font-size:12px;margin:4px 0 8px;">Jede Seite ist automatisch gestempelt · Stempel verschieben (${STP.linked ? "alle bewegen sich mit" : "nur dieser"}) · ✕ entfernt ihn auf dieser Seite · „+ Stempel“ setzt ihn wieder</div>
         <div class="stppages">${d.pages.map((pg, i) => `
           <div class="stppage" data-page="${i}" style="aspect-ratio:1/${pg.ratio};background-image:url('${pg.img}');">
-            ${d.stamps.map((s, k) => s.page === i ? `<div class="stpstamp" data-k="${k}" style="left:${s.x}%;top:${s.y}%;width:${s.w}%;">${customStampSvg(cfg, stpDate(), stpVisum())}<button class="stpx" data-rmk="${k}" title="Stempel entfernen">✕</button></div>` : "").join("")}
+            ${d.stamps.map((s, k) => s.page === i ? `<div class="stpstamp" data-k="${k}" style="left:${s.x}%;top:${s.y}%;width:${s.w}%;">${myStampSvg()}<button class="stpx" data-rmk="${k}" title="Stempel entfernen">✕</button></div>` : "").join("")}
             <button class="small stpadd" data-addp="${i}">+ Stempel</button>
             <div class="stppn">Seite ${i+1}</div>
           </div>`).join("")}</div>
@@ -5931,17 +5954,24 @@ function renderStempel(){
   drop.addEventListener("dragleave", ()=>drop.classList.remove("hover"));
   drop.addEventListener("drop", e=>{ e.preventDefault(); drop.classList.remove("hover"); stpAddFiles(Array.from(e.dataTransfer.files||[])); });
   document.getElementById("stpDatum").addEventListener("change", e=>{ STP.datum = e.target.value; renderStempel(); });
+  document.getElementById("stpIniSave").addEventListener("click", ()=> saveMyInitials(document.getElementById("stpIni").value, renderStempel));
   const all = document.getElementById("stpAll");
   if(all) all.addEventListener("click", async ()=>{ toast("PDF wird erstellt…"); stpDownload(await stpExport(STP.docs), `gestempelt_${STP.datum}.pdf`); });
   const pr = document.getElementById("stpPrint");
   if(pr) pr.addEventListener("click", async ()=>{ const b = await stpExport(STP.docs); const url = URL.createObjectURL(new Blob([b], { type:"application/pdf" })); const wnd = window.open(url, "_blank"); if(!wnd) stpDownload(b, `gestempelt_${STP.datum}.pdf`); });
+  const lk = document.getElementById("stpLinked");
+  if(lk) lk.addEventListener("change", ()=>{ STP.linked = lk.checked; });
+  const ap = document.getElementById("stpAllPages");
+  if(ap) ap.addEventListener("click", ()=>{ STP.docs.forEach(d => d.pages.forEach((_, i) => { if(!d.stamps.some(s=>s.page===i)) d.stamps.push({ page: i, ...STP.pos }); })); renderStempel(); });
+  const np = document.getElementById("stpNoPages");
+  if(np) np.addEventListener("click", ()=>{ if(confirm("Alle Stempel entfernen?")){ STP.docs.forEach(d => d.stamps = []); renderStempel(); } });
   const cl = document.getElementById("stpClear");
   if(cl) cl.addEventListener("click", ()=>{ if(confirm("Alle Dokumente entfernen?")){ STP.docs = []; renderStempel(); } });
   mainEl.querySelectorAll("[data-stpdl]").forEach(b=>b.addEventListener("click", async ()=>{ const d = STP.docs.find(x=>x.id===b.dataset.stpdl); toast("PDF wird erstellt…"); stpDownload(await stpExport([d]), `${d.name}_gestempelt.pdf`); }));
   mainEl.querySelectorAll("[data-stprm]").forEach(b=>b.addEventListener("click", ()=>{ STP.docs = STP.docs.filter(x=>x.id!==b.dataset.stprm); renderStempel(); }));
   mainEl.querySelectorAll(".stpdoc").forEach(docEl => {
     const d = STP.docs.find(x=>x.id===docEl.dataset.doc);
-    docEl.querySelectorAll("[data-addp]").forEach(b=>b.addEventListener("click", e=>{ e.stopPropagation(); d.stamps.push({ page: +b.dataset.addp, x: 62, y: 3 + 12 * d.stamps.filter(s=>s.page===+b.dataset.addp).length, w: 32 }); renderStempel(); }));
+    docEl.querySelectorAll("[data-addp]").forEach(b=>b.addEventListener("click", e=>{ e.stopPropagation(); const n = d.stamps.filter(s=>s.page===+b.dataset.addp).length; d.stamps.push({ page: +b.dataset.addp, x: STP.pos.x, y: Math.min(90, STP.pos.y + 14 * n), w: STP.pos.w }); renderStempel(); }));
     docEl.querySelectorAll("[data-rmk]").forEach(b=>b.addEventListener("click", e=>{ e.stopPropagation(); d.stamps.splice(+b.dataset.rmk, 1); renderStempel(); }));
     docEl.querySelectorAll(".stpstamp").forEach(el => {
       el.addEventListener("pointerdown", e=>{
@@ -5949,8 +5979,16 @@ function renderStempel(){
         e.preventDefault(); el.setPointerCapture(e.pointerId);
         const pageEl = el.parentElement, r = pageEl.getBoundingClientRect(), s = d.stamps[+el.dataset.k];
         const ox = e.clientX - (r.left + r.width * s.x / 100), oy = e.clientY - (r.top + r.height * s.y / 100);
-        const move = ev => { s.x = Math.max(0, Math.min(100 - s.w, (ev.clientX - ox - r.left) / r.width * 100)); s.y = Math.max(0, Math.min(95, (ev.clientY - oy - r.top) / r.height * 100)); el.style.left = s.x + "%"; el.style.top = s.y + "%"; };
-        const up = () => { el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); };
+        const move = ev => {
+          s.x = Math.max(0, Math.min(100 - s.w, (ev.clientX - ox - r.left) / r.width * 100));
+          s.y = Math.max(0, Math.min(95, (ev.clientY - oy - r.top) / r.height * 100));
+          if(STP.linked){
+            // alle Stempel (alle Seiten, alle Dokumente) auf dieselbe Position
+            STP.docs.forEach(dd => dd.stamps.forEach(t => { t.x = s.x; t.y = s.y; }));
+            mainEl.querySelectorAll(".stpstamp").forEach(x => { x.style.left = s.x + "%"; x.style.top = s.y + "%"; });
+          } else { el.style.left = s.x + "%"; el.style.top = s.y + "%"; }
+        };
+        const up = () => { el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); stpRememberPos(s); };
         el.addEventListener("pointermove", move); el.addEventListener("pointerup", up);
       });
     });
