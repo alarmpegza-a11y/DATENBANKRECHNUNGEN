@@ -305,6 +305,9 @@
   .kalsuche{background:#f6f8fd;border:1px solid #d9e2f2;border-radius:10px;padding:12px;}
   .kalres{max-height:420px;overflow:auto;margin-top:10px;background:#fff;border-radius:8px;}
   .kalres table{font-size:12.5px;}
+  button.st-warn{background:#f5c542;border-color:#e0ad1f;color:#3d2c00;}
+  .pill.abkl{background:#fff4c2;color:#7a5a00;border:1px solid #f0d36b;}
+  tr.abklrow td{background:#fffbe6;}
   .extline{font-size:11.5px;color:#3d5a8a;margin-top:2px;line-height:1.35;}
   .assibox{margin-top:12px;padding:10px;border:1px dashed #b9c6e0;border-radius:8px;background:#f6f8fd;}
   .assibox textarea{flex:1;min-height:42px;font:inherit;font-size:13px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;resize:vertical;}
@@ -1763,7 +1766,7 @@ function updateBadges(){
   const nInv = computeInvoiceTodos().length;
   const nMsg = unreadMessages().length;
   setBadge("projBadge", 0); // Aufträge sind nur die Liste – fehlende ABs werden unter ② Prüfen verlangt
-  setBadge("reviewBadge", nInv);
+  setBadge("reviewBadge", DB.invoices.filter(abklOffen).length);
   setBadge("msgBadge", nMsg);
   setBadge("printBadge", readyToPrintCount());
   { const neuInv = DB.invoices.filter(i=>invPrintState(i)==="neu"); const np = new Set(neuInv.map(i=>i.projectId));
@@ -2319,7 +2322,7 @@ function renderSupplierDetail(name){
             return `<tr class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
-              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}${abklTag(inv)}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td>${findingsPill(inv)}</td>
               <td><button class="small danger" data-delinv2="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
@@ -2528,7 +2531,9 @@ function itemAssigned(inv, it){
   const sub = getSubFor(inv.lieferant);
   return !!(sub && findTarif(sub, inv, it).tarif);
 }
+function invDecided(inv){ return !!(inv && (inv.gedrucktAm || (inv.pruefung && (inv.pruefung.status==="ok" || inv.pruefung.status==="beanstandet")))); }
 function invoiceNeedsReview(inv){
+  if(invDecided(inv)) return false;   // bewusst entschieden -> keine Erinnerung mehr
   if(!inv.lieferant) return true;
   if(!inv.items || inv.items.length===0) return true;
   if(inv.items.some(it=>it.menge===null || it.menge===undefined)) return true;
@@ -3147,16 +3152,17 @@ function renderInvoices(){
   }
   const keyOf = {}; DB.invoices.forEach(i => keyOf[i.id] = invStatusKey(i));
   const dnum = s => { const d = parseDateCH(s); return d ? d.getTime() : 0; };
-  const cnt = k => DB.invoices.filter(i=>keyOf[i.id]===k).length;
+  const cnt = k => k==="abkl" ? DB.invoices.filter(abklOffen).length : DB.invoices.filter(i=>keyOf[i.id]===k).length;
   loadExtern();
   const sorted = DB.invoices.slice()
-    .filter(i => invFilter==="alle" || keyOf[i.id]===invFilter)
-    .sort((a,b)=> (INV_STATUS_ORDER[keyOf[a.id]] - INV_STATUS_ORDER[keyOf[b.id]]) || (dnum(b.datum) - dnum(a.datum)));
+    .filter(i => invFilter==="alle" || (invFilter==="abkl" ? abklOffen(i) : keyOf[i.id]===invFilter))
+    .sort((a,b)=> ((abklOffen(b)?1:0) - (abklOffen(a)?1:0)) || (INV_STATUS_ORDER[keyOf[a.id]] - INV_STATUS_ORDER[keyOf[b.id]]) || (dnum(b.datum) - dnum(a.datum)));
   const chip = (k, label, cls) => `<button class="tab ${invFilter===k?"active":""}" data-invf="${k}">${label} <span class="${cls||"muted"}" style="margin-left:4px;">${k==="alle" ? DB.invoices.length : cnt(k)}</span></button>`;
   mainEl.innerHTML = `
     <h1>Alle Rechnungen</h1>
     <p class="subtitle">${DB.invoices.length} Rechnung(en) über alle Aufträge. Auffällige Rechnungen stehen zuoberst.</p>
     <div class="tabs">
+      ${chip("abkl","📌 Abklärung offen")}
       ${chip("alle","Alle")}
       ${chip("fehler","✗ Fehler – noch offen")}
       ${chip("ok_abw","⚠ Freigegeben mit Abweichung")}
@@ -3172,15 +3178,15 @@ function renderInvoices(){
           ${sorted.map(inv=>{
             const p = DB.projects.find(x=>x.id===inv.projectId);
             const search = invSearchText(inv);
-            return `<tr data-search="${escapeAttr(search)}" class="${invoiceNeedsReview(inv)?'needs-review':''}">
+            return `<tr data-search="${escapeAttr(search + " " + (abklOffen(inv) ? "abklärung " + (inv.abklaerung.notiz||"") : ""))}" class="${abklOffen(inv) ? "abklrow" : invoiceNeedsReview(inv)?'needs-review':''}">
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.lieferant||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}${extLine(extFor(inv, p), true)}</td>
-              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}${abklTag(inv)}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}" data-openinv="${inv.id}">${findingsPill(inv)}</td>
               <td style="font-size:11.5px;" class="muted" title="${escapeAttr((inv.verlauf||[]).slice(-1).map(e=>e.was).join(""))}">${inv.geaendertAm ? `${escapeHtml(inv.geaendertName || nameFromEmail(inv.geaendertVon))}<br>${escapeHtml(String(inv.geaendertAm).replace(/,\s*/, " "))}` : "–"}</td>
-              <td style="white-space:nowrap;"><button class="small" data-shareinvl="${inv.id}" title="Teilen">📤</button> <button class="small danger" data-delinv="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
+              <td style="white-space:nowrap;"><button class="small ${abklOffen(inv) ? "st-warn" : ""}" data-abkl="${inv.id}" title="${abklOffen(inv) ? "Abklärung erledigt" : "Zur Abklärung markieren"}">📌</button> <button class="small" data-shareinvl="${inv.id}" title="Teilen">📤</button> <button class="small danger" data-delinv="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
             </tr>`;
           }).join("")}
         </tbody>
@@ -3188,6 +3194,7 @@ function renderInvoices(){
     </div>
   `;
   mainEl.querySelectorAll("[data-invf]").forEach(b=>b.addEventListener("click", ()=>{ invFilter = b.dataset.invf; renderInvoices(); }));
+  mainEl.querySelectorAll("[data-abkl]").forEach(b=>b.addEventListener("click", async e=>{ e.stopPropagation(); const i = DB.invoices.find(x=>x.id===b.dataset.abkl); if(i && await toggleAbklaerung(i)) renderInvoices(); }));
   addSearchBox(document.getElementById("searchSlot"), "Rechnungen suchen…", (q)=>{
     document.querySelectorAll("#invTableBody tr").forEach(el=>{
       el.style.display = el.dataset.search.includes(q) ? "" : "none";
@@ -3860,6 +3867,7 @@ function checkInvoice(inv){
     if(inv.haus && hs.some(h => normHaus(h) !== normHaus(inv.haus))) f.push({ level:"warn", text:`Ausmassblätter für ${hs.join(", ")} – die Rechnung lautet auf ${inv.haus}.` });
     f.push({ level:"info", text:`Ausmassblätter: ${inv.ausmass.map(s => `Nr. ${s.nr}${s.objekt ? " " + s.objekt : ""}${s.haus ? " (" + s.haus + ")" : ""}${s.m3!=null ? ": " + fmtQty(s.m3) + " m³" : ""}`).join(" · ")}` });
   }
+  if(abklOffen(inv)) f.push({ level:"warn", text:`📌 Abklärung offen: ${inv.abklaerung.notiz || "–"} (${inv.abklaerung.von || ""})` });
   const ohneAB = invOhneAB(inv);
   (inv.duplikatVersuche||[]).forEach(d => f.push({ level:"info", text:`Diese Rechnung wurde am ${d.am} erneut zugestellt (${d.datei||"Datei"}) – nicht doppelt gespeichert.` }));
   if(ohneAB) f.push({ level:"ok", text:`Keine AB vorhanden – bestätigt${inv.ohneAB && inv.ohneABvon ? ` von ${inv.ohneABvon}` : (!inv.ohneAB ? " (für das ganze Objekt)" : "")}. Preise werden trotzdem geprüft.` });
@@ -4549,6 +4557,7 @@ function renderPruefPanel(el, getInv){
           <button class="small" data-copybean>📋 Beanstandung kopieren</button>
           ${(inv.duplikatVersuche||[]).length ? dupButtonsHtml(inv.id) : ""}
           ${(inv.items||[]).some(x=>x.category==="Regie") || wvItems(inv).length ? `<button class="small ${wvItems(inv).length ? "st-bad" : ""}" data-wvall title="Alle Regie-Positionen an Kunde weiter verrechnen">${wvItems(inv).length ? "↗ Wird weiter verrechnet" : "↗ Regie weiter verrechnen"}</button>` : ""}
+          <button class="small ${abklOffen(inv) ? "st-warn" : ""}" data-abklp>${abklOffen(inv) ? "📌 Abklärung erledigt" : "📌 Zur Abklärung markieren"}</button>
           <button class="small ${inv.ohneAB ? "st-ok" : ""}" data-ohneab title="Für diese Rechnung gibt es keine AB (z.B. Regie, Reparatur) – AB-Meldungen ausblenden">${inv.ohneAB ? "✓ Keine AB vorhanden" : "🚫 Keine AB vorhanden!"}</button>
         </div>
       </div>
@@ -4574,6 +4583,8 @@ function renderPruefPanel(el, getInv){
     });
   });
   wireDupButtons(el);
+  const abp = el.querySelector("[data-abklp]");
+  if(abp) abp.addEventListener("click", async ()=>{ const i = getInv(); if(i && await toggleAbklaerung(i)) renderPruefPanel(el, getInv); });
   // Fokus fuer den schwebenden Assistenten: diese Rechnung ist gerade offen
   ASSI.focus = { invId: inv.id, el, getInv };
   const wva = el.querySelector("[data-wvall]");
@@ -5301,7 +5312,21 @@ function invoiceTodo(inv){
   return d ? `${d} Fehler in der Prüfung` : null;
 }
 function computeInvoiceTodos(){
-  return DB.invoices.map(inv=>({ inv, why: invoiceTodo(inv) })).filter(x=>x.why);
+  return DB.invoices.filter(inv => !invDecided(inv)).map(inv=>({ inv, why: invoiceTodo(inv) })).filter(x=>x.why);
+}
+// Von Hand markiert: "Abklärung offen" (bleibt bis zur Erledigung sichtbar, auch bei freigegebenen Rechnungen)
+function abklOffen(inv){ return !!(inv && inv.abklaerung && inv.abklaerung.aktiv); }
+function abklTag(inv){ return abklOffen(inv) ? ` <span class="pill abkl" title="${escapeAttr((inv.abklaerung.notiz||"") + " – " + (inv.abklaerung.von||""))}">📌 ${escapeHtml(shortText(inv.abklaerung.notiz || "Abklärung offen", 40))}</span>` : ""; }
+async function toggleAbklaerung(inv){
+  if(abklOffen(inv)){
+    if(!confirm(`Abklärung „${inv.abklaerung.notiz||""}“ als erledigt markieren?`)) return false;
+    inv.abklaerung = { ...inv.abklaerung, aktiv:false, erledigtVon: `${initialsFor(currentUser.email)} ${shortDate(new Date())}` };
+  } else {
+    const n = prompt("Was ist noch abzuklären? (z.B. „Preis Trennwand mit Kujtim klären“)", "");
+    if(n === null) return false;
+    inv.abklaerung = { aktiv:true, notiz: n.trim() || "Abklärung offen", von: `${initialsFor(currentUser.email)} ${shortDate(new Date())}` };
+  }
+  await saveInvoice(inv); updateBadges(); return true;
 }
 function unreadMessages(){ return (DB.msgsIn||[]).filter(m=>!m.read); }
 
