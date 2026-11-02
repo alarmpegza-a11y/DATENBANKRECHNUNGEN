@@ -360,11 +360,6 @@
   .pstamp{position:absolute;cursor:grab;touch-action:none;outline:1px dashed rgba(30,90,200,.55);outline-offset:4px;}
   .wvstamp{position:absolute;right:calc(100% + 6%);top:0;width:62%;}
   .wvstamp.below{right:auto;left:0;top:calc(100% + 8%);}
-  .pstamp{container-type:inline-size;}
-  .anrstamp{position:absolute;left:0;right:0;top:calc(100% + 1.5cqw);text-align:center;color:#1d3f8f;background:#fff;border:1.5px solid #1d3f8f;border-radius:4px;
-    padding:0.6cqw 1.5cqw;font-family:Arial,Helvetica,sans-serif;font-weight:700;font-size:11px;font-size:6.2cqw;line-height:1.25;white-space:nowrap;letter-spacing:.2px;}
-  .anrstamp small{font-weight:400;font-size:.8em;margin-right:.3em;}
-  .pstamp.hasanr .wvstamp.below{top:calc(100% + 16cqw);}
   tr.wvrow td{background:#fff3f3;}
   .pstamp:active{cursor:grabbing;}
   @media print{
@@ -420,18 +415,10 @@ const DEFAULT_CATEGORIES = [
   { key: "Regie", label: "Regie (Stunden)", unit: "h", keywords: ["regie","regia"] },
   { key: "Anfahrt", label: "Anfahrt / Installation", unit: "Stk", keywords: ["anfahrt","parking","fahrtspesen","installationspauschale","einrichtungspauschale","baustelleneinrichtung","installation pauschal","weg inkl","weg pauschal","inkl. km","inkl km","parkplatz","parkgeb"] },
   { key: "Entsorgung", label: "Entsorgung", unit: "Stk", keywords: ["entsorgung","abfall"] },
-  { key: "Material", label: "Material (kg / l)", unit: "kg", keywords: ["material","flocken","steinwolle sack"] },
+  { key: "Material", label: "Material (kg / l)", unit: "kg", keywords: ["material","flocken","steinwolle sack","schrauben","dübel","diibel","dubel","befestigungsmaterial","kleinmaterial"] },
   { key: "Elemente", label: "Elemente (allg.)", unit: "Stk", keywords: ["element"] },
   { key: "Sonstiges", label: "⚠ Nicht zugeordnet", unit: "Stk", keywords: [] },
 ];
-
-// Kuerzel VW (Vorwand) / TW (Trennwand) erkennen -- auch alleinstehend ("VW" in eigener Zeile, "2 TW 1.00 …")
-function vwTwKat(text){
-  const t = String(text||"").toLowerCase();
-  if(/\b(tw|trw)\b|trennwand|raumtrenner/.test(t)) return "TW";
-  if(/\bvw\b|vorwand/.test(t)) return "VW";
-  return null;
-}
 
 // Bekannte Subunternehmer -> sauberer Anzeigename (hilft bei Logos/Stilschriften, die OCR schlecht liest)
 const KNOWN_SUPPLIERS = [
@@ -526,8 +513,6 @@ function startDataListeners(){
     setTimeout(fillMissingHouses, 1500);
     setTimeout(cleanupEmptyProjects, 2500);
     setTimeout(autoReparseBroken, 3500);
-    setTimeout(fixVwTwCategories, 5000);
-    setTimeout(fixHausFromQuantity, 6000);
     renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
@@ -628,6 +613,8 @@ async function fixFallbackProjects(){
     if(/^\d{4}$/.test(cleanRnr(inv.rechnungsnr)) && r.rechnungsnr && r.rechnungsnr !== inv.rechnungsnr) upd.rechnungsnr = r.rechnungsnr;
     if(!inv.auftragsnummer && r.auftragsnummer) upd.auftragsnummer = r.auftragsnummer;
     if(!inv.ausmass && r.ausmass) upd.ausmass = r.ausmass;
+    if(!inv.rechnungsnr && r.rechnungsnr) upd.rechnungsnr = r.rechnungsnr;
+    if(r.lieferant && inv.lieferant !== r.lieferant && compactName(inv.lieferant) === compactName(r.lieferant)) upd.lieferant = r.lieferant;
     const manuell = (inv.verlauf||[]).some(e => /Positionen|Betrag/.test(e.was||""));
     const sumOld = (inv.items||[]).reduce((s,x)=>s+(num(x.preis)||0),0), sumNew = r.items.reduce((s,x)=>s+(num(x.preis)||0),0);
     const sig = its => (its||[]).map(x=>x.category+":"+(num(x.preis)||0)).sort().join("|");
@@ -663,8 +650,9 @@ async function fixFallbackProjects(){
 async function cleanProjectNames(){
   const re = /\s+[A-ZÄÖÜa-zäöü][\wäöüÄÖÜ-]*,?\s*den\s+\d{1,2}\.\d{1,2}\.\d{2,4}.*$/;
   for(const p of DB.projects){
-    const nn = String(p.name||"").replace(re, "").replace(/[,\s]+$/,"");
-    const na = String(p.address||"").replace(re, "").replace(/[,\s]+$/,"");
+    const clean = x => String(x||"").replace(re, "").replace(/\s*(?:A-?\s?)?2\d{2,8}(?:\s\d{1,6})?\s*\/\s*[A-Z]{2,4}\b.*$/i, "").replace(/\(\s*([^)]*?)\s*\)/g, "$1").replace(/\s{2,}/g," ").replace(/[,\s]+$/,"").trim();
+    const nn = clean(p.name);
+    const na = clean(p.address);
     if(nn && (nn !== p.name || na !== (p.address||""))){ p.name = nn; p.address = na; try{ await saveProject(p); }catch(e){} }
   }
 }
@@ -1128,7 +1116,7 @@ function parseAusmassSheets(text){
   return sheets;
 }
 function parseInvoiceText(text){
-  text = normalizeDigits(text);
+  text = normalizeDigits(text).replace(/\b[O0]b[ij1l][ec]kt\b/g, "Objekt");
   const rawLines = text.split("\n").map(l=>l.trim()).filter(l=>l.length>0);
   const lower = text.toLowerCase();
 
@@ -1158,7 +1146,11 @@ function parseInvoiceText(text){
   // 3) Webseite / E-Mail-Domain des Absenders (www.trendisol.ch -> Trendisol)
   if(!result.lieferant){
     const dm = text.match(/(?:www\.|@)([a-z0-9äöü\-]{3,})\.(?:ch|com|de|li|at|swiss)\b/i);
-    if(dm && !/pe-fabrikation/i.test(dm[1])) result.lieferant = dm[1].charAt(0).toUpperCase() + dm[1].slice(1);
+    if(dm && !/pe-fabrikation/i.test(dm[1])){
+      const want = dm[1].toLowerCase().replace(/[^a-z0-9]/g,"");
+      const line = rawLines.map(l=>l.trim()).find(l => l.length <= 40 && l.toLowerCase().replace(/[^a-z0-9]/g,"") === want);
+      result.lieferant = line ? line.replace(/^([A-Z])\.(?=\S)/, "$1. ").replace(/\b([A-ZÄÖÜ])([A-ZÄÖÜ]{2,})\b/g, (m,a,b)=>a + b.toLowerCase()) : dm[1].charAt(0).toUpperCase() + dm[1].slice(1);
+    }
   }
   if(!result.lieferant){
     const fallbackLine = rawLines.find(l => l.trim() && !isOwnCompanyLine(l.toLowerCase()) && !looksLikeNoise(l) && !/^(\w+\s*:\s*)+$/.test(l));
@@ -1267,6 +1259,19 @@ function parseInvoiceText(text){
     // den "Total m3"-Wert des Ausmassblatts erfasst, sonst wuerde doppelt gezaehlt.
     if(l.includes("ausmassblatt")) return;
 
+    // MwSt-Spalte stoert die Spaltenerkennung ("8 Std 65.00 8.1 % 520.00")
+    if(/\s\d{1,2}[.,]\d{1,2}\s?%/.test(line) && !/mwst\s*\d|mehrwert|zzgl|\bvon\s+chf/i.test(line)) line = line.replace(/\s\d{1,2}[.,]\d{1,2}\s?%/g, " ").replace(/\s{2,}/g, " ").trim();
+    // "1 100 2 420.00": Pos, Artikelnr., Anzahl, Total (Beschreibung steht in der naechsten Zeile)
+    { const pq = line.match(/^(\d{1,2})\s+(?:(\d{2,6})\s+)?(\d+(?:[.,]\d+)?)\s+(-?[\d']+[.,]\d{2})$/);
+      if(pq){ const q = parseSwissNumber(pq[3]), t0 = parseSwissNumber(pq[4]);
+        if(q && t0 && q < 10000){ result.items.push({ id: uid("it"), category: catSonstiges.key, label: line.slice(0,90), menge: q, einheit: "Stk", preis: t0, ep: roundNum(t0 / q), _li: lineNo }); return; } } }
+    // "2 Schrauben und Dübel 192.00": Pos + Text + Total ohne Menge
+    { const pt = line.match(/^(\d{1,2})\s+([A-Za-zÄÖÜäöü][^\d]{2,60}?)\s+(-?[\d']+[.,]\d{2})$/);
+      if(pt && !/(total|summe|betrag|mwst|skonto|netto|brutto)/i.test(pt[2])){ const t0 = parseSwissNumber(pt[3]);
+        if(t0){ const d = pt[2].toLowerCase(); const c = categories.find(x => !["Beplankung","Ausflockung","Sonstiges"].includes(x.key) && x.keywords.some(kw => d.includes(kw))) || catSonstiges;
+          result.items.push({ id: uid("it"), category: c.key, label: line.slice(0,90), menge: 1, einheit: "Psch", preis: t0, ep: t0, _li: lineNo }); }
+        if(t0 === 0) return;
+        if(t0) return; } }
     // Tabellenzeile: "2 Regia 5.00 ore 55.00 275.00" / "2 85 stk. Silent Panel montiert 3.00 55.00 165.00"
     let tri = line.match(/^(.*?\S)\s+(-?\d[\d']*(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|st\.?|std\.?|stunden|ore|h|app\.?|psch\.?|pauschal|le|kg|lt)?\s+(?:CHF\s*)?(-?[\d']+[.,]\d{2})\s+(?:CHF\s*)?(-?[\d']+[.,]\d{2})\s*(?:CHF)?\s*$/i);
     // keine Ausmass-Zeilen ("4.OG 3.00 2.75 0.30 1 2.48 150.00 371.25"): Beschreibung braucht Text und hoechstens eine Dezimalzahl
@@ -1361,13 +1366,13 @@ function parseInvoiceText(text){
 
   // Folgezeile einer Position = Beschreibung ("Vorwand", "Raumtrenner", "Gis + Duofix 16'000.00")
   {
-    const idxOf = new Map(result.items.map(it => [it, rawLines.findIndex(l => l.slice(0,90) === it.label)]));
+    const idxOf = new Map(result.items.map(it => [it, it._li != null ? it._li : rawLines.findIndex(l => l.slice(0,90) === it.label)]));
     const itemLines = new Set(Array.from(idxOf.values()));
     const consumed = new Set();
     result.items.forEach(it=>{
       const li = idxOf.get(it); if(li < 0) return;
       const nl = String(rawLines[li+1] || "").trim();
-      if(!nl || consumed.has(li) || /^(subtotal|zwischensumme|total|mwst|summe|rabatt|skonto)/i.test(nl) || /^\d+(?:\.\d+)?\s+\S/.test(nl) && itemLines.has(li+1) && !/^\d[\d'’.,]*\s*$/.test(nl)) return;
+      if(!nl || consumed.has(li) || /^(subtotal|zwischensumme|total|mwst|summe|rabatt|skonto|bei zahlung|netto|brutto|\+\s*mwst|rechnungstotal|zahlbar|für weitere|mit freundlichen)/i.test(nl) || /^\d+(?:\.\d+)?\s+\S/.test(nl) && itemLines.has(li+1) && !/^\d[\d'’.,]*\s*$/.test(nl)) return;
       if(/^\d{1,2}(?:\.\d{1,2})?\s+/.test(nl)) return; // naechste Position
       if(itemLines.has(li+1)){
         // Folgezeile ist selbst eine Position -> nur uebernehmen, wenn hier der Betrag fehlt oder die Folgezeile keinen eigenen Betrag hat
@@ -1382,7 +1387,7 @@ function parseInvoiceText(text){
         if(m){ const amt = parseSwissNumber(m[1]); if(it.preis!=null && it.menge && Math.abs(it.menge * it.preis - amt) <= Math.max(1, amt * 0.01)){ it.ep = it.preis; it.preis = amt; } }
       }
       if(["Elemente","Sonstiges"].includes(it.category)){
-        const c = vwTwKat(nlc) || (/duofix/.test(nlc) ? "Duofix" : /beplank/.test(nlc) ? "Beplankung" : /ausflock/.test(nlc) ? "Ausflockung" : null);
+        const c = /raumtrenner|trennwand/.test(nlc) ? "TW" : /vorwand|gis\s+geberit|geberit\s+gis/.test(nlc) ? "VW" : /duofix/.test(nlc) ? "Duofix" : /beplank/.test(nlc) ? "Beplankung" : /ausflock/.test(nlc) ? "Ausflockung" : null;
         if(c) it.category = c;
       }
       const desc = nl.replace(/(-?[\d']+[.,]\d{2})\s*$/, "").trim();
@@ -1390,22 +1395,14 @@ function parseInvoiceText(text){
       consumed.add(li+1);
     });
     result.items = result.items.filter(it => !consumed.has(idxOf.get(it)));
+    result.items.forEach(it => { delete it._li; });
   }
 
-  // Allgemeine Element-Positionen mit Kuerzel VW/TW im Text (inkl. Folgezeile) der richtigen Kategorie zuordnen
-  result.items.forEach(it=>{
-    if(!["Elemente","Sonstiges"].includes(it.category)) return;
-    let k = vwTwKat(it.label);
-    if(!k){
-      // mehrzeilige Beschreibung ("Elementmontage" / "GiS OST" / "TW"): die naechsten Zeilen bis zur naechsten Position pruefen
-      const li = rawLines.findIndex(l => it.label.startsWith(l.slice(0,90)));
-      for(let j = li + 1; li >= 0 && j <= li + 3 && j < rawLines.length; j++){
-        const nl = rawLines[j];
-        if(/^\d{1,2}\s+\S/.test(nl) || /^(total|zzgl|mwst|rundung|betrag|subtotal|zwischensumme|summe)/i.test(nl)) break;
-        k = vwTwKat(nl); if(k) break;
-      }
-    }
-    if(k && categories.some(c=>c.key===k)){ it.category = k; it.einheit = it.einheit || "Stk"; }
+  // Duofix pro Apparat: "2 Stk Duofix mit 3 Apparaten à 450.00" -> 6 Apparate à 150.00
+  result.items.forEach(it => {
+    if(it.category !== "Duofix" || /app/i.test(it.einheit||"")) return;
+    const n = (String(it.label||"").match(/(?:mit|à|a|je|zu)\s+(\d{1,2})\s*(?:x\s*)?apparat/i) || String(it.label||"").match(/(\d{1,2})\s*-?\s*fach\b/i) || [])[1];
+    if(n && +n > 1 && num(it.menge)){ it.menge = num(it.menge) * (+n); it.einheit = "App."; if(num(it.preis)!=null) it.ep = roundNum(num(it.preis) / it.menge); }
   });
 
   // Sammelrechnung ("Diverse Objekte"): Positionskopf "1 Feldblumenweg, Zürich …" -> Objekt pro Position
@@ -1447,6 +1444,11 @@ function parseInvoiceText(text){
 
   // "Höhenstrasse 22, 8954 Geroldswil Galgenen, den 03.03.2026": Ort des Briefdatums gehoert nicht zum Objekt
   if(result.objekt) result.objekt = result.objekt.replace(/\s+[A-ZÄÖÜa-zäöü][\wäöüÄÖÜ-]*,?\s*den\s+\d{1,2}\.\d{1,2}\.\d{2,4}.*$/, "").replace(/[,\s]+$/,"");
+  if(result.objekt){
+    result.objekt = result.objekt.replace(/^[:\s]+/, "")
+      .replace(/\s*(?:A-?\s?)?2\d{2,8}(?:\s\d{1,6})?\s*\/\s*[A-Z]{2,4}\b.*$/i, "")      // Auftragsnr. + Kuerzel
+      .replace(/\(\s*([^)]*?)\s*\)/g, "$1").replace(/\s{2,}/g, " ").replace(/[,\s]+$/,"").trim();
+  }
   if(result.objekt){
     const lw = result.objekt.split(/\s+/).pop();
     if(lw && lw.length > 2 && new RegExp(lw.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + ",?\\s*den\\s+\\d").test(text)) result.objekt = result.objekt.slice(0, -lw.length).replace(/[,\s]+$/,"");
@@ -1613,7 +1615,7 @@ function rnrValid(v){
   if(digits.length < 3 || v.length > 25) return false;
   if(/^\d{1,2}\.\d{1,2}\.\d{2,4}$/.test(v)) return false;           // Datum
   if(/^CHE[-\s]?\d/i.test(v) || /^CH\d{2}/i.test(v)) return false;    // MWST / IBAN
-  if(/^0\d{2}[\s\/]?\d{3}/.test(v)) return false;                      // Telefon
+  if(/^0\d{2}[\s\/]?\d{3}/.test(v) && (digits.length >= 10 || /[\s\/]/.test(v))) return false; // Telefon (055 410 52 70)
   return true;
 }
 function cleanRnr(v){ return String(v||"").trim().replace(/[.,:;]+$/,"").replace(/\s+/g,""); }
@@ -1660,6 +1662,8 @@ function rnrCandidates(text, lieferant){
 // Unsere Auftrags-/AB-Nummern: 9-stellig mit 20… (AB-Nr. 202620851) oder 8-stellig mit 24…29 (A-25088457)
 function findAuftragsNr(text){
   const t = String(text||"");
+  const sli = t.match(/\b(?:A-?\s?)?(2\d{2,8}(?:\s\d{1,6})?)\s*\/\s*[A-Z]{2,4}\b/);   // "260972901 /SLI" (Kuerzel Sachbearbeiter), OCR evtl. "2609725 18/SLI"
+  if(sli){ const d = sli[1].replace(/\s/g,""); if(d.length >= 8 && d.length <= 9) return d; }
   const lab = t.match(/(?:\bRif|\bRef|Referenz|Ihre\s+Referenz|Auf(?:trags?)?\s*-?\s*n(?:r|ummer)|Bestell-?\s*Nr|Projekt-?\s*Nr|Ihr\s+Auftrag|\bAB)\.?\s*[:#]?\s*(?:A-?\s?)?(2\d{7,8})\b/i);
   if(lab) return lab[1];
   // ohne Beschriftung: Nummer, die zu einer hinterlegten AB passt
@@ -2236,6 +2240,7 @@ function renderSuppliers(){
         <div>
           <div class="pname">🏢 ${escapeHtml(name)}</div>
           <div class="paddr">${projectIds.size} Auftrag/Aufträge · ${invs.length} Rechnung(en)</div>
+          ${extLine(extFor(null, p), true)}
           <div class="paddr num" style="margin-top:2px;">${escapeHtml(mengeSummary(invs))}</div>
         </div>
         <div class="pmeta">
@@ -2505,50 +2510,6 @@ async function autoReparseBroken(){
     try{ await saveInvoice(inv); }catch(e){}
   }
 }
-// Einmalig: Haus, das aus einer Menge gelesen wurde ("Elementmontage Haus 8.00 …" -> "Haus 8"), wieder entfernen
-let hausQtyFixDone = false;
-async function fixHausFromQuantity(){
-  if(hausQtyFixDone || !DB.invoices.length || !DB.projects.length) return; hausQtyFixDone = true;
-  for(const inv of DB.invoices){
-    if(!inv.haus || !inv.rawText) continue;
-    const p = DB.projects.find(x=>x.id===inv.projectId); if(!p) continue;
-    if((p.abs||[]).some(a=>a.haus===inv.haus)) continue;          // Haus hat eine AB -> echt
-    const id = inv.haus.replace(/^(Haus|Gebäude|Block|Trakt|Nr\.)\s*/i, "");
-    if(!/^\d{1,3}$/.test(id)) continue;
-    const esc = id.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
-    const asQty = new RegExp("\\bHaus\\s*" + esc + "[.,'’]\\d", "i").test(inv.rawText);
-    const real = new RegExp("\\bHaus\\s*" + esc + "\\b(?![.,'’]\\d)", "i").test(inv.rawText) || hausFromText(inv.objekt) === inv.haus;
-    if(!asQty || real) continue;
-    const wrong = inv.haus;
-    inv.haus = "";
-    try{ await window.fb.setDocMerge("invoices", inv.id, { haus: "" }); }catch(e){ console.error(e); }
-    if(!DB.invoices.some(i=>i.projectId===p.id && i.haus===wrong) && (p.haeuser||[]).includes(wrong)){
-      p.haeuser = p.haeuser.filter(x=>x!==wrong);
-      try{ await saveProject(p); }catch(e){ console.error(e); }
-    }
-  }
-}
-// Einmalig: bestehende, noch nicht gedruckte Rechnungen -- "Elemente (allg.)" mit VW/TW im Text umstellen
-let vwTwFixDone = false;
-async function fixVwTwCategories(){
-  if(vwTwFixDone || !DB.invoices.length) return; vwTwFixDone = true;
-  for(const inv of DB.invoices){
-    if(inv.gedrucktAm || !(inv.items||[]).length) continue;
-    let fresh = null, changed = false;
-    inv.items.forEach((it, i)=>{
-      if(!["Elemente","Sonstiges"].includes(it.category) || it.tarifId) return;
-      let k = vwTwKat(it.label);
-      if(!k && inv.rawText){
-        // aelter gelesene Position ohne Folgezeile im Text: Kategorie aus neuer Lesung uebernehmen, wenn Menge/Betrag gleich sind
-        if(fresh === null) fresh = (reparseInvoice(inv) || {}).items || [];
-        const f = fresh[i];
-        if(f && ["VW","TW"].includes(f.category) && num(f.menge)===num(it.menge) && num(f.preis)===num(it.preis)){ k = f.category; if(!/\b(vw|tw)\b/i.test(it.label)) it.label = f.label; }
-      }
-      if(k){ it.category = k; changed = true; }
-    });
-    if(changed){ try{ await saveInvoice(inv); }catch(e){ console.error(e); } }
-  }
-}
 // Material einer Beplankungs-Position: aus dem Text, sonst aus dem gewaehlten/erkannten vereinbarten Preis
 function itemMaterial(inv, it){
   const m = normMaterial(it.label); if(m) return m;
@@ -2557,15 +2518,6 @@ function itemMaterial(inv, it){
   return null;
 }
 // Nachtrag (Mehr-/Minderpreis) ohne zugehoerige Haupt-AB?
-// Nachtrag = als Mehr-/Minderpreis erkannt ODER gleiche AB-Nummer wie eine fruehere AB (spaetere Offerte / hoehere A-Nr.)
-function abDatumKey(a){ const d = parseDateCH(a.offertdatum); return d ? d.getTime() : 0; }
-function abIsNachtrag(p, ab){
-  if(ab.nachtrag) return true;
-  const abs = (p && p.abs) || [];
-  if(ab.version) return false;
-  return abs.some(b => b !== ab && !b.nachtrag && !b.version && b.nr && b.nr === ab.nr && b.anr !== ab.anr
-    && (abDatumKey(b) < abDatumKey(ab) || (abDatumKey(b) === abDatumKey(ab) && String(b.anr||"") < String(ab.anr||""))));
-}
 function missingBaseABs(p){
   const abs = (p && p.abs) || [];
   const clean = s => String(s||"").replace(/[^0-9A-Za-z]/g,"").toUpperCase();
@@ -2844,21 +2796,21 @@ function renderProjectDetail(projectId){
             const hab = abs.filter(a=>a.haus===h);
             const hinv = invs.filter(i=>i.haus===h);
             return `<tr>
-              <td><b>${escapeHtml(h)}</b>${!hab.length ? ` <button class="small danger" data-delhaus="${escapeAttr(h)}" title="Haus entfernen – Rechnungen werden „ohne Haus“ (Total aller ABs) geprüft" style="padding:1px 7px;margin-left:6px;">✕ entfernen</button>` : ""}</td>
+              <td><b>${escapeHtml(h)}</b></td>
               <td>${hab.length ? `<span class="hchip ok">✓ ${hab.map(a=>escapeHtml(a.nr)).join(", ")}</span>` : abs.some(a=>!a.haus) ? `<span class="hchip ok">✓ AB ganzes Objekt</span>` : `<span class="hchip bad">✗ AB fehlt</span>`}</td>
               <td>${hinv.length}</td><td></td></tr>`;
           }).join("")}
           <tr><td class="muted">—</td><td></td><td></td><td>${invs.filter(i=>!i.haus).length ? `<span class="hchip ${houses.length>1||abs.some(a=>a.haus)?"bad":"ok"}">${invs.filter(i=>!i.haus).length} Rechnung(en)</span>` : "0"}</td></tr>
           </tbody></table></div>` : ""}
-      ${abs.length ? abs.slice().sort((a,b)=> String(a.nr).localeCompare(String(b.nr)) || ((abIsNachtrag(p,a)?1:0)-(abIsNachtrag(p,b)?1:0)) || String(a.anr).localeCompare(String(b.anr))).map(ab=>{
+      ${abs.length ? abs.slice().sort((a,b)=> String(a.nr).localeCompare(String(b.nr)) || ((a.nachtrag?1:0)-(b.nachtrag?1:0)) || String(a.anr).localeCompare(String(b.anr))).map(ab=>{
         const open = expandedABs.has(p.id+"|"+abKey(ab));
         return `<div class="abbox">
           <div class="abhead">
-            <div>${abIsErsetzt(p, ab) ? `<span class="pill" style="margin-right:6px;background:#eee;color:#666;">ersetzt durch Rek. AB – zählt nicht</span>` : ab.version ? `<span class="pill ok" style="margin-right:6px;">Rek. AB${ab.offertdatum ? " vom " + escapeHtml(ab.offertdatum) : ""} – gilt</span>` : ""}${ab.nachtrag ? `<span class="pill warnok" style="margin-right:6px;">± Mehr-/Minderpreis${ab.zuAnr ? " zu " + escapeHtml(ab.zuAnr) : ""}</span>` : abIsNachtrag(p, ab) ? `<span class="pill warnok" style="margin-right:6px;">+ Nachtrag zu AB ${escapeHtml(ab.nr)} – wird dazugezählt</span>` : ""}<b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}${ab.haus?` · <span class="hchip ok">${escapeHtml(ab.haus)}</span>`:""}${ab.los?` <span class="muted">Los ${escapeHtml(ab.los)}</span>`:""}
+            <div>${ab.nachtrag ? `<span class="pill warnok" style="margin-right:6px;">± Mehr-/Minderpreis${ab.zuAnr ? " zu " + escapeHtml(ab.zuAnr) : ""}</span>` : ""}<b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}${ab.haus?` · <span class="hchip ok">${escapeHtml(ab.haus)}</span>`:""}${ab.los?` <span class="muted">Los ${escapeHtml(ab.los)}</span>`:""}
               <div class="muted" style="font-size:12px;">Kunde: ${escapeHtml(ab.kunde||"—")}${ab.kontakt?" ("+escapeHtml(ab.kontakt)+")":""} · Offerte ${escapeHtml(ab.offertdatum||"—")} · ${ab.einheiten!=null?ab.einheiten+" Einheiten · ":""}CHF ${fmt(ab.auftragswert)} exkl. MwSt · eingelesen ${escapeHtml(ab.importedAt||"")}</div>
             </div>
             <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">
-              <select class="hsel" data-abhaus="${escapeAttr(abKey(ab))}" title="Gilt für">${!ab.haus && !ab.hausBestaetigt && !abIsNachtrag(p, ab) && (p.abs||[]).filter(x=>!abIsNachtrag(p,x)).length > 1 ? `<option value="__unset" selected disabled>Gilt für: bitte wählen…</option>` : ""}<option value="" ${!ab.haus && (ab.hausBestaetigt || abIsNachtrag(p, ab) || (p.abs||[]).filter(x=>!abIsNachtrag(p,x)).length <= 1) ? "selected" : ""}>Gilt für: ganzes Objekt</option>${houses.concat(ab.haus && !houses.includes(ab.haus) ? [ab.haus] : []).map(h=>`<option value="${escapeAttr(h)}" ${h===ab.haus?"selected":""}>Gilt für: ${escapeHtml(h)}</option>`).join("")}<option value="__new">+ neues Haus…</option></select>
+              <select class="hsel" data-abhaus="${escapeAttr(abKey(ab))}" title="Gilt für"><option value="">Gilt für: ganzes Objekt</option>${houses.concat(ab.haus && !houses.includes(ab.haus) ? [ab.haus] : []).map(h=>`<option value="${escapeAttr(h)}" ${h===ab.haus?"selected":""}>Gilt für: ${escapeHtml(h)}</option>`).join("")}<option value="__new">+ neues Haus…</option></select>
               <button class="small" data-abtoggle="${escapeAttr(abKey(ab))}">${open?"Positionen ▴":"Positionen ▾"}</button>
               <button class="small danger" data-abdel="${escapeAttr(abKey(ab))}">Entfernen</button>
             </div>
@@ -2973,19 +2925,6 @@ function renderProjectDetail(projectId){
     p.haeuser = Array.from(new Set([...(p.haeuser||[]), h]));
     saveProject(p); renderProjectDetail(projectId);
   });
-  mainEl.querySelectorAll("[data-delhaus]").forEach(b=>b.addEventListener("click", async (e)=>{
-    e.stopPropagation();
-    const h = b.dataset.delhaus;
-    const hinv = DB.invoices.filter(i=>i.projectId===p.id && i.haus===h);
-    if(!confirm(`„${h}“ entfernen?${hinv.length ? `\n\n${hinv.length} Rechnung(en) werden keinem Haus mehr zugeordnet und gegen das Total aller ABs geprüft.` : ""}`)) return;
-    p.haeuser = (p.haeuser||[]).filter(x=>x!==h);
-    p.haeuserEntfernt = Array.from(new Set([...(p.haeuserEntfernt||[]), h]));
-    await saveProject(p);
-    for(const inv of hinv){ inv.haus = ""; await window.fb.setDocMerge("invoices", inv.id, { haus: "" }); }
-    if(selectedHaus[p.id]===h) selectedHaus[p.id] = "";
-    toast(`${h} entfernt.`);
-    renderProjectDetail(projectId);
-  }));
   mainEl.querySelectorAll("[data-htab]").forEach(b=>b.addEventListener("click", ()=>{ selectedHaus[p.id] = b.dataset.htab; renderProjectDetail(projectId); }));
   mainEl.querySelectorAll("[data-abhaus]").forEach(sel=>sel.addEventListener("change", async ()=>{
     const ab = (p.abs||[]).find(a=>abKey(a)===sel.dataset.abhaus); if(!ab) return;
@@ -2994,7 +2933,7 @@ function renderProjectDetail(projectId){
     ab.haus = h;
     ab.hausBestaetigt = true; // bewusst gewaehlt (auch "ganzes Objekt")
     // Nachtraege derselben AB uebernehmen die Wahl
-    (p.abs||[]).forEach(x => { if(x !== ab && x.nr && x.nr === ab.nr && !abIsNachtrag(p, ab) && abIsNachtrag(p, x)){ x.haus = h; x.hausBestaetigt = true; } });
+    (p.abs||[]).forEach(x => { if(x !== ab && x.nachtrag && x.nr === ab.nr && !ab.nachtrag){ x.haus = h; x.hausBestaetigt = true; } });
     if(h) p.haeuser = Array.from(new Set([...(p.haeuser||[]), h]));
     await saveProject(p);
     toast(h ? `AB ${ab.nr} gilt jetzt für ${h}.` : `AB ${ab.nr} gilt für das ganze Objekt.`);
@@ -3564,7 +3503,7 @@ function findTarif(sub, inv, it){
 
 /* ============================= AUFTRAGSBESTAETIGUNG (AB) LESEN ============================= */
 
-const AB_PARSER_VERSION = 5;
+const AB_PARSER_VERSION = 6;
 // Bereits gespeicherte ABs mit dem aktuellen Leser neu auswerten (Rohtext ist gespeichert -> kein erneuter Upload noetig)
 let abMigrationDone = false;
 let supplierFixDone = false;
@@ -3631,19 +3570,15 @@ function suggestABCategory(pos){
   const t = (pos.artikel + " " + pos.beschreibung).toLowerCase();
   const art = String(pos.artikel||"").toLowerCase();
   if(/anfahrt|parking/.test(t)) return "Anfahrt";
-  // Montage-Codes zuerst (TWM, VWM, VWMH, TWMH …) – deren Text enthaelt oft "inkl. Entsorgung"
-  if(/^twm/.test(art)) return "TW";
-  if(/^vwm/.test(art)) return "VW";
-  // "Element" = Vorfabrikation durch PE (Material), keine Sub-Leistung – auch wenn "Montagezeit/Gruppe … Trennwand" im Text steht
-  if(/^element\b/.test(art)) return "";
-  if(/entsorgung|abfall/.test(t) && !/inkl\.?\s*(der\s+)?entsorgung/.test(t)) return "Entsorgung";
+  if(/entsorgung|abfall/.test(t)) return "Entsorgung";
   if(pos.einheit==="m²" || /beplank/.test(t)) return "Beplankung";
   if(pos.einheit==="m³" || /ausflock/.test(t)) return "Ausflockung";
   if(/silent\s*-?panel/.test(t)) return "SilentPanel";
-  if(/duofix/.test(t)) return "Duofix";
-  if(/montage(?!zeit)/.test(t) && /trennwand/.test(t)) return "TW";
-  if(/montage(?!zeit)/.test(t) && /vorwand/.test(t)) return "VW";
-  if(/entsorgung|abfall/.test(t)) return "Entsorgung";
+  // Duofix wird pro Apparat (bzw. pro Schachtwand) abgerechnet; Gips-Abtrennung / Nischen-Material sind Zusatzleistungen
+  if(/duofix|^vwmduo/.test(t + " " + art) && /(gips|abtrennung|nische|material und arbeitsaufwand)/.test(t) && !/mit\s+\d+\s+apparat/.test(t)) return "Sonstiges";
+  if(/duofix|schachtwand|^vwmduo/.test(t + " " + art)) return "Duofix";
+  if(/^twm\b/.test(art) || (/montage/.test(t) && /trennwand/.test(t))) return "TW";
+  if(/^vwm\b/.test(art) || (/montage/.test(t) && /vorwand/.test(t))) return "VW";
   if(/verbinden/.test(t) && /(schweiss|press|anschliess)/.test(t)) return "Verbinden";
   if(pos.einheit==="h" && /regie/.test(t)) return "Regie";
   return ""; // nicht Sub-relevant (z.B. Vorfabrikation / Material PE)
@@ -3659,9 +3594,7 @@ function parseABText(text){
   m = text.match(/Baustelle\s*:\s*([^\n]+)/i);
   if(m) ab.baustelle = m[1].trim();
   // Nachtrag: "Mehr- /Minderpreis … zur Auftragsbestätigung 202417673 / A- 24123830" oder Bestell-Nr. "MeMi"
-  ab.nachtrag = /Mehr-?\s*\/?\s*Minderpreis|(?<!\bein\s)(?:Minder|Mehr)preis\s+(?!pro\b|von\b|nach\b|wird\b|verrechnet\b)\w+|Nachtrag\s+zu\s+AB|\bMeMi\b/i.test(text);
-  // Rek. AB = korrigierte AB mit gleicher Nummer -> ersetzt die urspruengliche AB (wird gespeichert, alte bleibt als "ersetzt" sichtbar)
-  ab.rek = /\bRek\.?\s*AB\b|\bRektifi|korrigierte\s+Auftragsbest/i.test(text);
+  ab.nachtrag = /Mehr-?\s*\/?\s*Minderpreis|Minderpreis\s+\w+|Mehrpreis\s+\w+|Nachtrag\s+zu\s+AB|\bMeMi\b/i.test(text);
   m = text.match(/zur\s+Auftragsbest[äa]tigung\s+\d+\s*\/\s*(A-?\s*\d+)/i) || text.match(/Nachtrag\s+zu\s+AB[-\s]*(A-?\s*\d{6,}|\d{6,})/i);
   ab.zuAnr = m ? ("A-" + m[1].replace(/^A-?\s*/i,"")) : "";
   m = text.match(/^Fax[\s\d]+?\s([A-ZÄÖÜ][^\n]+)$/m);
@@ -3671,13 +3604,8 @@ function parseABText(text){
     if(i>-1 && lines[i+1] && !/Auftragsbest/i.test(lines[i+1])) ab.kunde = lines[i+1];
   }
   m = text.match(/Ihr Kontakt\s*:\s*(.+?)(?:\s+Kunden-Nr|\n|$)/i); if(m) ab.kontakt = m[1].trim();
-  m = text.match(/Bestellung vom\s*:[\s:]*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.bestelldatum = m[1];
-  m = text.match(/Offert-Datum\s*:[\s:]*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.offertdatum = m[1];
-  if(!ab.offertdatum){ // Kopf als Tabelle gelesen: "02.11.2020 03.11.2020" bzw. "10.04.2026 / E-Mail 14.04.2026"
-    const dl = lines.slice(0, 40).map(l => l.match(/^(\d{1,2}\.\d{1,2}\.\d{4})\b.*?\s(\d{1,2}\.\d{1,2}\.\d{4})$/)).find(Boolean);
-    if(dl){ ab.bestelldatum = ab.bestelldatum || dl[1]; ab.offertdatum = dl[2]; }
-  }
-  ab.version = ab.rek ? ("Rek" + (ab.offertdatum ? " " + ab.offertdatum : "")) : "";
+  m = text.match(/Bestellung vom\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.bestelldatum = m[1];
+  m = text.match(/Offert-Datum\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.offertdatum = m[1];
   m = text.match(/f[üu]r\s+(\d+)\s+Einheiten/i); if(m) ab.einheiten = +m[1];
   m = text.match(/Bestell-Nr\s*:\s*(.+?)(?:\s+Versandart|\n|$)/i); ab.bestellnr = m ? m[1].trim() : "";
   m = ab.bestellnr.match(/\bLos\s*(\d+)/i) || text.match(/\bLos\s+(\d+)\b/i); ab.los = m ? m[1] : "";
@@ -3707,6 +3635,8 @@ function parseABText(text){
   const posRe = /^(\d{3})\s+(.+?)\s+(-?[\d']+\.\d{1,3})\s+(ST|STK|M2|M3|M|LM|H|STD|PA|PAU|PSCH|KG|L)\s+(-?[\d']+\.\d{2})\/(\d+)\s+(-?[\d']+\.\d{2})$/i;
   // Pauschal-ABs: Position nur mit Menge, Preis steht in der Gruppensumme ("027 AUSFS 83.000 M3")
   const posRe2 = /^(\d{3})\s+(.+?)\s+(-?[\d']+\.\d{1,3})\s+(ST|STK|M2|M3|M|LM|H|STD|PA|PAU|PSCH|KG|L)$/i;
+  // "065 VWMDUO1 130.000 ST 19'513.10" (Einzelpreis steht wegen Rabatt-/Rundungszeile weiter unten: " 150.09/1 ")
+  const posRe3 = /^(\d{3})\s+(.+?)\s+(-?[\d']+\.\d{1,3})\s+(ST|STK|M2|M3|M|LM|H|STD|PA|PAU|PSCH|KG|L)\s+(-?[\d']+\.\d{2})$/i;
   const blocks = []; let blockStart = 0;
   const noise = [/^PE Fabrikations AG$/i, /^Feldmoosstrasse/i, /^www\./i, /^Tel\.\s/i, /^Fax\s/i, /^Auftragsbest[äa]tigung\s+\d+/i, /^Mwst-Nr/i, /^-$/];
   let started = false, group = "", cur = null;
@@ -3732,6 +3662,13 @@ function parseABText(text){
       ab.positionen.push(cur);
       continue;
     }
+    const pm3 = line.match(posRe3);
+    if(pm3){
+      cur = { pos: pm3[1], artikel: pm3[2].trim(), menge: parseSwissNumber(pm3[3]), einheit: normalizeABUnit(pm3[4]),
+              ep: null, betrag: parseSwissNumber(pm3[5]), rabatt: null, gruppe: group, beschreibung: [] };
+      ab.positionen.push(cur);
+      continue;
+    }
     const pm2 = line.match(posRe2);
     if(pm2){
       cur = { pos: pm2[1], artikel: pm2[2].trim(), menge: parseSwissNumber(pm2[3]), einheit: normalizeABUnit(pm2[4]),
@@ -3739,8 +3676,13 @@ function parseABText(text){
       ab.positionen.push(cur);
       continue;
     }
+    if(/^\*?\s*Hinweis\s*\*?$/i.test(line)){ cur = null; continue; }   // Hinweistexte gehoeren zu keiner Position
     if(cur){
-      if(/^\(-?\d+\.\d{2}\)$/.test(line)) continue; // reine Rundungszeile
+      if(/^\(-?[\d']+\.\d{2}\)$/.test(line)) continue; // reine Rundungszeile
+      const epl = line.match(/^(-?[\d']+\.\d{2})\/(\d+)$/);    // Einzelpreis in eigener Zeile
+      if(epl){ if(cur.ep == null) cur.ep = roundNum(parseSwissNumber(epl[1]) / (+epl[2] || 1)); continue; }
+      const rbl = line.match(/^(\d{1,2}(?:\.\d{1,2})?)\s*%\s*\(-?[\d'.]+\)$/);   // "25.00 % (-1'072.05)"
+      if(rbl){ cur.rabatt = parseFloat(rbl[1]); continue; }
       let d = line;
       const rm = d.match(/\s(\d{1,2}(?:\.\d{1,2})?)\s*%\s*\(-?[\d'.]+\)\s*$/);
       if(rm){ cur.rabatt = parseFloat(rm[1]); d = d.slice(0, rm.index); }
@@ -3755,6 +3697,11 @@ function parseABText(text){
     const out = { ...p, beschreibung };
     out.category = suggestABCategory(out);
     out.categoryManual = false;
+    // "VWMDUO3 – Vorwand DUOFIX mit 3 Apparaten", 2 ST  ->  6 Apparate
+    if(out.category === "Duofix"){
+      const n = (String(out.artikel||"").match(/^VWMDUO(\d{1,2})\b/i) || beschreibung.match(/mit\s+(\d{1,2})\s+Apparat/i) || [])[1];
+      if(n && out.menge){ out.stkWaende = out.menge; out.apparateProStk = +n; out.menge = out.menge * (+n); out.einheit = "App."; }
+    }
     out.material = out.category==="Beplankung" ? (normMaterial(out.artikel + " " + beschreibung) || null) : null;
     const lf = beschreibung.match(/Leitfadenzeit[^\n]*?(\d+(?:[.,]\d+)?)\s*h\b/i);
     out.leitfadenzeitH = lf ? parseSwissNumber(lf[1]) : null;
@@ -3787,7 +3734,7 @@ function parseABText(text){
 // Soll-Werte aus den ABs eines Auftrags (Summe pro Kategorie); haus = nur ABs dieses Hauses
 function abSoll(p, haus){
   const out = {};
-  (p && p.abs || []).filter(ab => (haus===undefined || ab.haus===haus) && !abIsErsetzt(p, ab)).forEach(ab => (ab.positionen||[]).forEach(pos=>{
+  (p && p.abs || []).filter(ab => haus===undefined || ab.haus===haus).forEach(ab => (ab.positionen||[]).forEach(pos=>{
     if(!pos.category) return;
     const o = out[pos.category] || (out[pos.category] = { menge:0, erloes:0, einheit:pos.einheit, materials:[], positionen:[] });
     o.menge += +pos.menge || 0;
@@ -3885,16 +3832,9 @@ function checkInvoice(inv){
     }
   }
   if(num(inv.total)!=null && inv.datum){
-    // Gleicher Betrag allein ist kein Hinweis (viele Rechnungen haben denselben Betrag) --
-    // nur warnen, wenn auch Objekt/Auftrag und Positionen uebereinstimmen und nur die Rechnungsnr. abweicht
-    const objOf = o => o.objekt || (DB.projects.find(x=>x.id===o.projectId)||{}).address || "";
-    const sameObj = o => (o.projectId && o.projectId===inv.projectId)
-      || (!!objOf(o) && !!objOf(inv) && scoreAddress(stripHaus(objOf(o)), stripHaus(objOf(inv))) >= 2);
-    const posKey = x => (x.items||[]).map(it=>`${it.category}|${num(it.menge)}|${num(it.preis)}`).sort().join(";");
     const dup2 = DB.invoices.find(o => o.id!==inv.id && sameLief(o) && o.datum===inv.datum && sameTotal(o)
-      && String(o.rechnungsnr||"").trim().toLowerCase()!==String(inv.rechnungsnr||"").trim().toLowerCase()
-      && sameObj(o) && posKey(o)===posKey(inv));
-    if(dup2) f.push({ level:"warn", text:`Gleiches Objekt, Datum, Betrag (CHF ${fmt(inv.total)}) und gleiche Positionen wie Rechnung ${dup2.rechnungsnr||"ohne Nr."} – nur die Rechnungsnr. ist verschieden. Evtl. doppelt?` });
+      && String(o.rechnungsnr||"").trim().toLowerCase()!==String(inv.rechnungsnr||"").trim().toLowerCase());
+    if(dup2) f.push({ level:"warn", text:`Gleicher Betrag (CHF ${fmt(inv.total)}) und gleiches Datum wie Rechnung ${dup2.rechnungsnr||"ohne Nr."} – evtl. doppelt?` });
   }
 
   // --- Stammdaten vorhanden? ---
@@ -3925,7 +3865,7 @@ function checkInvoice(inv){
   if(ohneAB) f.push({ level:"ok", text:`Keine AB vorhanden – bestätigt${inv.ohneAB && inv.ohneABvon ? ` von ${inv.ohneABvon}` : (!inv.ohneAB ? " (für das ganze Objekt)" : "")}. Preise werden trotzdem geprüft.` });
   if(p && !ohneAB && (houses.length > 1 || allAbs.some(a=>a.haus))){
     if(!invHaus){
-      f.push({ level:"info", text:`Rechnung keinem Haus zugeordnet – geprüft gegen das Total aller ABs des Objekts (${houses.join(" + ")}). Für eine Kontrolle pro Haus bitte Haus wählen.` });
+      f.push({ level:"warn", text:`Objekt hat mehrere Häuser (${houses.join(", ")}) – diese Rechnung ist keinem Haus zugeordnet. Bitte Haus wählen, sonst ist keine Kontrolle pro Haus möglich.` });
     } else if(allAbs.some(a=>a.haus===invHaus)){
       scopeHaus = invHaus;
     } else if(allAbs.length && !allAbs.some(a=>!a.haus)){
@@ -4022,25 +3962,18 @@ function checkInvoice(inv){
           return;
         }
       }
-      // Rechnung sagt nur "Elementmontage" (ohne VW/TW), AB hat VW + TW: gegen die Summe VW + TW pruefen
-      if(cat==="Elemente" && !getSoll(p, "Elemente", scopeHaus)){
-        const sv = getSoll(p, "VW", scopeHaus), stw = getSoll(p, "TW", scopeHaus);
-        if(sv || stw){
-          const sollE = roundNum((sv ? sv.menge : 0) + (stw ? stw.menge : 0));
-          const istE = projInvs.reduce((s,o)=> s + (o.items||[]).filter(x=>["Elemente","VW","TW"].includes(x.category)).reduce((a,x)=>a+(num(x.menge)||0),0), 0);
-          const teil = [sv ? `${fmtQty(sv.menge)} VW` : "", stw ? `${fmtQty(stw.menge)} TW` : ""].filter(Boolean).join(" + ");
-          if(istE > sollE * (1 + S.mengenTolProzent/100) + 1e-9)
-            f.push({ level:"danger", text:`Elemente${hTxt}: kumuliert ${fmtQty(istE)} Stk verrechnet (VW + TW zusammen), Soll laut AB ${fmtQty(sollE)} Stk (${teil}) → ${fmtQty(istE - sollE)} Stk zu viel.` });
-          else f.push({ level:"ok", text:`Elemente${hTxt}: kumuliert ${fmtQty(istE)} von ${fmtQty(sollE)} Stk (AB: ${teil}).` });
-          const lab = (items.find(x=>x.category==="Elemente")||{}).label || "";
-          f.push({ level:"warn", text:`Rechnung unterscheidet nicht zwischen Vorwand und Trennwand („${shortText(lab, 50)}“) – laut AB ${teil}. Bitte Position in VW/TW aufteilen (Preise sind verschieden) oder beim Sub nachfragen.` });
-          return;
-        }
-      }
       const ist = projInvs.reduce((s,o)=> s + (o.items||[]).filter(x=>x.category===cat).reduce((a,x)=>a+(num(x.menge)||0),0), 0);
       const soll = getSoll(p, cat, scopeHaus);
       const u = catUnit(cat);
       if(!soll){
+        if(abs.length && !ohneAB && !["Sonstiges","Regie"].includes(cat) && scopeHaus){
+          const andere = (p.abs||[]).filter(a => a.haus && normHaus(a.haus) !== normHaus(scopeHaus) && (a.positionen||[]).some(x => x.category === cat && num(x.menge)));
+          if(andere.length){
+            const menge = andere.flatMap(a=>a.positionen).filter(x=>x.category===cat).reduce((q,x)=>q+(num(x.menge)||0),0);
+            f.push({ level:"warn", text:`${catLabel(cat)}${hTxt}: steht nicht in der AB für ${scopeHaus}, aber in der AB für ${Array.from(new Set(andere.map(a=>a.haus))).join(", ")} (${fmtQty(menge)} ${u}) – stimmt das Haus/Los der Rechnung?` });
+            return;
+          }
+        }
         if(abs.length && !ohneAB && !["Sonstiges","Regie"].includes(cat)){
           const kws = [catLabel(cat).toLowerCase(), ...((catDef(cat)||{}).keywords||[])].map(k=>k.trim()).filter(k=>k.length>=4);
           const inklLine = abs.flatMap(a=>a.inkl||[]).find(l => kws.some(k => l.toLowerCase().includes(k)));
@@ -4049,6 +3982,17 @@ function checkInvoice(inv){
         }
       } else if(ist > 0 && ist > Math.max(0, soll.menge) * (1 + S.mengenTolProzent/100) + 1e-9){
         const unsicher = !scopeHaus && houses.length > 1 && !allAbs.some(a=>a.haus);
+        // VW <-> TW verwechselt? (z.B. 6 Elemente alle als "Vorwand" verrechnet, AB: 4 VW + 2 TW)
+        const twin = cat==="VW" ? "TW" : cat==="TW" ? "VW" : null;
+        if(twin){
+          const sollT = getSoll(p, twin, scopeHaus);
+          const istT = projInvs.reduce((s2,o)=> s2 + (o.items||[]).filter(x=>x.category===twin).reduce((a,x)=>a+(num(x.menge)||0),0), 0);
+          const frei = sollT ? Math.max(0, sollT.menge - istT) : 0;
+          if(frei >= ist - Math.max(0, soll.menge) - 1e-9){
+            f.push({ level:"warn", text:`${catLabel(cat)}${hTxt}: ${fmtQty(ist)} Stk verrechnet, laut AB ${fmtQty(soll.menge)} ${cat} + ${fmtQty(sollT.menge)} ${twin} – ${fmtQty(ist - soll.menge)} Element(e) wurden als ${cat==="VW" ? "Vorwand" : "Trennwand"} statt ${twin==="TW" ? "Trennwand" : "Vorwand"} verrechnet. Gesamtzahl stimmt – Preis prüfen.` });
+            return;
+          }
+        }
         if(unsicher){
           f.push({ level:"warn", text:`${catLabel(cat)}: alle Häuser zusammen ${fmtQty(ist)} ${u} verrechnet, AB ${fmtQty(soll.menge)} ${u}. Gilt die AB nur für ein Haus? → im Auftrag unter „AB & Häuser“ bei der AB „Gilt für“ das Haus wählen.` });
         } else f.push({ level:"danger", text:`${catLabel(cat)}${hTxt}: kumuliert ${fmtQty(ist)} ${u} verrechnet, Soll (${soll.quelle}) ${fmtQty(soll.menge)} ${u} → ${fmtQty(ist - soll.menge)} ${u} zu viel.` });
@@ -4798,14 +4742,7 @@ function bestProjectForAddress(addr){
   return { project: best, score: bestScore };
 }
 
-function abKey(ab){ return `${ab.nr||""}|${ab.anr||""}${ab.version ? "|" + ab.version : ""}`; }
-// Urspruengliche AB, zu der eine Rek. AB (gleiche Nr. + A-Nr.) vorliegt -> zaehlt nicht mehr
-function abIsErsetzt(p, ab){
-  if(ab.version) { // aeltere Rek. AB, wenn es eine neuere gibt
-    return ((p && p.abs) || []).some(b => b !== ab && b.version && b.nr===ab.nr && b.anr===ab.anr && abDatumKey(b) > abDatumKey(ab));
-  }
-  return ((p && p.abs) || []).some(b => b !== ab && b.version && b.nr===ab.nr && b.anr===ab.anr);
-}
+function abKey(ab){ return `${ab.nr||""}|${ab.anr||""}`; }
 async function attachAB(projectId, ab){
   const p = DB.projects.find(x=>x.id===projectId);
   if(!p) throw new Error("Auftrag nicht gefunden.");
@@ -4841,7 +4778,7 @@ async function autoAssignAB(ab){
   if(sameNr){
     const isRev = (sameNr.abs||[]).some(a=>abKey(a)===abKey(ab));
     await attachAB(sameNr.id, ab);
-    return { projectId: sameNr.id, how: isRev ? "revision" : ab.version ? "rek" : (ab.nachtrag ? "nachtrag" : "auto") };
+    return { projectId: sameNr.id, how: isRev ? "revision" : (ab.nachtrag ? "nachtrag" : "auto") };
   }
   const { project, score } = bestProjectForAddress(ab.baustelle);
   if(project && score >= 1){ await attachAB(project.id, ab); return { projectId: project.id, how: score>=2 ? "auto" : "unsicher" }; }
@@ -4876,7 +4813,7 @@ function appendABCard(ab, res){
   wrap.className = "card";
   wrap.style.borderLeft = "4px solid var(--accent)";
   let projectId = res.projectId;
-  const howTxt = { nachtrag:"Nachtrag zur bestehenden AB – wird zur AB dazugerechnet (Mehr- und Minderpreise).", revision:"Neue Version einer bereits vorhandenen AB – ersetzt.", rek:"Rek. AB – gilt ab jetzt; die ursprüngliche AB bleibt sichtbar, zählt aber nicht mehr.", auto:"Automatisch über die Baustellenadresse zugeordnet.",
+  const howTxt = { nachtrag:"Nachtrag zur bestehenden AB – wird zur AB dazugerechnet (Mehr- und Minderpreise).", revision:"Neue Version einer bereits vorhandenen AB – ersetzt.", auto:"Automatisch über die Baustellenadresse zugeordnet.",
                    unsicher:"⚠ Zuordnung unsicher (nur teilweise Adressübereinstimmung) – bitte bestätigen oder ändern.", neu:"Kein passender Auftrag gefunden – neuer Auftrag angelegt." }[res.how] || "";
   function draw(){
     wrap.innerHTML = `
@@ -5181,8 +5118,7 @@ function normHaus(s){
   return s;
 }
 function hausFromText(s){
-  // "Elementmontage Haus 8.00 230.00" ist eine Menge, kein Haus 8 -> Zahl darf nicht von Dezimalstellen gefolgt sein
-  const m = String(s||"").match(/\b(Haus|Gebäude|Geb\.|Block|Trakt)\s*([a-z]?[0-9]{1,3}[a-z]?|[a-z])\b(?![.,'’]\d)/i);
+  const m = String(s||"").match(/\b(Haus|Gebäude|Geb\.|Block|Trakt)\s*([a-z]?[0-9]{1,3}[a-z]?|[a-z])\b/i);
   return m ? normHaus(m[1] + " " + m[2]) : "";
 }
 function stripHaus(s){
@@ -5228,7 +5164,7 @@ function detectInvoiceHaus(info, projectId){
     for(const h of projectHouses(p)){
       const id = h.replace(/^(Haus|Gebäude|Block|Trakt|Nr\.)\s*/i, "");
       if(/[a-z]/i.test(id) && new RegExp("(^|[^A-Za-z0-9])" + id.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + "([^A-Za-z0-9]|$)").test(text)) return h;
-      if(new RegExp("\\bHaus\\s*" + id.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + "\\b(?![.,'’]\\d)", "i").test(text)) return h;
+      if(new RegExp("\\bHaus\\s*" + id + "\\b", "i").test(text)) return h;
     }
   }
   const anyHaus = hausFromText(text.replace(/hauserstrasse|hausmatt\w*|hausen\b/gi, ""));
@@ -5261,7 +5197,7 @@ async function syncHousesWithABs(p){
   for(const inv of invs){
     if(inv.haus) continue;
     const h = detectInvoiceHaus(inv, p.id);
-    if(h && !(p.haeuserEntfernt||[]).includes(h)){ inv.haus = h; await window.fb.setDocMerge("invoices", inv.id, { haus: h }); }
+    if(h){ inv.haus = h; await window.fb.setDocMerge("invoices", inv.id, { haus: h }); }
   }
 }
 // AB(s) einem bestimmten Objekt hinzufuegen; fehlt das Haus, wird gefragt
@@ -5332,10 +5268,9 @@ function computeProjectTodos(){
     }
     // Nur eigenstaendige ABs zaehlen: ein Mehr-/Minderpreis gehoert zu seiner Haupt-AB; "ganzes Objekt" bewusst gewaehlt = in Ordnung
     const cl = x => String(x||"").replace(/[^0-9A-Za-z]/g,"").toUpperCase();
-    const isAddOn = a => abIsNachtrag(p, a) || (a.nachtrag && abs.some(b => b !== a && !b.nachtrag && a.zuAnr && cl(b.anr) === cl(a.zuAnr)));
+    const isAddOn = a => a.nachtrag && abs.some(b => b !== a && !b.nachtrag && (b.nr === a.nr || (a.zuAnr && cl(b.anr) === cl(a.zuAnr))));
     const baseNoHaus = abs.filter(a => !a.haus && !a.hausBestaetigt && !isAddOn(a));
-    // Nur melden, wenn wirklich verschiedene ABs (verschiedene AB-Nummern) ohne Haus da sind
-    if(new Set(baseNoHaus.map(a => a.nr || abKey(a))).size >= 2 && relevant.length){
+    if(baseNoHaus.length >= 2 && relevant.length){
       t.push({ kind:"ab", projectId:p.id, text:`${baseNoHaus.length} ABs ohne Haus – ${p.name}`, hint:"Mehrere ABs gelten fürs ganze Objekt – dann werden die Mengen zusammengezählt. Bitte bei jeder AB „Gilt für“ das Haus wählen.", share:`Bitte bei „${p.name}“ jeder AB das richtige Haus zuordnen.` });
     }
     if(!p.ohneAB && (houses.length > 1 || abs.some(a=>a.haus))){
@@ -5485,24 +5420,6 @@ function wvKurztext(inv){
 }
 function wvTag(inv){ return wvItems(inv).length ? ` <span class="pill danger" title="An Kunde weiter verrechnen: ${escapeAttr(wvKurztext(inv))}">↗ weiter verr. CHF ${formatCHF(wvSumme(inv))}</span>` : ""; }
 // Roter Zusatzstempel neben dem Eingangsstempel
-// Auftragsnummer neben dem Stempel, wenn sie nicht auf der Rechnung steht
-function stampAuftragsNr(inv){
-  const p = DB.projects.find(x=>x.id===inv.projectId);
-  if(!p) return "";
-  const ab = (p.abs||[]).find(a => a.nr && !abIsErsetzt(p, a) && !abIsNachtrag(p, a)) || (p.abs||[]).find(a => a.nr);
-  const nr = ab ? ab.nr : "";
-  const anr = ab ? (ab.anr || "") : String(p.auftragsnummer || "");
-  if(!nr && !anr) return "";
-  const d = x => String(x||"").replace(/\D/g, "");
-  const txt = d(inv.rawText || "") , own = d(inv.auftragsnummer);
-  const onInvoice = [nr, anr].some(x => { const k = d(x); return k.length >= 6 && (txt.includes(k) || own === k); });
-  if(onInvoice) return "";
-  return [nr, anr].filter(Boolean).join(" / ");
-}
-function anrStampHtml(inv){
-  const t = stampAuftragsNr(inv);
-  return t ? `<div class="anrstamp"><small>Auftrag</small>${escapeHtml(t)}</div>` : "";
-}
 function wvStampHtml(inv, posX){
   if(!wvItems(inv).length) return "";
   const below = posX < 24;
@@ -6350,7 +6267,7 @@ async function openPrintPreview(invs){
       body.innerHTML = imgs.map((src, n)=>`
         <div class="ppage" data-inv="${inv.id}">
           <img src="${src}" alt="">
-          ${n===0 ? `<div class="pstamp${stampAuftragsNr(inv) ? " hasanr" : ""}" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}${anrStampHtml(inv)}${wvStampHtml(inv, pos.x)}</div>` : ""}
+          ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}${wvStampHtml(inv, pos.x)}</div>` : ""}
         </div>`).join("");
       body.querySelectorAll(".pstamp").forEach(wireStamp);
       msg.textContent = `– ${imgs.length} Seite(n), Stempel verschiebbar`;
