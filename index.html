@@ -5752,7 +5752,9 @@ function matPreisVermerk(inv){
   const ini = (u && u.initialen) || (currentUser && approver && String(currentUser.email).toLowerCase()===String(approver).toLowerCase() && currentProfile && currentProfile.initialen) || p.initialen || initialsFor(approver);
   return `${datum} ${ini}`.trim();
 }
-function stampSvg(d, matText){
+function stampSvg(d, matText, extra){
+  extra = extra || {};
+  const vis = (t, y) => t ? `<text x="110" y="${y}" fill="#1f2f8f" font-family="Verdana, Arial, Helvetica, sans-serif" font-size="18">${escapeHtml(t)}</text>` : "";
   const ink = "#1f1f22";
   return `<svg viewBox="0 0 292 120" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;overflow:visible;">
     <g fill="${ink}">
@@ -5770,7 +5772,7 @@ function stampSvg(d, matText){
       <text x="4" y="88.2">Mat.preis</text>
       <text x="4" y="112.8">Fibu</text>
     </g>
-    ${matText ? `<text x="110" y="88" fill="#1f2f8f" font-family="Verdana, Arial, Helvetica, sans-serif" font-size="18">${escapeHtml(matText)}</text>` : ""}
+    ${vis(extra.fa, 63.5)}${vis(matText, 88)}${vis(extra.fibu, 112.6)}
   </svg>`;
 }
 
@@ -5778,7 +5780,8 @@ function stampSvg(d, matText){
 const STEMPEL_DEFAULT = { titel: "EPE", zeilen: ["FA erf.", "Mat.preis", "Fibu"], visumZeile: 1, farbe: "#1f1f22" };
 function stempelCfgFor(u){ const s = (u && u.stempel) || {}; return { ...STEMPEL_DEFAULT, ...s, zeilen: (s.zeilen && s.zeilen.length) ? s.zeilen : STEMPEL_DEFAULT.zeilen }; }
 function myStempelCfg(){ return STEMPEL_DEFAULT; }
-function myStampSvg(){ return stampSvg(stpDate(), stpVisum()); }
+function stpRows(){ try{ const r = JSON.parse(localStorage.getItem("pe_stempel_rows")||"null"); if(r) return r; }catch(e){} return { fa:false, mat:true, fibu:false }; }
+function myStampSvg(){ const r = stpRows(), v = stpVisum(); return stampSvg(stpDate(), r.mat ? v : "", { fa: r.fa ? v : "", fibu: r.fibu ? v : "" }); }
 // Allgemeiner Stempel: Titel + Datum, darunter Tabelle mit frei waehlbaren Zeilen; Visum (Datum + Initialen) in einer Zeile
 function customStampSvg(cfg, d, visum){
   const ink = cfg.farbe || "#1f1f22";
@@ -5918,6 +5921,8 @@ function renderStempel(){
       <div class="row" style="gap:12px;align-items:flex-end;flex-wrap:wrap;">
         <div style="width:220px;">${myStampSvg()}</div>
         <label class="field" style="margin:0;"><span>Stempeldatum</span><input type="date" id="stpDatum" value="${escapeAttr(STP.datum)}"></label>
+        <div class="field" style="margin:0;"><span>Datum + Initialen in</span>
+          <div style="display:flex;gap:12px;padding:6px 0;">${[["fa","FA erf."],["mat","Mat.preis"],["fibu","Fibu"]].map(([k,l])=>`<label style="display:flex;gap:5px;align-items:center;cursor:pointer;font-size:13.5px;"><input type="checkbox" data-stprow="${k}" ${stpRows()[k] ? "checked" : ""} style="width:auto;"> ${l}</label>`).join("")}</div></div>
         <label class="field" style="margin:0;"><span>Meine Initialen</span><input id="stpIni" value="${escapeAttr((currentProfile && currentProfile.initialen) || "")}" placeholder="${escapeAttr(defaultInitials(currentUser.email))}" maxlength="5" style="width:90px;text-transform:uppercase;"></label>
         <button class="small" id="stpIniSave">Speichern</button>
       </div>
@@ -5954,6 +5959,7 @@ function renderStempel(){
   drop.addEventListener("dragleave", ()=>drop.classList.remove("hover"));
   drop.addEventListener("drop", e=>{ e.preventDefault(); drop.classList.remove("hover"); stpAddFiles(Array.from(e.dataTransfer.files||[])); });
   document.getElementById("stpDatum").addEventListener("change", e=>{ STP.datum = e.target.value; renderStempel(); });
+  mainEl.querySelectorAll("[data-stprow]").forEach(cb => cb.addEventListener("change", ()=>{ const r = stpRows(); r[cb.dataset.stprow] = cb.checked; try{ localStorage.setItem("pe_stempel_rows", JSON.stringify(r)); }catch(e){} renderStempel(); }));
   document.getElementById("stpIniSave").addEventListener("click", ()=> saveMyInitials(document.getElementById("stpIni").value, renderStempel));
   const all = document.getElementById("stpAll");
   if(all) all.addEventListener("click", async ()=>{ toast("PDF wird erstellt…"); stpDownload(await stpExport(STP.docs), `gestempelt_${STP.datum}.pdf`); });
