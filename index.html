@@ -4141,8 +4141,9 @@ function beanstandungText(inv){
     `Rechnung ${inv.rechnungsnr||"(ohne Nr.)"} vom ${inv.datum||"?"} – Objekt: ${p?p.name:"?"}`,
     "",
     "Bei der Prüfung Ihrer Rechnung sind uns folgende Punkte aufgefallen:",
+    ...(inv.pruefung && inv.pruefung.beanstText ? [inv.pruefung.beanstText] : [
     ...f.map(x=>"– " + x.text),
-    ...(inv.pruefung && inv.pruefung.kommentar ? ["", "Bemerkung: " + inv.pruefung.kommentar] : []),
+    ...(inv.pruefung && inv.pruefung.kommentar ? ["", "Bemerkung: " + inv.pruefung.kommentar] : [])]),
     "",
     "Wir bitten Sie, die Rechnung zu korrigieren bzw. uns eine Gutschrift zu stellen.",
   ].join("\n");
@@ -4154,6 +4155,39 @@ function beanstandungPunkte(inv){
     .filter(x => (x.level==="danger" || x.level==="warn") && x.code!=="ab")
     .map(x => x.text)
     .filter(t => !/^AB fehlt|keine AB|Haus wählen|keinem Haus zugeordnet|evtl\. doppelt/i.test(t));
+}
+// Text der Beanstandung (eigener Text, falls bearbeitet – sonst automatisch aus dem Prüfbericht)
+function beanstandungDefaultText(inv){
+  const k = inv.pruefung && inv.pruefung.kommentar ? "\n\n" + inv.pruefung.kommentar : "";
+  return beanstandungPunkte(inv).map(t => "– " + t).join("\n") + k;
+}
+function openBeanstandungDialog(inv, onSaved){
+  const cur = (inv.pruefung && inv.pruefung.beanstText) || beanstandungDefaultText(inv);
+  const m = showModal(`
+    <h2>✗ Beanstandung – Rechnung ${escapeHtml(inv.rechnungsnr||"")}</h2>
+    <p class="subtitle" style="margin:-6px 0 8px 0;">${escapeHtml(inv.lieferant||"")} · Dieser Text kommt <b>genau so</b> ins Beanstandungs-PDF. Punkte aus dem Prüfbericht sind schon drin – ändern, löschen oder eigenen Text dazuschreiben.</p>
+    <textarea id="bdText" rows="12" style="width:100%;font-size:13px;line-height:1.45;resize:vertical;">${escapeHtml(cur)}</textarea>
+    <div class="muted" style="font-size:11.5px;margin-top:4px;">Zeilen mit „–“ am Anfang werden im PDF als Aufzählungspunkt gesetzt.</div>
+    <div style="display:flex;gap:8px;justify-content:space-between;margin-top:12px;flex-wrap:wrap;">
+      <button id="bdReset" class="small">↺ Text aus Prüfbericht neu laden</button>
+      <span style="display:flex;gap:8px;"><button id="bdCancel">Abbrechen</button><button class="primary" id="bdSave">✗ Beanstanden &amp; speichern</button></span>
+    </div>`);
+  m.querySelector(".modal").style.maxWidth = "720px";
+  const ta = m.querySelector("#bdText");
+  setTimeout(()=>{ ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
+  m.querySelector("#bdReset").addEventListener("click", ()=>{ ta.value = beanstandungDefaultText({ ...inv, pruefung: { ...(inv.pruefung||{}), beanstText:"" } }); });
+  m.querySelector("#bdCancel").addEventListener("click", closeModal);
+  m.querySelector("#bdSave").addEventListener("click", async ()=>{
+    const txt = ta.value.trim();
+    const auto = beanstandungDefaultText(inv).trim();
+    inv.pruefung = { ...(inv.pruefung||{}), status:"beanstandet", beanstText: txt && txt !== auto ? txt : "",
+      by: currentUser ? currentUser.email : "", at: new Date().toLocaleString("de-CH") };
+    if(inv.beanstPdfAm) inv.beanstPdfAm = "";
+    await saveInvoice(inv);
+    closeModal();
+    toast("Beanstandet – für das Beanstandungs-PDF vorgemerkt (③ Drucken → Beanstandet).");
+    if(onSaved) onSaved();
+  });
 }
 function pdfSafe(t){
   return String(t||"").replace(/→/g,"->").replace(/[✓✗✕⚠📌📑🚫↗↺]/g,"").replace(/\s{2,}/g," ").trim();
@@ -4204,12 +4238,25 @@ async function buildBeanstandungPdf(invs){
       const sub = doc.splitTextToSize(pdfSafe(`Objekt: ${p ? p.name : (inv.objekt||"?")}${inv.haus ? " · " + inv.haus : ""}${anr ? " · Auftrag " + anr : ""}`), W - 4);
       doc.text(sub, L + 2, y); y += sub.length * 4.6 + 1.5;
       doc.setTextColor(17); doc.setFontSize(10);
+      const eigen = inv.pruefung && inv.pruefung.beanstText;
+      if(eigen){
+        pdfSafe(eigen.replace(/\n/g, "\u0001")).split("\u0001").forEach(raw => {
+          const ln = raw.trim();
+          if(!ln){ y += 2; return; }
+          const bullet = /^[–\-•*]\s*/.test(ln);
+          const t = ln.replace(/^[–\-•*]\s*/, "");
+          const parts = doc.splitTextToSize(t, W - 9);
+          need(parts.length * 4.8 + 1);
+          if(bullet) doc.text("–", L + 3, y);
+          doc.text(parts, L + 8, y); y += parts.length * 4.8 + 1;
+        });
+      } else
       (punkte.length ? punkte : ["(keine Einzelpunkte – siehe Bemerkung)"]).forEach(t => {
         const parts = doc.splitTextToSize(t, W - 9);
         need(parts.length * 4.8 + 1);
         doc.text("–", L + 3, y); doc.text(parts, L + 8, y); y += parts.length * 4.8 + 1;
       });
-      if(kom){
+      if(kom && !eigen){
         const parts = doc.splitTextToSize("Bemerkung: " + kom, W - 9);
         need(parts.length * 4.8 + 1);
         doc.setFont("helvetica","italic"); doc.text(parts, L + 8, y); doc.setFont("helvetica","normal");
@@ -4751,6 +4798,7 @@ function renderPruefPanel(el, getInv){
           <button class="small ${st==="beanstandet"?"st-bad":"danger"}" data-ps="beanstandet">✗ Beanstanden</button>
           <button class="small" data-ps="offen" ${st==="offen"?"disabled":""}>↺ Offen</button>
           <button class="small" data-copybean>📋 Beanstandung kopieren</button>
+          ${st==="beanstandet" ? `<button class="small" data-beanedit title="Text der Beanstandung bearbeiten">✎ Text${inv.pruefung && inv.pruefung.beanstText ? " (eigener)" : ""}</button>` : ""}
           ${st==="beanstandet" ? `<button class="small" data-beanpdf title="Nur diese Rechnung als Beanstandungs-PDF">📄 PDF${inv.beanstPdfAm ? " ✓" : ""}</button>` : ""}
           ${(inv.duplikatVersuche||[]).length ? dupButtonsHtml(inv.id) : ""}
           ${(inv.items||[]).some(x=>x.category==="Regie") || wvItems(inv).length ? `<button class="small ${wvItems(inv).length ? "st-bad" : ""}" data-wvall title="Alle Regie-Positionen an Kunde weiter verrechnen">${wvItems(inv).length ? "↗ Wird weiter verrechnet" : "↗ Regie weiter verrechnen"}</button>` : ""}
@@ -4769,6 +4817,7 @@ function renderPruefPanel(el, getInv){
     btn.addEventListener("click", ()=>{
       const i = getInv(); if(!i) return;
       const next = btn.dataset.ps;
+      if(next==="beanstandet"){ if(kom.value !== ((i.pruefung && i.pruefung.kommentar)||"")) i.pruefung = { ...(i.pruefung||{}), kommentar: kom.value }; openBeanstandungDialog(i, ()=>renderPruefPanel(el, getInv)); return; }
       if(next==="ok"){
         const d = checkInvoice(i).filter(x=>x.level==="danger").length;
         if(d && !confirm(`Die Prüfung hat ${d} Fehler gefunden. Rechnung trotzdem freigeben?`)) return;
@@ -4807,6 +4856,8 @@ function renderPruefPanel(el, getInv){
     updateBadges();
     toast(next ? "Markiert: keine AB vorhanden – AB-Meldungen ausgeblendet." : "Markierung entfernt – AB wird wieder erwartet.");
   });
+  const bedit = el.querySelector("[data-beanedit]");
+  if(bedit) bedit.addEventListener("click", ()=>{ const i = getInv(); if(i) openBeanstandungDialog(i, ()=>renderPruefPanel(el, getInv)); });
   const bpdf = el.querySelector("[data-beanpdf]");
   if(bpdf) bpdf.addEventListener("click", async ()=>{ const i = getInv(); if(i){ await downloadBeanstandungPdf([i], false); renderPruefPanel(el, getInv); } });
   el.querySelector("[data-copybean]").addEventListener("click", ()=>{
