@@ -661,9 +661,11 @@ async function cleanProjectNames(){
   const re = /\s+[A-ZÄÖÜa-zäöü][\wäöüÄÖÜ-]*,?\s*den\s+\d{1,2}\.\d{1,2}\.\d{2,4}.*$/;
   for(const p of DB.projects){
     const clean = x => String(x||"").replace(re, "").replace(/\s*(?:A-?\s?)?2\d{2,8}(?:\s\d{1,6})?\s*\/\s*[A-Z]{2,4}\b.*$/i, "").replace(/\(\s*([^)]*?)\s*\)/g, "$1").replace(/\s{2,}/g," ").replace(/[,\s]+$/,"").trim();
-    const nn = clean(p.name);
-    const na = clean(p.address);
-    if(nn && (nn !== p.name || na !== (p.address||""))){ p.name = nn; p.address = na; try{ await saveProject(p); }catch(e){} }
+    const lead = String(p.name||"").match(/^\s*(?:A-?)?(2\d{7,8})\s*\/?\s+(?=\D)/);
+    if(lead && !p.auftragsnummer){ p.auftragsnummer = lead[1]; }
+    const nn = clean(String(p.name||"").replace(/^\s*(?:A-?)?2\d{7,9}\s*\/?\s+(?=\D)/, ""));
+    const na = clean(String(p.address||"").replace(/^\s*(?:A-?)?2\d{7,9}\s*\/?\s+(?=\D)/, ""));
+    if(nn && (nn !== p.name || na !== (p.address||"") || lead)){ p.name = nn; p.address = na; try{ await saveProject(p); }catch(e){} }
   }
 }
 async function cleanupEmptyProjects(){
@@ -1261,7 +1263,28 @@ function parseInvoiceText(text){
       else if(/^(zahlteil|empfangsschein|vor der einzahlung|rechnung\b)/i.test(ln.trim())) inAus = false;
       if(inAus) ausLines.add(k);
     }); }
-  rawLines.forEach((line, lineNo) => {
+  const posLines = rawLines.slice();
+  {
+    const TRI_ONLY = /^\s*(-?\d[\d']*(?:[.,]\d+)?)\s+(?:CHF\s*)?(-?[\d']+[.,]\d{2})\s+(?:CHF\s*)?(-?[\d']+[.,]\d{2})\s*$/;
+    const STOP = /^(pos\.?\s|total|zzgl|mwst|betrag|summe|subtotal|rundung|guten tag|danke|sie haben)/i;
+    posLines.forEach((l, j) => {
+      if(!TRI_ONLY.test(l) || ausLines.has(j)) return;
+      // nach oben bis zum Positionskopf ("1 15.10.26", "2 Für Lüftung", "1 Haus U 15 Duofix")
+      let k = j - 1, parts = [];
+      while(k >= 0 && j - k <= 8){
+        const t = String(posLines[k] || "").trim();
+        if(!t || STOP.test(t) || TRI_ONLY.test(t) || /\d[.,]\d{2}\s*$/.test(t) && !/^\d{1,2}\s/.test(t)) break;
+        parts.unshift(t);
+        if(/^\d{1,2}\s+\S/.test(t)) break;
+        k--;
+      }
+      if(!parts.length || !/^\d{1,2}\s+\S/.test(parts[0])) return;
+      posLines[j] = parts.join(" ").replace(/\s+/g, " ") + " " + l.trim();
+      for(let x = k; x < j; x++) posLines[x] = "";
+    });
+  }
+  posLines.forEach((line, lineNo) => {
+    if(!line) return;
     if(ausLines.has(lineNo)) return;
     const l = line.toLowerCase();
     if(/^(bezeichnung|pos\.|menge|einheit|preis|total$|zzgl|zwischensumme|zwischentotal|summe|mwst-?nr|iban|bic|telefon|rechnungsbetrag)/i.test(l)) return;
@@ -1285,7 +1308,8 @@ function parseInvoiceText(text){
     // Tabellenzeile: "2 Regia 5.00 ore 55.00 275.00" / "2 85 stk. Silent Panel montiert 3.00 55.00 165.00"
     let tri = line.match(/^(.*?\S)\s+(-?\d[\d']*(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|st\.?|std\.?|stunden|ore|h|app\.?|psch\.?|pauschal|le|kg|lt)?\s+(?:CHF\s*)?(-?[\d']+[.,]\d{2})\s+(?:CHF\s*)?(-?[\d']+[.,]\d{2})\s*(?:CHF)?\s*$/i);
     // keine Ausmass-Zeilen ("4.OG 3.00 2.75 0.30 1 2.48 150.00 371.25"): Beschreibung braucht Text und hoechstens eine Dezimalzahl
-    if(tri && (!/[A-Za-zÄÖÜäöü]{3,}/.test(tri[1]) || (tri[1].match(/\d+[.,]\d+/g)||[]).length >= 2)) tri = null;
+    if(tri && /^\d{1,2}\s+[\d.,\-\s]{3,}$/.test(tri[1].trim())) { /* Pos + Datum, Text kommt darunter */ }
+    else if(tri && (!/[A-Za-zÄÖÜäöü]{3,}/.test(tri[1]) || (tri[1].replace(/\b\d{1,2}(?:[.,]\d{1,2})*[.,]\d{1,2}[.,]\d{2,4}\b/g, "").replace(/\b\d{1,2}\.\d{1,2}\.?\d{2,4}\b/g, "").match(/\d+[.,]\d+/g)||[]).length >= 2)) tri = null;
     if(tri){
       const m0 = parseSwissNumber(tri[2]), e0 = parseSwissNumber(tri[4]), t0 = parseSwissNumber(tri[5]);
       if(m0 && e0!=null && t0!=null && Math.abs(m0 * e0 - t0) <= Math.max(1, Math.abs(t0) * 0.01) && t0 !== 0){
@@ -1295,8 +1319,8 @@ function parseInvoiceText(text){
         if(!c) c = categories.find(x => !["Beplankung","Ausflockung","Sonstiges"].includes(x.key) && x.keywords.some(kw => desc.includes(kw)));
         if(!c && /beplank/.test(desc)) c = catBeplankung;
         if(!c && /ausflock|einblas/.test(desc)) c = catAusflockung;
-        if(!c) c = catSonstiges;
-        result.items.push({ id: uid("it"), category: c.key, label: line.slice(0,90), menge: m0, einheit: u || c.unit, preis: t0, ep: e0 });
+        if(!c || /holzeinlage|nischenbild|stellstreif/.test(desc)) c = /holzeinlage|nischenbild|stellstreif/.test(desc) ? catSonstiges : (c || catSonstiges);
+        result.items.push({ id: uid("it"), category: c.key, label: line.slice(0,90), menge: m0, einheit: u || c.unit, preis: t0, ep: e0, ...(u ? {} : { _nu: true }) });
         return;
       }
     }
@@ -1376,12 +1400,12 @@ function parseInvoiceText(text){
 
   // Folgezeile einer Position = Beschreibung ("Vorwand", "Raumtrenner", "Gis + Duofix 16'000.00")
   {
-    const idxOf = new Map(result.items.map(it => [it, it._li != null ? it._li : rawLines.findIndex(l => l.slice(0,90) === it.label)]));
+    const idxOf = new Map(result.items.map(it => [it, it._li != null ? it._li : posLines.findIndex(l => l && l.slice(0,90) === it.label)]));
     const itemLines = new Set(Array.from(idxOf.values()));
     const consumed = new Set();
     result.items.forEach(it=>{
       const li = idxOf.get(it); if(li < 0) return;
-      const nl = String(rawLines[li+1] || "").trim();
+      const nl = String(posLines[li+1] || "").trim();
       if(!nl || consumed.has(li) || /^(subtotal|zwischensumme|total|mwst|summe|rabatt|skonto|bei zahlung|netto|brutto|\+\s*mwst|rechnungstotal|zahlbar|für weitere|mit freundlichen)/i.test(nl) || /^\d+(?:\.\d+)?\s+\S/.test(nl) && itemLines.has(li+1) && !/^\d[\d'’.,]*\s*$/.test(nl)) return;
       if(/^\d{1,2}(?:\.\d{1,2})?\s+/.test(nl)) return; // naechste Position
       if(itemLines.has(li+1)){
@@ -1400,13 +1424,46 @@ function parseInvoiceText(text){
         const c = /raumtrenner|trennwand/.test(nlc) ? "TW" : /vorwand|gis\s+geberit|geberit\s+gis/.test(nlc) ? "VW" : /duofix/.test(nlc) ? "Duofix" : /beplank/.test(nlc) ? "Beplankung" : /ausflock/.test(nlc) ? "Ausflockung" : null;
         if(c) it.category = c;
       }
-      const desc = nl.replace(/(-?[\d']+[.,]\d{2})\s*$/, "").trim();
-      if(desc) it.label = (it.label + " – " + desc).slice(0, 120);
+      let desc = nl.replace(/(-?[\d']+[.,]\d{2})\s*$/, "").trim();
       consumed.add(li+1);
+      for(let q = li + 2; q <= li + 4; q++){
+        const more = String(posLines[q] || "").trim();
+        if(!more || /^\d{1,2}(?:\.\d{1,2})?\s+\S/.test(more) || /^(subtotal|zwischensumme|total|mwst|summe|rabatt|skonto|bei zahlung|netto|zzgl|rundung|betrag)/i.test(more) || /\d[.,]\d{2}\s*$/.test(more)) break;
+        desc += " " + more; consumed.add(q);
+      }
+      const dl = desc.toLowerCase();
+      if(["Elemente","Sonstiges"].includes(it.category) || /^\d{1,2}\s+[\d.,\-\s]+\s/.test(it.label)){
+        const c2 = /raumtrenner|trennwand|\btw\b/.test(dl) ? "TW" : /vorwand|\bvw\b/.test(dl) ? "VW" : /duofix/.test(dl) ? "Duofix" : null;
+        if(c2 && !/^\d{1,2}\s+\d{1,2}[.,]\d/.test(it.label)) it.category = c2;
+      }
+      if(desc) it.label = (it.label + " – " + desc).slice(0, 140);
     });
     result.items = result.items.filter(it => !consumed.has(idxOf.get(it)));
     result.items.forEach(it => { delete it._li; });
   }
+
+  // Ohne Einheit: Kategorie ueber den Einheitspreis der Preisliste bestimmen (eindeutig)
+  { const subP = getSubFor(result.lieferant);
+    const tf = (subP && subP.tarife || []).filter(t => num(t.preis));
+    result.items.forEach(it => {
+      const nu = it._nu; delete it._nu;
+      if(!nu && it.einheit && !/^(stk|psch|)$/i.test(it.einheit)) return;
+      const ep = num(it.ep); if(ep == null) return;
+      const hits = Array.from(new Set(tf.filter(t => Math.abs(+t.preis - ep) < 0.01).map(t => t.category)));
+      if(hits.length === 1 && hits[0] !== it.category){ it.category = hits[0]; const c = categories.find(x=>x.key===hits[0]); if(c && (nu || !it.einheit || it.einheit==="Stk")) it.einheit = c.unit; }
+      // keine Preisliste: Stundenansatz mit Datum in der Beschreibung = Regie
+      else if(!hits.length && ["Sonstiges","Elemente"].includes(it.category) && ep >= 45 && ep <= 95 && /^\d{1,2}\s+\d{1,2}[.,]\d{1,2}/.test(it.label)){ it.category = "Regie"; it.einheit = "h"; }
+    });
+  }
+
+  // Duofix pauschal (1.00) mit Aufstellung "2x 1 App. / 3x 2 App." oder "80 App." -> Anzahl Apparate
+  result.items.forEach(it => {
+    if(it.category !== "Duofix" || num(it.menge) !== 1) return;
+    const L = String(it.label||"");
+    let n = 0; for(const m of L.matchAll(/(\d{1,3})\s*x\s*(\d{1,2})\s*App/gi)) n += (+m[1]) * (+m[2]);
+    if(!n){ const m = L.match(/(?<![x\d]\s?)(\d{1,3})\s*App(?:arat|\.)/i); if(m) n = +m[1]; }
+    if(n > 1 && num(it.preis)){ it.menge = n; it.einheit = "App."; it.ep = roundNum(num(it.preis) / n); }
+  });
 
   // Duofix pro Apparat: "2 Stk Duofix mit 3 Apparaten à 450.00" -> 6 Apparate à 150.00
   result.items.forEach(it => {
@@ -1455,6 +1512,8 @@ function parseInvoiceText(text){
   // "Höhenstrasse 22, 8954 Geroldswil Galgenen, den 03.03.2026": Ort des Briefdatums gehoert nicht zum Objekt
   if(result.objekt) result.objekt = result.objekt.replace(/\s+[A-ZÄÖÜa-zäöü][\wäöüÄÖÜ-]*,?\s*den\s+\d{1,2}\.\d{1,2}\.\d{2,4}.*$/, "").replace(/[,\s]+$/,"");
   if(result.objekt){
+    const lead = result.objekt.match(/^\s*(?:A-?)?(2\d{7,9})\s*\/?\s+(?=\D)/);
+    if(lead){ if(!result.auftragsnummer && lead[1].length <= 9) result.auftragsnummer = lead[1]; result.objekt = result.objekt.slice(lead[0].length); }
     result.objekt = result.objekt.replace(/^[:\s]+/, "")
       .replace(/\s*(?:A-?\s?)?2\d{2,8}(?:\s\d{1,6})?\s*\/\s*[A-Z]{2,4}\b.*$/i, "")      // Auftragsnr. + Kuerzel
       .replace(/\(\s*([^)]*?)\s*\)/g, "$1").replace(/\s{2,}/g, " ").replace(/[,\s]+$/,"").trim();
@@ -1509,8 +1568,9 @@ const OBJ_SKIP_RE = /^(datum|nummer|rechnung|mwst|unser|kontakt|telefon|tel\.|e-
 function objektAfterTitle(rawLines){
   const i = rawLines.findIndex(l => /^\s*Rechnung\s+(Nr\.?\s*)?[A-Z]{0,4}-?\d{3,}\s*$/i.test(l));
   if(i < 0) return "";
-  const t = String(rawLines[i+1] || "").trim();
-  if(!t || OBJ_SKIP_RE.test(t) || COUNTRY_RE.test(t) || /\d{1,2}\.\d{1,2}\.\d{4}/.test(t) || t.length > 60 || !/^[A-ZÄÖÜa-zäöü]/.test(t)) return "";
+  const t0 = String(rawLines[i+1] || "").trim();
+  const t = t0.replace(/^\s*(?:A-?)?2\d{7,9}\s*\/?\s+/, "").replace(/^\?+\s*/, "");
+  if(!t || OBJ_SKIP_RE.test(t) || COUNTRY_RE.test(t) || /\d{1,2}\.\d{1,2}\.\d{4}/.test(t) || t.length > 90 || !/^[A-ZÄÖÜa-zäöü]/.test(t)) return "";
   return sanitizeObjekt(t.replace(/^(regia|regie)\s+/i, ""));
 }
 // Viele Subs schreiben das Objekt ohne Beschriftung direkt unter unsere Adresse
@@ -1672,6 +1732,9 @@ function rnrCandidates(text, lieferant){
 // Unsere Auftrags-/AB-Nummern: 9-stellig mit 20… (AB-Nr. 202620851) oder 8-stellig mit 24…29 (A-25088457)
 function findAuftragsNr(text){
   const t = String(text||"");
+  // Zeile unter dem Rechnungstitel beginnt mit unserer Auftragsnr. ("Rechnung RE-00389" / "260771539 Herman Burchard Strasse …")
+  const tl = t.match(/Rechnung\s+(?:Nr\.?\s*)?[A-Z]{0,4}-?\d{3,}[ \t]*\n[ \t]*(?:A-?)?(2\d{7,8})(?!\d)/i);
+  if(tl) return tl[1];
   const sli = t.match(/\b(?:A-?\s?)?(2\d{2,8}(?:\s\d{1,6})?)\s*\/\s*[A-Z]{2,4}\b/);   // "260972901 /SLI" (Kuerzel Sachbearbeiter), OCR evtl. "2609725 18/SLI"
   if(sli){ const d = sli[1].replace(/\s/g,""); if(d.length >= 8 && d.length <= 9) return d; }
   const lab = t.match(/(?:\bRif|\bRef|Referenz|Ihre\s+Referenz|Auf(?:trags?)?\s*-?\s*n(?:r|ummer)|Bestell-?\s*Nr|Projekt-?\s*Nr|Ihr\s+Auftrag|\bAB)\.?\s*[:#]?\s*(?:A-?\s?)?(2\d{7,8})\b/i);
@@ -2077,7 +2140,7 @@ async function appendReviewCard(parsed){
         </div>
       </div>
       ${needsReview
-        ? `<p class="subtitle" style="margin-top:-8px;color:var(--danger);font-weight:600;">⚠ Der Scan konnte nicht alles zuverlässig erkennen (Lieferant und/oder Mengen fehlen). Bitte unten korrigieren.</p>`
+        ? `<p class="subtitle" style="margin-top:-8px;color:var(--danger);font-weight:600;">⚠ Nicht alles erkannt: ${[!parsed.lieferant ? "Lieferant" : "", !(parsed.items||[]).length ? "Positionen" : "", !parsed.rechnungsnr ? "Rechnungsnr." : "", parsed.total==null ? "Betrag" : ""].filter(Boolean).join(", ") || "bitte prüfen"} – bitte unten ergänzen.</p>`
         : `<p class="subtitle" style="margin-top:-8px;">Automatisch erfasst und dem Auftrag zugeordnet. Fehler kannst du direkt hier oder später im Auftrag korrigieren.</p>`}
 
       <div class="row">
