@@ -368,13 +368,6 @@
   .ppage img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
   .pstamp{position:absolute;cursor:grab;touch-action:none;outline:1px dashed rgba(30,90,200,.55);outline-offset:4px;}
   .wvstamp{position:absolute;right:calc(100% + 6%);top:0;width:62%;}
-  .pstamp{container-type:inline-size;}
-  .anrstamp{position:absolute;left:0;right:0;top:calc(100% + 1.5cqw);text-align:center;color:#1d3f8f;background:#fff;border:1.5px solid #1d3f8f;border-radius:4px;
-    padding:0.6cqw 1.5cqw;font-family:Arial,Helvetica,sans-serif;font-weight:700;font-size:11px;font-size:6.2cqw;line-height:1.25;white-space:nowrap;letter-spacing:.2px;}
-  .anrstamp small{font-weight:400;font-size:.8em;margin-right:.3em;}
-  .fgstamp{position:absolute;left:0;right:0;color:#14632d;background:#fff;border:1.5px solid #14632d;border-radius:4px;padding:0.8cqw 1.5cqw;
-    font-family:Arial,Helvetica,sans-serif;font-size:11px;font-size:5.6cqw;line-height:1.3;white-space:pre-wrap;word-break:break-word;}
-  .pstamp.hasanr .wvstamp.below{top:calc(100% + 16cqw);}
   .wvstamp.below{right:auto;left:0;top:calc(100% + 8%);}
   tr.wvrow td{background:#fff3f3;}
   .pstamp:active{cursor:grabbing;}
@@ -436,14 +429,6 @@ const DEFAULT_CATEGORIES = [
   { key: "Elemente", label: "Elemente (allg.)", unit: "Stk", keywords: ["element"] },
   { key: "Sonstiges", label: "⚠ Nicht zugeordnet", unit: "Stk", keywords: [] },
 ];
-
-// Kuerzel VW (Vorwand) / TW (Trennwand) erkennen -- auch alleinstehend ("VW" in eigener Zeile, "2 TW 1.00 …")
-function vwTwKat(text){
-  const t = String(text||"").toLowerCase();
-  if(/\b(tw|trw)\b|trennwand|raumtrenner/.test(t)) return "TW";
-  if(/\bvw\b|vorwand/.test(t)) return "VW";
-  return null;
-}
 
 // Bekannte Subunternehmer -> sauberer Anzeigename (hilft bei Logos/Stilschriften, die OCR schlecht liest)
 const KNOWN_SUPPLIERS = [
@@ -538,9 +523,7 @@ function startDataListeners(){
     setTimeout(fillMissingHouses, 1500);
     setTimeout(cleanupEmptyProjects, 2500);
     setTimeout(autoReparseBroken, 3500);
-    setTimeout(fixVwTwCategories, 5000);
-    setTimeout(fixHausFromQuantity, 6000);
-    setTimeout(mergeDuplicateProjects, 7000);
+    setTimeout(()=>loadExtern(), 1200);   // Kalender gleich beim Start laden (fuer Auftragsnummern)
     renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
@@ -591,6 +574,7 @@ function stopDataListeners(){
   abMigrationDone = false;
   houseFixDone = false;
   emptyCleanupDone = false;
+  kalBackfillDone = false;
   reparseDone = false;
   seenMsgIds = null;
   dataLoaded = { projects:false, invoices:false };
@@ -643,11 +627,11 @@ async function fixFallbackProjects(){
     if(!inv.ausmass && r.ausmass) upd.ausmass = r.ausmass;
     if(!inv.rechnungsnr && r.rechnungsnr) upd.rechnungsnr = r.rechnungsnr;
     if(r.lieferant && inv.lieferant !== r.lieferant && compactName(inv.lieferant) === compactName(r.lieferant)) upd.lieferant = r.lieferant;
-    const manuell = (inv.verlauf||[]).some(e => /Positionen|Betrag/.test(e.was||""));
+    const manuell = userTouchedItems(inv);
     const sumOld = (inv.items||[]).reduce((s,x)=>s+(num(x.preis)||0),0), sumNew = r.items.reduce((s,x)=>s+(num(x.preis)||0),0);
     const sig = its => (its||[]).map(x=>x.category+":"+(num(x.preis)||0)).sort().join("|");
     if(!manuell && r.items.length && r.total!=null && Math.abs(sumNew - r.total/1.081) <= Math.max(2, r.total*0.01) && (Math.abs(sumOld - sumNew) > 0.5 || sig(inv.items) !== sig(r.items))){
-      upd.items = r.items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: it.ep!==undefined ? it.ep : null }));
+      upd.items = keepItemFlags(inv.items, r.items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: it.ep!==undefined ? it.ep : null })));
     }
     // Doppel-Vermerke aus einer ANDEREN Rechnung (Dateiname mit anderer Nummer) entfernen
     if((inv.duplikatVersuche||[]).length){
@@ -667,7 +651,7 @@ async function fixFallbackProjects(){
       if(target && target.id === p.id) target = null;
       const pid = target ? target.id : await createProject({ name: stripHaus(buildProjectName(r)), address: stripHaus(r.objekt), auftragsnummer: String(r.auftragsnummer||""), soll:{}, haeuser:[] });
       const upd = { projectId: pid, objekt: r.objekt, ...(r.auftragsnummer ? { auftragsnummer: r.auftragsnummer } : {}) };
-      const manuell = (inv.verlauf||[]).some(e => /Positionen|Betrag/.test(e.was||""));
+      const manuell = userTouchedItems(inv);
       if(!manuell && r.items.length){ upd.items = r.items.map(it=>({ id: it.id||uid("it"), category: it.category, label: it.label, menge: it.menge, einheit: it.einheit, preis: it.preis, ep: it.ep!==undefined ? it.ep : null })); if(r.total!=null) upd.total = r.total; }
       Object.assign(inv, upd);
       try{ await window.fb.setDocMerge("invoices", inv.id, upd); }catch(e){}
@@ -1459,20 +1443,6 @@ function parseInvoiceText(text){
     result.items = result.items.filter(it => !consumed.has(idxOf.get(it)));
     result.items.forEach(it => { delete it._li; });
   }
-  // Allgemeine Element-Positionen mit Kuerzel VW/TW im Text (inkl. Folgezeilen) der richtigen Kategorie zuordnen
-  result.items.forEach(it=>{
-    if(!["Elemente","Sonstiges"].includes(it.category)) return;
-    let k = vwTwKat(it.label);
-    if(!k){
-      const li = rawLines.findIndex(l => String(it.label||"").startsWith(l.slice(0,90)));
-      for(let j = li + 1; li >= 0 && j <= li + 3 && j < rawLines.length; j++){
-        const nl = rawLines[j];
-        if(/^\d{1,2}\s+\S/.test(nl) || /^(total|zzgl|mwst|rundung|betrag|subtotal|zwischensumme|summe)/i.test(nl)) break;
-        k = vwTwKat(nl); if(k) break;
-      }
-    }
-    if(k && categories.some(c=>c.key===k)){ it.category = k; it.einheit = it.einheit || "Stk"; }
-  });
 
   // Ohne Einheit: Kategorie ueber den Einheitspreis der Preisliste bestimmen (eindeutig)
   { const subP = getSubFor(result.lieferant);
@@ -1840,16 +1810,6 @@ function findMatchingProject(parsed){
     const byAB = an.length >= 6 && DB.projects.find(p => (p.abs||[]).some(a => a.nr === an || String(a.anr||"").replace(/[^0-9A-Za-z]/g,"") === an || String(a.anr||"").replace(/\D/g,"") === an.replace(/\D/g,"")));
     if(byAB) return byAB;
   }
-  // Gleiche Strasse + Hausnummer = gleiches Objekt – auch wenn jedes Haus eine eigene Auftragsnr. hat
-  if(parsed.objekt){
-    const byKey = projectByObjektKey(parsed.objekt);
-    if(byKey) return byKey;
-  }
-  if(parsed.auftragsnummer){
-    const an1 = String(parsed.auftragsnummer).replace(/\D/g,"");
-    const byNums = an1.length >= 6 && DB.projects.find(p => (p.auftragsnummern||[]).some(x => String(x).replace(/\D/g,"") === an1));
-    if(byNums) return byNums;
-  }
   if(objLower){
     let best = null, bestScore = 0;
     const an0 = String(parsed.auftragsnummer||"").replace(/\D/g,"");
@@ -2143,7 +2103,7 @@ async function appendReviewCard(parsed){
     objekt: parsed.objekt || "",
     sammel: parsed.sammel || null,
     ausmass: parsed.ausmass || null,
-    auftragsnummer: String(parsed.auftragsnummer || auftragsNrFromText(parsed._rawText) || auftragsNrOf(DB.projects.find(p=>p.id===projectId)) || ""),
+    auftragsnummer: String(parsed.auftragsnummer || auftragsNrFromText(parsed._rawText) || kalNrForInvoice({ objekt: parsed.objekt, lieferant: parsed.lieferant, datum: parsed.datum, projectId }) || auftragsNrOf(DB.projects.find(p=>p.id===projectId)) || ""),
     haus: detectInvoiceHaus({ rawText: parsed._rawText, objekt: parsed.objekt, auftragsnummer: parsed.auftragsnummer }, projectId),
     rawText: String(parsed._rawText||"").slice(0, 30000),
     filename: parsed._filename || "",
@@ -2442,7 +2402,7 @@ function renderSupplierDetail(name){
             return `<tr class="${invoiceNeedsReview(inv)?'needs-review':''}">
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}</td>
-              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}${abklTag(inv)}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}${abklTag(inv)}${inv.beanstandungExport && invPrintState(inv)==="beanstandet" ? ` <span class="pill neutral" title="Beanstandung als PDF erstellt">📄 ${escapeHtml(inv.beanstandungExport)}</span>` : ""}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td>${findingsPill(inv)}</td>
               <td><button class="small danger" data-delinv2="${inv.id}" ${canDeleteInvoice(inv)?"":"disabled title='Nur eigene Rechnungen innerhalb von 5 Stunden, sonst Admin'"}>Löschen</button></td>
@@ -2622,7 +2582,7 @@ async function autoReparseBroken(){
   if(reparseDone) return; reparseDone = true;
   for(const inv of DB.invoices){
     if(inv.gedrucktAm || !inv.rawText) continue;
-    if((inv.verlauf||[]).some(e => /Positionen|Betrag/.test(e.was||""))) continue; // von Hand korrigiert -> nicht anfassen
+    if(userTouchedItems(inv)) continue; // von Hand korrigiert / markiert -> nicht anfassen
     const sum = (inv.items||[]).reduce((s,x)=>s+(num(x.preis)||0),0);
     const okNow = num(inv.total)!=null && Math.abs(sum - inv.total/1.081) <= Math.max(2, inv.total*0.01);
     if(okNow) continue;
@@ -2633,43 +2593,6 @@ async function autoReparseBroken(){
     try{ await saveInvoice(inv); }catch(e){}
   }
 }
-// Einmalig: Haus, das aus einer Menge gelesen wurde ("Elementmontage Haus 8.00 …" -> "Haus 8"), wieder entfernen
-let hausQtyFixDone = false;
-async function fixHausFromQuantity(){
-  if(hausQtyFixDone || !DB.invoices.length || !DB.projects.length) return; hausQtyFixDone = true;
-  for(const inv of DB.invoices){
-    if(!inv.haus || !inv.rawText) continue;
-    const p = DB.projects.find(x=>x.id===inv.projectId); if(!p) continue;
-    if((p.abs||[]).some(a=>a.haus===inv.haus)) continue;
-    const id = inv.haus.replace(/^(Haus|Gebäude|Block|Trakt|Nr\.)\s*/i, "");
-    if(!/^\d{1,3}$/.test(id)) continue;
-    const asQty = new RegExp("\\bHaus\\s*" + id + "[.,'’]\\d", "i").test(inv.rawText);
-    const real = new RegExp("\\bHaus\\s*" + id + "\\b(?![.,'’]\\d)", "i").test(inv.rawText) || hausFromText(inv.objekt) === inv.haus;
-    if(!asQty || real) continue;
-    const wrong = inv.haus;
-    inv.haus = "";
-    try{ await window.fb.setDocMerge("invoices", inv.id, { haus: "" }); }catch(e){ console.error(e); }
-    if(!DB.invoices.some(i=>i.projectId===p.id && i.haus===wrong) && (p.haeuser||[]).includes(wrong)){
-      p.haeuser = p.haeuser.filter(x=>x!==wrong);
-      try{ await saveProject(p); }catch(e){ console.error(e); }
-    }
-  }
-}
-// Einmalig: noch nicht gedruckte Rechnungen -- "Elemente (allg.)" mit VW/TW im Text umstellen
-let vwTwFixDone = false;
-async function fixVwTwCategories(){
-  if(vwTwFixDone || !DB.invoices.length) return; vwTwFixDone = true;
-  for(const inv of DB.invoices){
-    if(inv.gedrucktAm || !(inv.items||[]).length) continue;
-    let changed = false;
-    inv.items.forEach(it=>{
-      if(!["Elemente","Sonstiges"].includes(it.category) || it.tarifId) return;
-      const k = vwTwKat(it.label);
-      if(k){ it.category = k; changed = true; }
-    });
-    if(changed){ try{ await saveInvoice(inv); }catch(e){ console.error(e); } }
-  }
-}
 // Material einer Beplankungs-Position: aus dem Text, sonst aus dem gewaehlten/erkannten vereinbarten Preis
 function itemMaterial(inv, it){
   const m = normMaterial(it.label); if(m) return m;
@@ -2678,20 +2601,24 @@ function itemMaterial(inv, it){
   return null;
 }
 // Nachtrag (Mehr-/Minderpreis) ohne zugehoerige Haupt-AB?
-// Nachtrag = als Mehr-/Minderpreis erkannt ODER gleiche AB-Nummer wie eine fruehere AB (andere A-Nr., spaetere Offerte)
-function abDatumKey(a){ const d = parseDateCH(a.offertdatum); return d ? d.getTime() : 0; }
-function abIsNachtrag(p, ab){
-  if(ab.nachtrag) return true;
-  if(ab.version) return false;
-  const abs = (p && p.abs) || [];
-  return abs.some(b => b !== ab && !b.nachtrag && !b.version && b.nr && b.nr === ab.nr && b.anr !== ab.anr
-    && (abDatumKey(b) < abDatumKey(ab) || (abDatumKey(b) === abDatumKey(ab) && String(b.anr||"") < String(ab.anr||""))));
-}
 function missingBaseABs(p){
   const abs = (p && p.abs) || [];
   const clean = s => String(s||"").replace(/[^0-9A-Za-z]/g,"").toUpperCase();
   return abs.filter(a => a.nachtrag && !abs.some(b => !b.nachtrag && (b.nr===a.nr || (a.zuAnr && clean(b.anr)===clean(a.zuAnr)))));
 }
+// Beim Neu-Auslesen: vom Benutzer gesetzte Markierungen ("weiter verrechnen", gewaehlter Preis) uebernehmen
+function keepItemFlags(oldItems, newItems){
+  const olds = (oldItems||[]).filter(o => o.weiterVerrechnen || o.tarifId);
+  if(!olds.length) return newItems;
+  const used = new Set();
+  return newItems.map(n => {
+    const o = olds.find(x => !used.has(x) && Math.abs((num(x.preis)||0) - (num(n.preis)||0)) < 0.5) || olds.find(x => !used.has(x) && String(x.label||"").slice(0,25) === String(n.label||"").slice(0,25));
+    if(!o) return n;
+    used.add(o);
+    return { ...n, ...(o.weiterVerrechnen ? { weiterVerrechnen: true } : {}), ...(o.tarifId ? { tarifId: o.tarifId } : {}) };
+  });
+}
+const userTouchedItems = inv => (inv.items||[]).some(x => x.weiterVerrechnen || x.tarifId) || (inv.verlauf||[]).some(e => /Positionen|Betrag/.test(e.was||""));
 function itemAssigned(inv, it){
   if(it.category !== "Sonstiges") return true;
   const sub = getSubFor(inv.lieferant);
@@ -2967,21 +2894,21 @@ function renderProjectDetail(projectId){
             const hab = abs.filter(a=>a.haus===h);
             const hinv = invs.filter(i=>i.haus===h);
             return `<tr>
-              <td><b>${escapeHtml(h)}</b>${!hab.length ? ` <button class="small danger" data-delhaus="${escapeAttr(h)}" title="Haus entfernen – Rechnungen werden „ohne Haus“ (Total aller ABs) geprüft" style="padding:1px 7px;margin-left:6px;">✕ entfernen</button>` : ""}</td>
+              <td><b>${escapeHtml(h)}</b></td>
               <td>${hab.length ? `<span class="hchip ok">✓ ${hab.map(a=>escapeHtml(a.nr)).join(", ")}</span>` : abs.some(a=>!a.haus) ? `<span class="hchip ok">✓ AB ganzes Objekt</span>` : `<span class="hchip bad">✗ AB fehlt</span>`}</td>
               <td>${hinv.length}</td><td></td></tr>`;
           }).join("")}
           <tr><td class="muted">—</td><td></td><td></td><td>${invs.filter(i=>!i.haus).length ? `<span class="hchip ${houses.length>1||abs.some(a=>a.haus)?"bad":"ok"}">${invs.filter(i=>!i.haus).length} Rechnung(en)</span>` : "0"}</td></tr>
           </tbody></table></div>` : ""}
-      ${abs.length ? abs.slice().sort((a,b)=> String(a.nr).localeCompare(String(b.nr)) || ((abIsNachtrag(p,a)?1:0)-(abIsNachtrag(p,b)?1:0)) || String(a.anr).localeCompare(String(b.anr))).map(ab=>{
+      ${abs.length ? abs.slice().sort((a,b)=> String(a.nr).localeCompare(String(b.nr)) || ((a.nachtrag?1:0)-(b.nachtrag?1:0)) || String(a.anr).localeCompare(String(b.anr))).map(ab=>{
         const open = expandedABs.has(p.id+"|"+abKey(ab));
         return `<div class="abbox">
           <div class="abhead">
-            <div>${abIsErsetzt(p, ab) ? `<span class="pill" style="margin-right:6px;background:#eee;color:#666;">ersetzt durch Rek. AB – zählt nicht</span>` : ""}${ab.version ? `<span class="pill ok" style="margin-right:6px;">Rek. AB${ab.offertdatum ? " vom " + escapeHtml(ab.offertdatum) : ""} – gilt</span>` : ""}${!ab.nachtrag && abIsNachtrag(p, ab) ? `<span class="pill warnok" style="margin-right:6px;">+ Nachtrag zu AB ${escapeHtml(ab.nr)} – wird dazugezählt</span>` : ""}${ab.nachtrag ? `<span class="pill warnok" style="margin-right:6px;">± Mehr-/Minderpreis${ab.zuAnr ? " zu " + escapeHtml(ab.zuAnr) : ""}</span>` : ""}<b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}${ab.haus?` · <span class="hchip ok">${escapeHtml(ab.haus)}</span>`:""}${ab.los?` <span class="muted">Los ${escapeHtml(ab.los)}</span>`:""}
+            <div>${ab.nachtrag ? `<span class="pill warnok" style="margin-right:6px;">± Mehr-/Minderpreis${ab.zuAnr ? " zu " + escapeHtml(ab.zuAnr) : ""}</span>` : ""}<b>AB ${escapeHtml(ab.nr)}${ab.anr?" / "+escapeHtml(ab.anr):""}</b> · ${escapeHtml(ab.baustelle||"")}${ab.haus?` · <span class="hchip ok">${escapeHtml(ab.haus)}</span>`:""}${ab.los?` <span class="muted">Los ${escapeHtml(ab.los)}</span>`:""}
               <div class="muted" style="font-size:12px;">Kunde: ${escapeHtml(ab.kunde||"—")}${ab.kontakt?" ("+escapeHtml(ab.kontakt)+")":""} · Offerte ${escapeHtml(ab.offertdatum||"—")} · ${ab.einheiten!=null?ab.einheiten+" Einheiten · ":""}CHF ${fmt(ab.auftragswert)} exkl. MwSt · eingelesen ${escapeHtml(ab.importedAt||"")}</div>
             </div>
             <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">
-              <select class="hsel" data-abhaus="${escapeAttr(abKey(ab))}" title="Gilt für">${!ab.haus && !ab.hausBestaetigt && !abIsNachtrag(p, ab) && (p.abs||[]).filter(x=>!abIsNachtrag(p,x) && !abIsErsetzt(p,x)).length > 1 ? `<option value="__unset" selected disabled>Gilt für: bitte wählen…</option>` : ""}<option value="" ${!ab.haus && (ab.hausBestaetigt || abIsNachtrag(p, ab) || (p.abs||[]).filter(x=>!abIsNachtrag(p,x) && !abIsErsetzt(p,x)).length <= 1) ? "selected" : ""}>Gilt für: ganzes Objekt</option>${houses.concat(ab.haus && !houses.includes(ab.haus) ? [ab.haus] : []).map(h=>`<option value="${escapeAttr(h)}" ${h===ab.haus?"selected":""}>Gilt für: ${escapeHtml(h)}</option>`).join("")}<option value="__new">+ neues Haus…</option></select>
+              <select class="hsel" data-abhaus="${escapeAttr(abKey(ab))}" title="Gilt für"><option value="">Gilt für: ganzes Objekt</option>${houses.concat(ab.haus && !houses.includes(ab.haus) ? [ab.haus] : []).map(h=>`<option value="${escapeAttr(h)}" ${h===ab.haus?"selected":""}>Gilt für: ${escapeHtml(h)}</option>`).join("")}<option value="__new">+ neues Haus…</option></select>
               <button class="small" data-abtoggle="${escapeAttr(abKey(ab))}">${open?"Positionen ▴":"Positionen ▾"}</button>
               <button class="small danger" data-abdel="${escapeAttr(abKey(ab))}">Entfernen</button>
             </div>
@@ -3096,19 +3023,6 @@ function renderProjectDetail(projectId){
     p.haeuser = Array.from(new Set([...(p.haeuser||[]), h]));
     saveProject(p); renderProjectDetail(projectId);
   });
-  mainEl.querySelectorAll("[data-delhaus]").forEach(b=>b.addEventListener("click", async (e)=>{
-    e.stopPropagation();
-    const h = b.dataset.delhaus;
-    const hinv = DB.invoices.filter(i=>i.projectId===p.id && i.haus===h);
-    if(!confirm(`„${h}“ entfernen?${hinv.length ? `\n\n${hinv.length} Rechnung(en) werden keinem Haus mehr zugeordnet und gegen das Total aller ABs geprüft.` : ""}`)) return;
-    p.haeuser = (p.haeuser||[]).filter(x=>x!==h);
-    p.haeuserEntfernt = Array.from(new Set([...(p.haeuserEntfernt||[]), h]));
-    await saveProject(p);
-    for(const inv of hinv){ inv.haus = ""; await window.fb.setDocMerge("invoices", inv.id, { haus: "" }); }
-    if(selectedHaus[p.id]===h) selectedHaus[p.id] = "";
-    toast(`${h} entfernt.`);
-    renderProjectDetail(projectId);
-  }));
   mainEl.querySelectorAll("[data-htab]").forEach(b=>b.addEventListener("click", ()=>{ selectedHaus[p.id] = b.dataset.htab; renderProjectDetail(projectId); }));
   mainEl.querySelectorAll("[data-abhaus]").forEach(sel=>sel.addEventListener("change", async ()=>{
     const ab = (p.abs||[]).find(a=>abKey(a)===sel.dataset.abhaus); if(!ab) return;
@@ -3117,7 +3031,7 @@ function renderProjectDetail(projectId){
     ab.haus = h;
     ab.hausBestaetigt = true; // bewusst gewaehlt (auch "ganzes Objekt")
     // Nachtraege derselben AB uebernehmen die Wahl
-    (p.abs||[]).forEach(x => { if(x !== ab && x.nr && x.nr === ab.nr && !abIsNachtrag(p, ab) && (abIsNachtrag(p, x) || abIsErsetzt(p, x) || x.version)){ x.haus = h; x.hausBestaetigt = true; } });
+    (p.abs||[]).forEach(x => { if(x !== ab && x.nachtrag && x.nr === ab.nr && !ab.nachtrag){ x.haus = h; x.hausBestaetigt = true; } });
     if(h) p.haeuser = Array.from(new Set([...(p.haeuser||[]), h]));
     await saveProject(p);
     toast(h ? `AB ${ab.nr} gilt jetzt für ${h}.` : `AB ${ab.nr} gilt für das ganze Objekt.`);
@@ -3297,7 +3211,7 @@ function renderInvoiceEditPanel(panel, invoiceId){
     if(!r){ toast("Nichts Neues erkannt."); return; }
     const sumOld = (i.items||[]).reduce((s,x)=>s+(num(x.preis)||0),0), sumNew = r.items.reduce((s,x)=>s+(num(x.preis)||0),0);
     if(!confirm(`Neu ausgelesen:\n\nPositionen: CHF ${fmt(sumOld)} → CHF ${fmt(sumNew)}\nRechnungsbetrag: ${i.total!=null?"CHF "+fmt(i.total):"–"} → ${r.total!=null?"CHF "+fmt(r.total):"–"}\n\nÜbernehmen?`)) return;
-    i.items = r.items; if(r.total!=null) i.total = r.total;
+    i.items = keepItemFlags(i.items, r.items); if(r.total!=null) i.total = r.total;
     await saveInvoice(i);
     toast("Neu ausgelesen und gespeichert.");
     renderInvoiceEditPanel(panel, invoiceId);
@@ -3361,7 +3275,7 @@ function renderInvoices(){
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.datum||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.lieferant||"—")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${p?escapeHtml(p.name):'<span class="muted">gelöschter Auftrag</span>'}${inv.haus?` <span class="hchip ok">${escapeHtml(inv.haus)}</span>`:""}${extLine(extFor(inv, p), true)}</td>
-              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}${abklTag(inv)}</td>
+              <td style="cursor:pointer;" data-goto="${inv.projectId}">${escapeHtml(inv.rechnungsnr||"—")}${sammelTag(inv)}${wvTag(inv)}${abklTag(inv)}${inv.beanstandungExport && invPrintState(inv)==="beanstandet" ? ` <span class="pill neutral" title="Beanstandung als PDF erstellt">📄 ${escapeHtml(inv.beanstandungExport)}</span>` : ""}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}">${invoiceNeedsReview(inv) ? `<span class="pill warn">⚠ Prüfen</span> ` : ""}${inv.items.map(it=>`<span class="tag">${escapeHtml(it.category)}: ${it.menge??"?"} ${escapeHtml(it.einheit||"")}</span>`).join(" ")}</td>
               <td style="cursor:pointer;" data-goto="${inv.projectId}" data-openinv="${inv.id}">${findingsPill(inv)}</td>
               <td style="font-size:11.5px;" class="muted" title="${escapeAttr((inv.verlauf||[]).slice(-1).map(e=>e.was).join(""))}">${inv.geaendertAm ? `${escapeHtml(inv.geaendertName || nameFromEmail(inv.geaendertVon))}<br>${escapeHtml(String(inv.geaendertAm).replace(/,\s*/, " "))}` : "–"}</td>
@@ -3693,7 +3607,7 @@ function findTarif(sub, inv, it){
 
 /* ============================= AUFTRAGSBESTAETIGUNG (AB) LESEN ============================= */
 
-const AB_PARSER_VERSION = 7;
+const AB_PARSER_VERSION = 6;
 // Bereits gespeicherte ABs mit dem aktuellen Leser neu auswerten (Rohtext ist gespeichert -> kein erneuter Upload noetig)
 let abMigrationDone = false;
 let supplierFixDone = false;
@@ -3725,7 +3639,6 @@ async function migrateABs(){
       ab.rawText = old.rawText; ab.filename = old.filename || ""; ab.importedAt = old.importedAt || ""; ab.importedBy = old.importedBy || "";
       ab.parserVersion = AB_PARSER_VERSION;
       if(!ab.haus) ab.haus = hausFromText(String(old.filename||"").replace(/_+/g," "));
-      if(old.hausBestaetigt) ab.hausBestaetigt = true;
       if(old.haus) ab.haus = old.haus; // manuelle Haus-Zuordnung behalten
       if(old.hausBestaetigt) ab.hausBestaetigt = true;
       ab.positionen.forEach(np=>{
@@ -3761,21 +3674,15 @@ function suggestABCategory(pos){
   const t = (pos.artikel + " " + pos.beschreibung).toLowerCase();
   const art = String(pos.artikel||"").toLowerCase();
   if(/anfahrt|parking/.test(t)) return "Anfahrt";
-  // Montage-Codes zuerst (TWM, VWM, VWMH …) – deren Text enthaelt oft "inkl. Entsorgung"
-  if(/^twm/.test(art)) return "TW";
-  if(/^vwm(?!duo)/.test(art)) return "VW";
-  // "Element" = Vorfabrikation durch PE, keine Sub-Leistung – auch wenn "Montagezeit/Gruppe … Trennwand" im Text steht
-  if(/^element\b/.test(art)) return "";
-  if(/entsorgung|abfall/.test(t) && !/inkl\.?\s*(der\s+)?entsorgung/.test(t)) return "Entsorgung";
+  if(/entsorgung|abfall/.test(t)) return "Entsorgung";
   if(pos.einheit==="m²" || /beplank/.test(t)) return "Beplankung";
   if(pos.einheit==="m³" || /ausflock/.test(t)) return "Ausflockung";
   if(/silent\s*-?panel/.test(t)) return "SilentPanel";
   // Duofix wird pro Apparat (bzw. pro Schachtwand) abgerechnet; Gips-Abtrennung / Nischen-Material sind Zusatzleistungen
   if(/duofix|^vwmduo/.test(t + " " + art) && /(gips|abtrennung|nische|material und arbeitsaufwand)/.test(t) && !/mit\s+\d+\s+apparat/.test(t)) return "Sonstiges";
   if(/duofix|schachtwand|^vwmduo/.test(t + " " + art)) return "Duofix";
-  if(/montage(?!zeit)/.test(t) && /trennwand/.test(t)) return "TW";
-  if(/montage(?!zeit)/.test(t) && /vorwand/.test(t)) return "VW";
-  if(/entsorgung|abfall/.test(t)) return "Entsorgung";
+  if(/^twm\b/.test(art) || (/montage/.test(t) && /trennwand/.test(t))) return "TW";
+  if(/^vwm\b/.test(art) || (/montage/.test(t) && /vorwand/.test(t))) return "VW";
   if(/verbinden/.test(t) && /(schweiss|press|anschliess)/.test(t)) return "Verbinden";
   if(pos.einheit==="h" && /regie/.test(t)) return "Regie";
   return ""; // nicht Sub-relevant (z.B. Vorfabrikation / Material PE)
@@ -3791,9 +3698,7 @@ function parseABText(text){
   m = text.match(/Baustelle\s*:\s*([^\n]+)/i);
   if(m) ab.baustelle = m[1].trim();
   // Nachtrag: "Mehr- /Minderpreis … zur Auftragsbestätigung 202417673 / A- 24123830" oder Bestell-Nr. "MeMi"
-  ab.nachtrag = /Mehr-?\s*\/?\s*Minderpreis|(?<!\bein\s)(?:Minder|Mehr)preis\s+(?!pro\b|von\b|nach\b|wird\b|verrechnet\b)\w+|Nachtrag\s+zu\s+AB|\bMeMi\b/i.test(text);
-  // Rek. AB = korrigierte AB mit gleicher Nummer -> ersetzt die urspruengliche AB (beide bleiben gespeichert)
-  ab.rek = /\bRek\.?\s*AB\b|\bRektifi|korrigierte\s+Auftragsbest/i.test(text);
+  ab.nachtrag = /Mehr-?\s*\/?\s*Minderpreis|Minderpreis\s+\w+|Mehrpreis\s+\w+|Nachtrag\s+zu\s+AB|\bMeMi\b/i.test(text);
   m = text.match(/zur\s+Auftragsbest[äa]tigung\s+\d+\s*\/\s*(A-?\s*\d+)/i) || text.match(/Nachtrag\s+zu\s+AB[-\s]*(A-?\s*\d{6,}|\d{6,})/i);
   ab.zuAnr = m ? ("A-" + m[1].replace(/^A-?\s*/i,"")) : "";
   m = text.match(/^Fax[\s\d]+?\s([A-ZÄÖÜ][^\n]+)$/m);
@@ -3804,12 +3709,7 @@ function parseABText(text){
   }
   m = text.match(/Ihr Kontakt\s*:\s*(.+?)(?:\s+Kunden-Nr|\n|$)/i); if(m) ab.kontakt = m[1].trim();
   m = text.match(/Bestellung vom\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.bestelldatum = m[1];
-  m = text.match(/Offert-Datum\s*:[\s:]*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.offertdatum = m[1];
-  if(!ab.offertdatum){ // Kopf als Tabelle gelesen: "02.11.2020 03.11.2020" bzw. "10.04.2026 / E-Mail 14.04.2026"
-    const dl = lines.slice(0, 40).map(l => l.match(/^(\d{1,2}\.\d{1,2}\.\d{4})\b.*?\s(\d{1,2}\.\d{1,2}\.\d{4})$/)).find(Boolean);
-    if(dl){ ab.bestelldatum = ab.bestelldatum || dl[1]; ab.offertdatum = dl[2]; }
-  }
-  ab.version = ab.rek ? ("Rek" + (ab.offertdatum ? " " + ab.offertdatum : "")) : "";
+  m = text.match(/Offert-Datum\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i); if(m) ab.offertdatum = m[1];
   m = text.match(/f[üu]r\s+(\d+)\s+Einheiten/i); if(m) ab.einheiten = +m[1];
   m = text.match(/Bestell-Nr\s*:\s*(.+?)(?:\s+Versandart|\n|$)/i); ab.bestellnr = m ? m[1].trim() : "";
   m = ab.bestellnr.match(/\bLos\s*(\d+)/i) || text.match(/\bLos\s+(\d+)\b/i); ab.los = m ? m[1] : "";
@@ -3938,7 +3838,7 @@ function parseABText(text){
 // Soll-Werte aus den ABs eines Auftrags (Summe pro Kategorie); haus = nur ABs dieses Hauses
 function abSoll(p, haus){
   const out = {};
-  (p && p.abs || []).filter(ab => (haus===undefined || ab.haus===haus) && !abIsErsetzt(p, ab)).forEach(ab => (ab.positionen||[]).forEach(pos=>{
+  (p && p.abs || []).filter(ab => haus===undefined || ab.haus===haus).forEach(ab => (ab.positionen||[]).forEach(pos=>{
     if(!pos.category) return;
     const o = out[pos.category] || (out[pos.category] = { menge:0, erloes:0, einheit:pos.einheit, materials:[], positionen:[] });
     o.menge += +pos.menge || 0;
@@ -4036,27 +3936,9 @@ function checkInvoice(inv){
     }
   }
   if(num(inv.total)!=null && inv.datum){
-    // Gleicher Betrag allein ist kein Hinweis -- nur warnen, wenn auch Objekt/Auftrag und Positionen uebereinstimmen
-    const objOf = o => o.objekt || (DB.projects.find(x=>x.id===o.projectId)||{}).address || "";
-    const sameObj = o => (o.projectId && o.projectId===inv.projectId)
-      || (!!objOf(o) && !!objOf(inv) && scoreAddress(stripHaus(objOf(o)), stripHaus(objOf(inv))) >= 2);
-    const posKey = x => (x.items||[]).map(it=>`${it.category}|${num(it.menge)}|${num(it.preis)}`).sort().join(";");
     const dup2 = DB.invoices.find(o => o.id!==inv.id && sameLief(o) && o.datum===inv.datum && sameTotal(o)
-      && String(o.rechnungsnr||"").trim().toLowerCase()!==String(inv.rechnungsnr||"").trim().toLowerCase()
-      && sameObj(o) && posKey(o)===posKey(inv));
-    if(dup2) f.push({ level:"warn", text:`Gleiches Objekt, Datum, Betrag (CHF ${fmt(inv.total)}) und gleiche Positionen wie Rechnung ${dup2.rechnungsnr||"ohne Nr."} – nur die Rechnungsnr. ist verschieden. Evtl. doppelt?` });
-    // Sub stellt eine bereits beanstandete / bereits freigegebene Rechnung spaeter nochmals (neue Nr., neues Datum)
-    if(!dup2 && (inv.items||[]).length){
-      const st = o => (o.pruefung && o.pruefung.status) || "";
-      const again = DB.invoices.filter(o => o.id!==inv.id && sameLief(o) && sameObj(o) && sameTotal(o) && posKey(o)===posKey(inv)
-        && String(o.rechnungsnr||"").trim().toLowerCase()!==String(inv.rechnungsnr||"").trim().toLowerCase());
-      const bean = again.find(o => st(o)==="beanstandet");
-      const done = again.find(o => st(o)==="ok" || o.gedrucktAm);
-      if(bean && !(inv.pruefung && inv.pruefung.status==="beanstandet"))
-        f.push({ level:"danger", text:`Diese Rechnung wurde schon einmal beanstandet: ${bean.rechnungsnr||"ohne Nr."} vom ${bean.datum||"?"}${bean.pruefung && bean.pruefung.at ? ` (beanstandet am ${String(bean.pruefung.at).split(",")[0]})` : ""} – gleiches Objekt, gleiche Positionen, gleicher Betrag. Erneut gestellt ohne Korrektur?` });
-      else if(done && !bean && st(inv)!=="ok" && !inv.gedrucktAm)
-        f.push({ level:"warn", text:`Gleiches Objekt, gleiche Positionen und gleicher Betrag wie die bereits ${done.gedrucktAm ? "gedruckte" : "freigegebene"} Rechnung ${done.rechnungsnr||"ohne Nr."} vom ${done.datum||"?"} – doppelt verrechnet?` });
-    }
+      && String(o.rechnungsnr||"").trim().toLowerCase()!==String(inv.rechnungsnr||"").trim().toLowerCase());
+    if(dup2) f.push({ level:"warn", text:`Gleicher Betrag (CHF ${fmt(inv.total)}) und gleiches Datum wie Rechnung ${dup2.rechnungsnr||"ohne Nr."} – evtl. doppelt?` });
   }
 
   // --- Stammdaten vorhanden? ---
@@ -4088,7 +3970,7 @@ function checkInvoice(inv){
   if(ohneAB) f.push({ level:"ok", text:`Keine AB vorhanden – bestätigt${inv.ohneAB && inv.ohneABvon ? ` von ${inv.ohneABvon}` : (!inv.ohneAB ? " (für das ganze Objekt)" : "")}. Preise werden trotzdem geprüft.` });
   if(p && !ohneAB && (houses.length > 1 || allAbs.some(a=>a.haus))){
     if(!invHaus){
-      f.push({ level:"info", text:`Rechnung keinem Haus zugeordnet – geprüft gegen das Total aller ABs des Objekts (${houses.join(" + ")}). Für eine Kontrolle pro Haus bitte Haus wählen.` });
+      f.push({ level:"warn", text:`Objekt hat mehrere Häuser (${houses.join(", ")}) – diese Rechnung ist keinem Haus zugeordnet. Bitte Haus wählen, sonst ist keine Kontrolle pro Haus möglich.` });
     } else if(allAbs.some(a=>a.haus===invHaus)){
       scopeHaus = invHaus;
     } else if(allAbs.length && !allAbs.some(a=>!a.haus)){
@@ -4185,21 +4067,6 @@ function checkInvoice(inv){
           return;
         }
       }
-      // Rechnung sagt nur "Elementmontage" (ohne VW/TW), AB hat VW + TW: gegen die Summe VW + TW pruefen
-      if(cat==="Elemente" && !getSoll(p, "Elemente", scopeHaus)){
-        const sv = getSoll(p, "VW", scopeHaus), stw = getSoll(p, "TW", scopeHaus);
-        if(sv || stw){
-          const sollE = roundNum((sv ? sv.menge : 0) + (stw ? stw.menge : 0));
-          const istE = projInvs.reduce((s,o)=> s + (o.items||[]).filter(x=>["Elemente","VW","TW"].includes(x.category)).reduce((a,x)=>a+(num(x.menge)||0),0), 0);
-          const teil = [sv ? `${fmtQty(sv.menge)} VW` : "", stw ? `${fmtQty(stw.menge)} TW` : ""].filter(Boolean).join(" + ");
-          if(istE > sollE * (1 + S.mengenTolProzent/100) + 1e-9)
-            f.push({ level:"danger", text:`Elemente${hTxt}: kumuliert ${fmtQty(istE)} Stk verrechnet (VW + TW zusammen), Soll laut AB ${fmtQty(sollE)} Stk (${teil}) → ${fmtQty(istE - sollE)} Stk zu viel.` });
-          else f.push({ level:"ok", text:`Elemente${hTxt}: kumuliert ${fmtQty(istE)} von ${fmtQty(sollE)} Stk (AB: ${teil}).` });
-          const lab = (items.find(x=>x.category==="Elemente")||{}).label || "";
-          f.push({ level:"warn", text:`Rechnung unterscheidet nicht zwischen Vorwand und Trennwand („${shortText(lab, 50)}“) – laut AB ${teil}. Bitte Position in VW/TW aufteilen (Preise sind verschieden) oder beim Sub nachfragen.` });
-          return;
-        }
-      }
       const ist = projInvs.reduce((s,o)=> s + (o.items||[]).filter(x=>x.category===cat).reduce((a,x)=>a+(num(x.menge)||0),0), 0);
       const soll = getSoll(p, cat, scopeHaus);
       const u = catUnit(cat);
@@ -4289,163 +4156,94 @@ function beanstandungText(inv){
     `Rechnung ${inv.rechnungsnr||"(ohne Nr.)"} vom ${inv.datum||"?"} – Objekt: ${p?p.name:"?"}`,
     "",
     "Bei der Prüfung Ihrer Rechnung sind uns folgende Punkte aufgefallen:",
-    ...(inv.pruefung && inv.pruefung.beanstText ? [inv.pruefung.beanstText] : [
     ...f.map(x=>"– " + x.text),
-    ...(inv.pruefung && inv.pruefung.kommentar ? ["", "Bemerkung: " + inv.pruefung.kommentar] : [])]),
+    ...(inv.pruefung && inv.pruefung.kommentar ? ["", "Bemerkung: " + inv.pruefung.kommentar] : []),
     "",
     "Wir bitten Sie, die Rechnung zu korrigieren bzw. uns eine Gutschrift zu stellen.",
   ].join("\n");
 }
 
-// Punkte fuer den Sub (interne Hinweise wie "AB fehlt" / Haus-Zuordnung weglassen)
-function beanstandungPunkte(inv){
-  return checkInvoice(inv)
-    .filter(x => (x.level==="danger" || x.level==="warn") && x.code!=="ab")
-    .map(x => x.text)
-    .filter(t => !/^AB fehlt|keine AB|Haus wählen|keinem Haus zugeordnet|evtl\. doppelt/i.test(t));
+/* ============================= BEANSTANDUNGEN ALS PDF (pro Subunternehmer) ============================= */
+// jsPDF-Standardschrift kennt nur WinAnsi-Zeichen -> Pfeile/Emojis ersetzen
+function pdfSafe(t){ return String(t||"").replace(/→/g,"->").replace(/≈/g,"~").replace(/[✓✔]/g,"").replace(/[✗✘]/g,"x").replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\uFE0F?/gu,"").replace(/\s{2,}/g," ").trim(); }
+// Nur Punkte, die den Subunternehmer betreffen (keine internen Hinweise wie "AB fehlt", "kein Preis hinterlegt")
+const BEAN_INTERN = /AB fehlt|Auftragsbest[äa]tigung hochladen|Keine AB|kein Preis f[üu]r|keiner Leistung zugeordnet|nicht erkennbar|nicht erkannt|Abkl[äa]rung offen|Haupt-AB|ABs ohne Haus|stimmt das Haus|Gilt die AB|Regierapport pr[üu]fen|weiter verrechnen/i;
+function beanPunkte(inv){
+  return checkInvoice(inv).filter(x => (x.level==="danger" || x.level==="warn") && x.code !== "ab" && !BEAN_INTERN.test(x.text))
+    .map(x => pdfSafe(x.text.replace(/\s*[–-]\s*Bitte[^.]*\.?\s*$/,"").replace(/\s*Bitte\s+„[^“]*“\.?/g,"")));
 }
-// Text der Beanstandung (eigener Text, falls bearbeitet – sonst automatisch aus dem Prüfbericht)
-function beanstandungDefaultText(inv){
-  const k = inv.pruefung && inv.pruefung.kommentar ? "\n\n" + inv.pruefung.kommentar : "";
-  return beanstandungPunkte(inv).map(t => "– " + t).join("\n") + k;
-}
-function openBeanstandungDialog(inv, onSaved){
-  const cur = (inv.pruefung && inv.pruefung.beanstText) || beanstandungDefaultText(inv);
-  const m = showModal(`
-    <h2>✗ Beanstandung – Rechnung ${escapeHtml(inv.rechnungsnr||"")}</h2>
-    ${inv.pruefung && inv.pruefung.status==="ok" ? `<div class="flag" style="margin:-4px 0 8px 0;background:#fff4c2;color:#7a5a00;">Diese Rechnung war schon freigegeben${inv.gedrucktAm ? " und gedruckt (" + escapeHtml(String(inv.gedrucktAm).split(",")[0]) + ")" : ""}. Sie wird nachträglich beanstandet und bleibt im Tool gespeichert – stellt der Sub sie später nochmals, wird das erkannt.</div>` : ""}
-    <p class="subtitle" style="margin:-6px 0 8px 0;">${escapeHtml(inv.lieferant||"")} · Dieser Text kommt <b>genau so</b> ins Beanstandungs-PDF. Punkte aus dem Prüfbericht sind schon drin – ändern, löschen oder eigenen Text dazuschreiben.</p>
-    <textarea id="bdText" rows="12" style="width:100%;font-size:13px;line-height:1.45;resize:vertical;">${escapeHtml(cur)}</textarea>
-    <div class="muted" style="font-size:11.5px;margin-top:4px;">Zeilen mit „–“ am Anfang werden im PDF als Aufzählungspunkt gesetzt.</div>
-    <div style="display:flex;gap:8px;justify-content:space-between;margin-top:12px;flex-wrap:wrap;">
-      <button id="bdReset" class="small">↺ Text aus Prüfbericht neu laden</button>
-      <span style="display:flex;gap:8px;"><button id="bdCancel">Abbrechen</button><button class="primary" id="bdSave">✗ Beanstanden &amp; speichern</button></span>
-    </div>`);
-  m.querySelector(".modal").style.maxWidth = "720px";
-  const ta = m.querySelector("#bdText");
-  setTimeout(()=>{ ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
-  m.querySelector("#bdReset").addEventListener("click", ()=>{ ta.value = beanstandungDefaultText({ ...inv, pruefung: { ...(inv.pruefung||{}), beanstText:"" } }); });
-  m.querySelector("#bdCancel").addEventListener("click", closeModal);
-  m.querySelector("#bdSave").addEventListener("click", async ()=>{
-    const txt = ta.value.trim();
-    const auto = beanstandungDefaultText(inv).trim();
-    const vorher = inv.pruefung && inv.pruefung.status==="ok" ? { am: inv.pruefung.at || "", von: inv.pruefung.by || "", gedruckt: inv.gedrucktAm || "" } : (inv.pruefung && inv.pruefung.nachFreigabe) || null;
-    inv.pruefung = { ...(inv.pruefung||{}), status:"beanstandet", nachFreigabe: vorher, beanstText: txt && txt !== auto ? txt : "",
-      by: currentUser ? currentUser.email : "", at: new Date().toLocaleString("de-CH") };
-    if(inv.beanstPdfAm) inv.beanstPdfAm = "";
-    await saveInvoice(inv);
-    closeModal();
-    toast("Beanstandet – für das Beanstandungs-PDF vorgemerkt (③ Drucken → Beanstandet).");
-    if(onSaved) onSaved();
-  });
-}
-function pdfSafe(t){
-  return String(t||"").replace(/→/g,"->").replace(/[✓✗✕⚠📌📑🚫↗↺]/g,"").replace(/\s{2,}/g," ").trim();
-}
-// Ein Brief pro Subunternehmer; mehrere Subs -> je ab neuer Seite (oder je eigene Datei)
 async function buildBeanstandungPdf(invs){
   const jsPDF = await loadJsPdf();
   const doc = new jsPDF({ unit:"mm", format:"a4" });
   const L = 20, W = 170, BOTTOM = 280;
+  const bySub = {};
+  invs.forEach(i => { const k = i.lieferant || "Unbekannt"; (bySub[k] = bySub[k] || []).push(i); });
+  const subs = Object.keys(bySub).sort();
   const heute = new Date().toLocaleDateString("de-CH",{day:"2-digit",month:"2-digit",year:"numeric"});
-  const groups = {};
-  invs.forEach(i => { const k = i.lieferant || "Unbekannter Lieferant"; (groups[k] = groups[k] || []).push(i); });
-  let first = true;
-  Object.keys(groups).sort().forEach(lief => {
-    if(!first) doc.addPage(); first = false;
+  const signer = currentUser ? nameFromEmail(currentUser.email) : "";
+  subs.forEach((sub, si) => {
+    if(si > 0) doc.addPage();
     let y;
-    const head = (cont) => {
-      doc.setTextColor(17);
-      doc.setFont("helvetica","bold"); doc.setFontSize(13); doc.text("PE Fabrikations AG", L, 22);
+    const head = () => {
+      doc.setFont("helvetica","bold"); doc.setFontSize(13); doc.setTextColor(17); doc.text("PE Fabrikations AG", L, 22);
       doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(80);
       doc.text("Feldmoosstrasse 51 · 8853 Lachen · www.pe-fabrikation.ch", L, 27);
       doc.setTextColor(17);
-      if(cont){ doc.setFontSize(9.5); doc.text(`${lief} – Beanstandung vom ${heute} (Fortsetzung)`, L, 38); y = 48; return; }
-      doc.setFontSize(11); doc.text(lief, L, 48);
-      doc.text(`Lachen, ${heute}`, L + W, 64, { align:"right" });
-      doc.setFont("helvetica","bold"); doc.setFontSize(13);
-      const list = groups[lief];
-      doc.text(list.length > 1 ? `Beanstandung von ${list.length} Rechnungen` : `Beanstandung Rechnung ${pdfSafe(list[0].rechnungsnr||"(ohne Nr.)")}`, L, 78);
-      doc.setFont("helvetica","normal"); doc.setFontSize(10.5);
-      doc.text(doc.splitTextToSize("Sehr geehrte Damen und Herren", W), L, 89);
-      const intro = doc.splitTextToSize("Bei der Prüfung Ihrer nachstehenden Rechnung(en) sind uns folgende Punkte aufgefallen. Wir bitten Sie, die Rechnung(en) zu korrigieren bzw. uns eine Gutschrift zu stellen.", W);
-      doc.text(intro, L, 96); y = 96 + intro.length * 5 + 5;
     };
-    const need = (h) => { if(y + h > BOTTOM){ doc.addPage(); head(true); } };
-    head(false);
-    groups[lief].forEach(inv => {
+    const newPage = () => { doc.addPage(); head(); y = 40; };
+    const need = h => { if(y + h > BOTTOM) newPage(); };
+    head();
+    doc.setFontSize(11); doc.text(sub, L, 48);
+    const s = getSubFor(sub); if(s && s.email){ doc.setFontSize(9); doc.setTextColor(90); doc.text(s.email, L, 53); doc.setTextColor(17); }
+    doc.setFontSize(11); doc.text(`Lachen, ${heute}`, L + W, 66, { align:"right" });
+    doc.setFont("helvetica","bold"); doc.setFontSize(12);
+    doc.text(`Beanstandung${bySub[sub].length > 1 ? "en" : ""} zu Ihren Rechnungen (${bySub[sub].length})`, L, 78);
+    doc.setFont("helvetica","normal"); doc.setFontSize(10.5);
+    y = 88;
+    doc.splitTextToSize("Sehr geehrte Damen und Herren\n\nBei der Prüfung der folgenden Rechnungen sind uns Punkte aufgefallen, die wir so nicht anerkennen können. Wir bitten Sie, die Rechnungen zu korrigieren bzw. uns eine Gutschrift zu stellen.", W).forEach(t => { doc.text(t, L, y); y += 5; });
+    y += 4;
+    bySub[sub].forEach((inv, k) => {
       const p = DB.projects.find(x=>x.id===inv.projectId);
-      const anr = p ? auftragsNrOf(p) : (inv.auftragsnummer || "");
-      const punkte = beanstandungPunkte(inv).map(pdfSafe);
+      const punkte = beanPunkte(inv);
       const kom = inv.pruefung && inv.pruefung.kommentar ? pdfSafe(inv.pruefung.kommentar) : "";
-      need(24);
-      doc.setFillColor(242,244,248); doc.rect(L, y - 4.5, W, 7, "F");
+      need(22);
+      doc.setDrawColor(200); doc.line(L, y, L + W, y); y += 6;
       doc.setFont("helvetica","bold"); doc.setFontSize(10.5);
-      doc.text(pdfSafe(`Rechnung ${inv.rechnungsnr||"(ohne Nr.)"} vom ${inv.datum||"?"}`), L + 2, y);
-      doc.text(inv.total!=null ? `CHF ${formatCHF(+inv.total)}` : "", L + W - 2, y, { align:"right" });
-      y += 6;
-      doc.setFont("helvetica","normal"); doc.setFontSize(9.5); doc.setTextColor(70);
-      const sub = doc.splitTextToSize(pdfSafe(`Objekt: ${p ? p.name : (inv.objekt||"?")}${inv.haus ? " · " + inv.haus : ""}${anr ? " · Auftrag " + anr : ""}`), W - 4);
-      doc.text(sub, L + 2, y); y += sub.length * 4.6 + 1.5;
-      doc.setTextColor(17); doc.setFontSize(10);
-      const eigen = inv.pruefung && inv.pruefung.beanstText;
-      if(eigen){
-        pdfSafe(eigen.replace(/\n/g, "\u0001")).split("\u0001").forEach(raw => {
-          const ln = raw.trim();
-          if(!ln){ y += 2; return; }
-          const bullet = /^[–\-•*]\s*/.test(ln);
-          const t = ln.replace(/^[–\-•*]\s*/, "");
-          const parts = doc.splitTextToSize(t, W - 9);
-          need(parts.length * 4.8 + 1);
-          if(bullet) doc.text("–", L + 3, y);
-          doc.text(parts, L + 8, y); y += parts.length * 4.8 + 1;
-        });
-      } else
-      (punkte.length ? punkte : ["(keine Einzelpunkte – siehe Bemerkung)"]).forEach(t => {
-        const parts = doc.splitTextToSize(t, W - 9);
-        need(parts.length * 4.8 + 1);
-        doc.text("–", L + 3, y); doc.text(parts, L + 8, y); y += parts.length * 4.8 + 1;
-      });
-      if(kom && !eigen){
-        const parts = doc.splitTextToSize("Bemerkung: " + kom, W - 9);
-        need(parts.length * 4.8 + 1);
-        doc.setFont("helvetica","italic"); doc.text(parts, L + 8, y); doc.setFont("helvetica","normal");
-        y += parts.length * 4.8 + 1;
-      }
+      doc.text(`${k+1}. Rechnung ${inv.rechnungsnr || "(ohne Nr.)"} vom ${inv.datum || "?"}`, L, y);
+      if(inv.total != null) doc.text(`CHF ${formatCHF(+inv.total)}`, L + W, y, { align:"right" });
       y += 5;
+      doc.setFont("helvetica","normal"); doc.setFontSize(9.5); doc.setTextColor(70);
+      const objLine = [p ? p.name : (inv.objekt || ""), inv.haus || "", inv.auftragsnummer ? "Auftrag " + inv.auftragsnummer : ""].filter(Boolean).join(" · ");
+      doc.splitTextToSize("Objekt: " + objLine, W).forEach(t => { need(5); doc.text(t, L, y); y += 4.5; });
+      doc.setTextColor(17); doc.setFontSize(10); y += 1;
+      (punkte.length ? punkte : ["Siehe Bemerkung."]).forEach(t => {
+        const parts = doc.splitTextToSize(t, W - 6);
+        need(parts.length * 4.8 + 1);
+        doc.text("–", L + 1, y); parts.forEach(pp => { doc.text(pp, L + 6, y); y += 4.8; });
+      });
+      if(kom){
+        const parts = doc.splitTextToSize("Bemerkung: " + kom, W);
+        need(parts.length * 4.8 + 2); y += 1;
+        doc.setFont("helvetica","italic"); parts.forEach(pp => { doc.text(pp, L, y); y += 4.8; }); doc.setFont("helvetica","normal");
+      }
+      y += 3;
     });
-    need(26);
-    y += 2; doc.setFontSize(10.5);
-    doc.text("Für Rückfragen stehen wir Ihnen gerne zur Verfügung.", L, y); y += 10;
-    doc.text("Freundliche Grüsse", L, y); y += 5.5;
-    doc.text("PE Fabrikations AG", L, y);
+    need(26); y += 4;
+    doc.setFontSize(10.5);
+    ["Für Rückfragen stehen wir gerne zur Verfügung.", "", "Freundliche Grüsse", "PE Fabrikations AG", signer].forEach(t => { if(t) doc.text(t, L, y); y += 5; });
   });
-  const total = doc.getNumberOfPages();
-  for(let i=1;i<=total;i++){ doc.setPage(i); doc.setFontSize(8); doc.setTextColor(140); doc.text(`Seite ${i} / ${total}`, L + W, 290, { align:"right" }); }
+  const n = doc.getNumberOfPages();
+  for(let i = 1; i <= n; i++){ doc.setPage(i); doc.setFontSize(8); doc.setTextColor(130); doc.text(`Seite ${i} / ${n}`, L + W, 290, { align:"right" }); }
   return doc.output("arraybuffer");
 }
-function beanstFileName(lief){
-  const d = new Date(); const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-  return `Beanstandung_${lief ? String(lief).replace(/[^\wäöüÄÖÜ.-]+/g,"_") + "_" : ""}${ds}.pdf`;
-}
-async function downloadBeanstandungPdf(invs, proSub){
-  if(!invs.length){ toast("Keine Rechnungen markiert."); return; }
-  try{
-    if(proSub){
-      const by = {};
-      invs.forEach(i => { const k = i.lieferant || "Unbekannt"; (by[k] = by[k] || []).push(i); });
-      for(const k of Object.keys(by)){
-        downloadBlob(new Blob([await buildBeanstandungPdf(by[k])], { type:"application/pdf" }), beanstFileName(k));
-        await new Promise(r => setTimeout(r, 400));
-      }
-    } else {
-      const liefs = new Set(invs.map(i=>i.lieferant));
-      downloadBlob(new Blob([await buildBeanstandungPdf(invs)], { type:"application/pdf" }), beanstFileName(liefs.size===1 ? invs[0].lieferant : ""));
-    }
-    const stamp = new Date().toLocaleString("de-CH");
-    for(const i of invs){ i.beanstPdfAm = stamp; try{ await window.fb.setDocMerge("invoices", i.id, { beanstPdfAm: stamp }); }catch(e){ console.error(e); } }
-    toast(`Beanstandungs-PDF mit ${invs.length} Rechnung(en) heruntergeladen.`);
-  }catch(err){ console.error(err); toast("PDF konnte nicht erstellt werden: " + (err.message||err)); }
+async function exportBeanstandungen(invs, name){
+  if(!invs.length){ toast("Keine Beanstandungen ausgewählt."); return; }
+  toast("PDF wird erstellt…");
+  const pdf = await buildBeanstandungPdf(invs);
+  downloadBlob(new Blob([pdf], { type:"application/pdf" }), name || `Beanstandungen_${new Date().toISOString().slice(0,10)}.pdf`);
+  const stamp = `${new Date().toLocaleDateString("de-CH")} ${initialsFor(currentUser.email)}`;
+  for(const inv of invs){ inv.beanstandungExport = stamp; try{ await window.fb.setDocMerge("invoices", inv.id, { beanstandungExport: stamp }); }catch(e){} }
+  if(["print","check"].includes(currentView)) renderPrintCenter();
 }
 
 /* ============================= AUFTRAGSVERZEICHNIS AUS KALENDER / MONTAGE ============================= */
@@ -4456,6 +4254,7 @@ function extNums(s){ return Array.from(new Set((String(s||"").match(/(?<!\d)2\d{
 function auftragsNrOf(p){
   const k = p ? extFor(null, p).find(e => e.auftragsNr) : null;
   if(k) return String(k.auftragsNr).trim();
+  if(p){ const fromInv = DB.invoices.filter(i=>i.projectId===p.id && i.auftragsnummer).map(i=>i.auftragsnummer); if(fromInv.length && new Set(fromInv).size === 1) return fromInv[0]; }
   if(p && p.auftragsnummer) return p.auftragsnummer;
   const ab = p && (p.abs||[]).find(a => !a.nachtrag && (a.nr || a.anr));
   return ab ? (ab.nr || ab.anr) : "";
@@ -4482,6 +4281,7 @@ async function loadExtern(force){
       }
     });
     EXT = { entries: Array.from(by.values()), raw: r.entries, loaded: true, loading: false, at: Date.now(), errors: r.errors };
+    setTimeout(kalBackfill, 50);
     const view = currentView;
     if(["check","invoices","projects","projectDetail","settings"].includes(view)) render();
   }catch(e){ console.warn("Kalender-Verbindung:", e); EXT.loading = false; EXT.at = Date.now(); EXT.errors = [String(e.message||e)]; }
@@ -4514,6 +4314,43 @@ function extLine(hits, compact){
     !compact && termin ? `📅 ${escapeHtml(termin.split("-").reverse().join("."))}` : "",
   ].filter(Boolean);
   return `<div class="extline" title="Aus ${escapeAttr(e.quellen.join(" + "))}${hits.length > 1 ? " (+" + (hits.length-1) + " weitere)" : ""}">${parts.join(" · ")}</div>`;
+}
+// Auftragsnr. fuer eine Rechnung OHNE eigene Nummer: Kalendereintrag mit gleicher Adresse
+// (bevorzugt im Kalender dieses Subunternehmers, bei mehreren der Termin am naechsten zum Rechnungsdatum)
+function kalNrForInvoice(inv){
+  if(!EXT.entries.length || !inv) return "";
+  const p = DB.projects.find(x=>x.id===inv.projectId);
+  const adr = [inv.objekt, p && p.address, p && p.name].filter(Boolean);
+  if(!adr.length) return "";
+  let hits = EXT.entries.filter(e => (e.nrs||[]).length && e.adresse && adr.some(a => projectAddrScore(e.adresse, { name: a, address: a }) >= 2));
+  if(!hits.length) return "";
+  const team = teamForSub(inv.lieferant);
+  const inTeam = team ? hits.filter(e => (e.teams||[]).includes(team)) : [];
+  if(inTeam.length) hits = inTeam;
+  const nrs = Array.from(new Set(hits.map(e => e.nrs[0])));
+  if(nrs.length === 1) return nrs[0];
+  const d = parseDateCH(inv.datum); if(!d) return "";
+  const dist = e => Math.min(...(e.termine||[]).map(t => Math.abs(new Date(t + "T12:00:00") - d)).concat([Infinity]));
+  const best = hits.slice().sort((a,b)=>dist(a)-dist(b))[0];
+  return best && dist(best) < 1000*60*60*24*120 ? best.nrs[0] : "";
+}
+// Einmal nach dem Laden des Kalenders: fehlende Auftragsnummern bei Rechnungen und Auftraegen nachtragen
+let kalBackfillDone = false;
+async function kalBackfill(){
+  if(kalBackfillDone || !EXT.loaded || !EXT.entries.length) return;
+  kalBackfillDone = true;
+  const byProj = {};
+  for(const inv of DB.invoices){
+    if(inv.auftragsnummer) continue;
+    const nr = kalNrForInvoice(inv); if(!nr) continue;
+    inv.auftragsnummer = nr;
+    try{ await window.fb.setDocMerge("invoices", inv.id, { auftragsnummer: nr }); }catch(e){}
+    (byProj[inv.projectId] = byProj[inv.projectId] || new Set()).add(nr);
+  }
+  for(const [pid, set] of Object.entries(byProj)){
+    const p = DB.projects.find(x=>x.id===pid);
+    if(p && !p.auftragsnummer && set.size === 1){ p.auftragsnummer = Array.from(set)[0]; try{ await saveProject(p); }catch(e){} }
+  }
 }
 function extSearchText(inv, p){ return extFor(inv, p).map(e => [e.kunde, e.adresse, e.auftragsNr, e.memo, (e.teams||[]).join(" ")].join(" ")).join(" "); }
 
@@ -4948,44 +4785,32 @@ function renderPruefPanel(el, getInv){
           <button class="small ${st==="beanstandet"?"st-bad":"danger"}" data-ps="beanstandet">✗ Beanstanden</button>
           <button class="small" data-ps="offen" ${st==="offen"?"disabled":""}>↺ Offen</button>
           <button class="small" data-copybean>📋 Beanstandung kopieren</button>
-          ${st==="beanstandet" ? `<button class="small" data-beanedit title="Text der Beanstandung bearbeiten">✎ Text${inv.pruefung && inv.pruefung.beanstText ? " (eigener)" : ""}</button>` : ""}
-          ${st==="beanstandet" ? `<button class="small" data-beanpdf title="Nur diese Rechnung als Beanstandungs-PDF">📄 PDF${inv.beanstPdfAm ? " ✓" : ""}</button>` : ""}
+          ${inv.pruefung && inv.pruefung.status==="beanstandet" ? `<button class="small" data-beanone>📄 Als PDF</button>` : ""}
           ${(inv.duplikatVersuche||[]).length ? dupButtonsHtml(inv.id) : ""}
           ${(inv.items||[]).some(x=>x.category==="Regie") || wvItems(inv).length ? `<button class="small ${wvItems(inv).length ? "st-bad" : ""}" data-wvall title="Alle Regie-Positionen an Kunde weiter verrechnen">${wvItems(inv).length ? "↗ Wird weiter verrechnet" : "↗ Regie weiter verrechnen"}</button>` : ""}
           <button class="small ${abklOffen(inv) ? "st-warn" : ""}" data-abklp>${abklOffen(inv) ? "📌 Abklärung erledigt" : "📌 Zur Abklärung markieren"}</button>
           <button class="small ${inv.ohneAB ? "st-ok" : ""}" data-ohneab title="Für diese Rechnung gibt es keine AB (z.B. Regie, Reparatur) – AB-Meldungen ausblenden">${inv.ohneAB ? "✓ Keine AB vorhanden" : "🚫 Keine AB vorhanden!"}</button>
         </div>
       </div>
-      <label class="field" style="margin:10px 0 0 0;"><span>✓ Vermerk bei Freigabe – wird auf der Rechnung beim Stempel mitgedruckt${st!=="ok" ? " (erscheint, sobald freigegeben)" : ""}</span>
-        <input type="text" data-fgtext value="${escapeAttr((inv.pruefung && inv.pruefung.stempelText)||"")}" placeholder="z.B. 1 Element abgezogen – Gutschrift folgt" maxlength="160"></label>
     </div>`;
   const kom = el.querySelector("[data-pk]");
-  const fgt = el.querySelector("[data-fgtext]");
-  fgt.addEventListener("change", ()=>{
-    const i = getInv(); if(!i) return;
-    i.pruefung = { ...(i.pruefung||{ status:"offen" }), stempelText: fgt.value.trim() };
-    saveInvoice(i);
-    toast(fgt.value.trim() ? "Vermerk gespeichert – wird beim Drucken neben dem Stempel gedruckt." : "Vermerk entfernt.");
-  });
   kom.addEventListener("change", ()=>{
     const i = getInv(); if(!i) return;
-    i.pruefung = { ...(i.pruefung||{}), status: (i.pruefung && i.pruefung.status) || "offen", kommentar: kom.value, by: (i.pruefung && i.pruefung.by) || "", at: (i.pruefung && i.pruefung.at) || "" };
+    i.pruefung = { status: (i.pruefung && i.pruefung.status) || "offen", kommentar: kom.value, by: (i.pruefung && i.pruefung.by) || "", at: (i.pruefung && i.pruefung.at) || "" };
     saveInvoice(i);
   });
   el.querySelectorAll("[data-ps]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       const i = getInv(); if(!i) return;
       const next = btn.dataset.ps;
-      if(next==="beanstandet"){ if(kom.value !== ((i.pruefung && i.pruefung.kommentar)||"")) i.pruefung = { ...(i.pruefung||{}), kommentar: kom.value }; openBeanstandungDialog(i, ()=>renderPruefPanel(el, getInv)); return; }
       if(next==="ok"){
         const d = checkInvoice(i).filter(x=>x.level==="danger").length;
         if(d && !confirm(`Die Prüfung hat ${d} Fehler gefunden. Rechnung trotzdem freigeben?`)) return;
       }
-      i.pruefung = { status: next, kommentar: kom.value, stempelText: fgt.value.trim(), by: currentUser ? currentUser.email : "", at: new Date().toLocaleString("de-CH"), ...(next==="ok" ? freigabeVermerk() : {}) };
+      i.pruefung = { status: next, kommentar: kom.value, by: currentUser ? currentUser.email : "", at: new Date().toLocaleString("de-CH"), ...(next==="ok" ? freigabeVermerk() : {}) };
       saveInvoice(i);
       renderPruefPanel(el, getInv);
-      if(next!=="beanstandet" && i.beanstPdfAm){ i.beanstPdfAm = ""; window.fb.setDocMerge("invoices", i.id, { beanstPdfAm: "" }); }
-      toast(next==="ok" ? "Rechnung freigegeben." : next==="beanstandet" ? "Beanstandet – für das Beanstandungs-PDF vorgemerkt (③ Drucken → Beanstandet)." : "Status zurückgesetzt.");
+      toast(next==="ok" ? "Rechnung freigegeben." : next==="beanstandet" ? "Rechnung beanstandet – zählt nicht mehr ins Ist." : "Status zurückgesetzt.");
     });
   });
   wireDupButtons(el);
@@ -5015,10 +4840,8 @@ function renderPruefPanel(el, getInv){
     updateBadges();
     toast(next ? "Markiert: keine AB vorhanden – AB-Meldungen ausgeblendet." : "Markierung entfernt – AB wird wieder erwartet.");
   });
-  const bedit = el.querySelector("[data-beanedit]");
-  if(bedit) bedit.addEventListener("click", ()=>{ const i = getInv(); if(i) openBeanstandungDialog(i, ()=>renderPruefPanel(el, getInv)); });
-  const bpdf = el.querySelector("[data-beanpdf]");
-  if(bpdf) bpdf.addEventListener("click", async ()=>{ const i = getInv(); if(i){ await downloadBeanstandungPdf([i], false); renderPruefPanel(el, getInv); } });
+  const b1 = el.querySelector("[data-beanone]");
+  if(b1) b1.addEventListener("click", ()=>{ const i = getInv(); if(i) exportBeanstandungen([i], `Beanstandung_${String(i.rechnungsnr||"").replace(/[^\w.-]+/g,"_")}.pdf`); });
   el.querySelector("[data-copybean]").addEventListener("click", ()=>{
     const i = getInv(); if(!i) return;
     navigator.clipboard.writeText(beanstandungText(i)).then(()=>toast("Beanstandungstext kopiert – in E-Mail einfügen."), ()=>toast("Kopieren nicht möglich."));
@@ -5157,87 +4980,13 @@ function scoreAddress(a, b){
 function projectAddrScore(addr, p){
   return Math.max(scoreAddress(addr, p.address), scoreAddress(addr, p.name), ...((p.abs||[]).map(a=>scoreAddress(addr, a.baustelle))), 0);
 }
-// Objekt-Schluessel: Strassenname (zusammengeschrieben) + Hausnummer (+ PLZ). Haus/Auftragsnr. spielen keine Rolle.
-// "Herman Burchard Strasse 2, 7265 Davos Wolfgang Haus V" == "Campus / Herman Burchard Strasse 2, 7265 Davos"
-const OBJ_STREET_RE = /((?:[a-zäöüéè]+[\s-]+){0,3}[a-zäöüéè]*(?:strasse|str\.?|weg|gasse|gässli|platz|rain|ring|allee|halde|matte?|hof|quai|steig|graben|berg|acker|feld|wiese|park|halden|rank|egg|bühl|buehl))\s*(\d{1,3}[a-z]?)\b/i;
-function objektKeys(addr){
-  const raw = String(addr||"");
-  const plz = (raw.match(/\b([1-9]\d{3})\s+[A-ZÄÖÜa-zäöü]/) || [])[1] || "";
-  const out = [];
-  raw.split(/[,\/;|]+/).forEach(seg => {
-    const m = deumlaut(seg.toLowerCase()).replace(/str\.(?=\s|\d|$)/g, "strasse").match(OBJ_STREET_RE);
-    if(!m) return;
-    const street = m[1].replace(/[^a-z]/g, "");
-    if(street.length < 7) return; // nur "Strasse"/"Weg" allein ist zu unsicher
-    out.push({ street, nr: m[2].toLowerCase(), plz });
-  });
-  return out;
-}
-function sameObjektKey(a, b){
-  const ka = objektKeys(a), kb = objektKeys(b);
-  return ka.some(x => kb.some(y => x.nr === y.nr && (!x.plz || !y.plz || x.plz === y.plz)
-    && (x.street === y.street || (Math.min(x.street.length, y.street.length) >= 12 && lev1(x.street, y.street))
-        || (Math.min(x.street.length, y.street.length) >= 9 && (x.street.endsWith(y.street) || y.street.endsWith(x.street))))));
-}
-// hoechstens ein Buchstabe anders / zu viel ("Herman" vs "Hermann")
-function lev1(a, b){
-  if(a === b) return true;
-  if(Math.abs(a.length - b.length) > 1) return false;
-  let i = 0, j = 0, d = 0;
-  while(i < a.length && j < b.length){
-    if(a[i] === b[j]){ i++; j++; continue; }
-    if(++d > 1) return false;
-    if(a.length > b.length) i++; else if(b.length > a.length) j++; else { i++; j++; }
-  }
-  return d + (a.length - i) + (b.length - j) <= 1;
-}
-function projectAddrList(p){
-  return [p.address, p.name, ...((p.abs||[]).map(a=>a.baustelle)), ...DB.invoices.filter(i=>i.projectId===p.id).map(i=>i.objekt)].filter(Boolean);
-}
-function projectByObjektKey(addr, exceptId){
-  if(!objektKeys(addr).length) return null;
-  const hits = DB.projects.filter(p => p.id !== exceptId && projectAddrList(p).some(a => sameObjektKey(addr, a)));
-  if(!hits.length) return null;
-  // der Auftrag mit den meisten ABs/Rechnungen gewinnt
-  return hits.sort((x,y)=> ((y.abs||[]).length*10 + DB.invoices.filter(i=>i.projectId===y.id).length) - ((x.abs||[]).length*10 + DB.invoices.filter(i=>i.projectId===x.id).length))[0];
-}
-// Doppelt angelegte Auftraege fuer dasselbe Objekt zusammenfuehren (einmal pro Sitzung)
-let dupProjMergeDone = false;
-async function mergeDuplicateProjects(){
-  if(dupProjMergeDone || DB.projects.length < 2) return; dupProjMergeDone = true;
-  let merged = 0;
-  for(const p of DB.projects.slice()){
-    if(!DB.projects.includes(p)) continue;
-    const addr = p.address || p.name;
-    if(!objektKeys(addr).length) continue;
-    const other = DB.projects.find(q => q !== p && projectAddrList(q).slice(0,2).some(a => sameObjektKey(addr, a)));
-    if(!other) continue;
-    const score = x => (x.abs||[]).length*10 + DB.invoices.filter(i=>i.projectId===x.id).length;
-    const [target, src] = score(other) >= score(p) ? [other, p] : [p, other];
-    try{
-      target.auftragsnummern = Array.from(new Set([...(target.auftragsnummern||[]), target.auftragsnummer, src.auftragsnummer, ...(src.auftragsnummern||[])].filter(Boolean)));
-      await mergeProjects(src, target);
-      DB.projects = DB.projects.filter(x => x !== src);
-      merged++;
-    }catch(e){ console.error("Zusammenführen fehlgeschlagen", e); }
-  }
-  if(merged){ toast(`${merged} doppelt angelegte(r) Auftrag/Aufträge mit gleicher Adresse zusammengeführt.`); render(); }
-}
 function bestProjectForAddress(addr){
-  const k = projectByObjektKey(addr);
-  if(k) return { project: k, score: 3 };
   let best = null, bestScore = 0;
   DB.projects.forEach(p=>{ const s = projectAddrScore(addr, p); if(s>bestScore){ best = p; bestScore = s; } });
   return { project: best, score: bestScore };
 }
 
-function abKey(ab){ return `${ab.nr||""}|${ab.anr||""}${ab.version ? "|" + ab.version : ""}`; }
-// Urspruengliche AB, zu der eine Rek. AB (gleiche Nr. + A-Nr.) vorliegt -> zaehlt nicht mehr
-function abIsErsetzt(p, ab){
-  const abs = (p && p.abs) || [];
-  if(ab.version) return abs.some(b => b !== ab && b.version && b.nr===ab.nr && b.anr===ab.anr && abDatumKey(b) > abDatumKey(ab));
-  return abs.some(b => b !== ab && b.version && b.nr===ab.nr && b.anr===ab.anr);
-}
+function abKey(ab){ return `${ab.nr||""}|${ab.anr||""}`; }
 async function attachAB(projectId, ab){
   const p = DB.projects.find(x=>x.id===projectId);
   if(!p) throw new Error("Auftrag nicht gefunden.");
@@ -5273,7 +5022,7 @@ async function autoAssignAB(ab){
   if(sameNr){
     const isRev = (sameNr.abs||[]).some(a=>abKey(a)===abKey(ab));
     await attachAB(sameNr.id, ab);
-    return { projectId: sameNr.id, how: isRev ? "revision" : ab.version ? "rek" : (ab.nachtrag ? "nachtrag" : "auto") };
+    return { projectId: sameNr.id, how: isRev ? "revision" : (ab.nachtrag ? "nachtrag" : "auto") };
   }
   const { project, score } = bestProjectForAddress(ab.baustelle);
   if(project && score >= 1){ await attachAB(project.id, ab); return { projectId: project.id, how: score>=2 ? "auto" : "unsicher" }; }
@@ -5308,7 +5057,7 @@ function appendABCard(ab, res){
   wrap.className = "card";
   wrap.style.borderLeft = "4px solid var(--accent)";
   let projectId = res.projectId;
-  const howTxt = { nachtrag:"Nachtrag zur bestehenden AB – wird zur AB dazugerechnet (Mehr- und Minderpreise).", revision:"Neue Version einer bereits vorhandenen AB – ersetzt.", rek:"Rek. AB – gilt ab jetzt; die ursprüngliche AB bleibt sichtbar, zählt aber nicht mehr.", auto:"Automatisch über die Baustellenadresse zugeordnet.",
+  const howTxt = { nachtrag:"Nachtrag zur bestehenden AB – wird zur AB dazugerechnet (Mehr- und Minderpreise).", revision:"Neue Version einer bereits vorhandenen AB – ersetzt.", auto:"Automatisch über die Baustellenadresse zugeordnet.",
                    unsicher:"⚠ Zuordnung unsicher (nur teilweise Adressübereinstimmung) – bitte bestätigen oder ändern.", neu:"Kein passender Auftrag gefunden – neuer Auftrag angelegt." }[res.how] || "";
   function draw(){
     wrap.innerHTML = `
@@ -5618,8 +5367,7 @@ function normHaus(s){
   return s;
 }
 function hausFromText(s){
-  // "Elementmontage Haus 8.00 230.00" ist eine Menge, kein Haus 8
-  const m = String(s||"").match(/\b(Haus|Gebäude|Geb\.|Block|Trakt)\s*([a-z]?[0-9]{1,3}[a-z]?|[a-z])\b(?![.,'’]\d)/i);
+  const m = String(s||"").match(/\b(Haus|Gebäude|Geb\.|Block|Trakt)\s*([a-z]?[0-9]{1,3}[a-z]?|[a-z])\b/i);
   return m ? normHaus(m[1] + " " + m[2]) : "";
 }
 function stripHaus(s){
@@ -5665,7 +5413,7 @@ function detectInvoiceHaus(info, projectId){
     for(const h of projectHouses(p)){
       const id = h.replace(/^(Haus|Gebäude|Block|Trakt|Nr\.)\s*/i, "");
       if(/[a-z]/i.test(id) && new RegExp("(^|[^A-Za-z0-9])" + id.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + "([^A-Za-z0-9]|$)").test(text)) return h;
-      if(new RegExp("\\bHaus\\s*" + id.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + "\\b(?![.,'’]\\d)", "i").test(text)) return h;
+      if(new RegExp("\\bHaus\\s*" + id + "\\b", "i").test(text)) return h;
     }
   }
   const anyHaus = hausFromText(text.replace(/hauserstrasse|hausmatt\w*|hausen\b/gi, ""));
@@ -5698,7 +5446,7 @@ async function syncHousesWithABs(p){
   for(const inv of invs){
     if(inv.haus) continue;
     const h = detectInvoiceHaus(inv, p.id);
-    if(h && !(p.haeuserEntfernt||[]).includes(h)){ inv.haus = h; await window.fb.setDocMerge("invoices", inv.id, { haus: h }); }
+    if(h){ inv.haus = h; await window.fb.setDocMerge("invoices", inv.id, { haus: h }); }
   }
 }
 // AB(s) einem bestimmten Objekt hinzufuegen; fehlt das Haus, wird gefragt
@@ -5769,9 +5517,9 @@ function computeProjectTodos(){
     }
     // Nur eigenstaendige ABs zaehlen: ein Mehr-/Minderpreis gehoert zu seiner Haupt-AB; "ganzes Objekt" bewusst gewaehlt = in Ordnung
     const cl = x => String(x||"").replace(/[^0-9A-Za-z]/g,"").toUpperCase();
-    const isAddOn = a => abIsNachtrag(p, a) || abIsErsetzt(p, a) || (a.nachtrag && abs.some(b => b !== a && !b.nachtrag && (b.nr === a.nr || (a.zuAnr && cl(b.anr) === cl(a.zuAnr)))));
+    const isAddOn = a => a.nachtrag && abs.some(b => b !== a && !b.nachtrag && (b.nr === a.nr || (a.zuAnr && cl(b.anr) === cl(a.zuAnr))));
     const baseNoHaus = abs.filter(a => !a.haus && !a.hausBestaetigt && !isAddOn(a));
-    if(new Set(baseNoHaus.map(a => a.nr || abKey(a))).size >= 2 && relevant.length){
+    if(baseNoHaus.length >= 2 && relevant.length){
       t.push({ kind:"ab", projectId:p.id, text:`${baseNoHaus.length} ABs ohne Haus – ${p.name}`, hint:"Mehrere ABs gelten fürs ganze Objekt – dann werden die Mengen zusammengezählt. Bitte bei jeder AB „Gilt für“ das Haus wählen.", share:`Bitte bei „${p.name}“ jeder AB das richtige Haus zuordnen.` });
     }
     if(!p.ohneAB && (houses.length > 1 || abs.some(a=>a.haus))){
@@ -5901,8 +5649,8 @@ async function mergeProjects(src, target){
     target.abs = (target.abs||[]).map(a=> a.haus ? a : { ...a, haus: tgtHaus });
   }
   const srcAbs = (src.abs||[]).map(a=> a.haus || !srcHaus ? a : { ...a, haus: srcHaus });
-  const keys = new Set(srcAbs.map(a=>abKey(a)));
-  target.abs = (target.abs||[]).filter(a=>!keys.has(abKey(a))).concat(srcAbs);
+  const nrs = new Set(srcAbs.map(a=>a.nr));
+  target.abs = (target.abs||[]).filter(a=>!nrs.has(a.nr)).concat(srcAbs);
   target.haeuser = Array.from(new Set([...(target.haeuser||[]), ...(src.haeuser||[]), srcHaus, tgtHaus].filter(Boolean)));
   if(srcHaus || tgtHaus){ target.name = stripHaus(target.name); target.address = stripHaus(target.address||""); }
   await saveProject(target);
@@ -5935,26 +5683,6 @@ function wvKurztext(inv){
 }
 function wvTag(inv){ return wvItems(inv).length ? ` <span class="pill danger" title="An Kunde weiter verrechnen: ${escapeAttr(wvKurztext(inv))}">↗ weiter verr. CHF ${formatCHF(wvSumme(inv))}</span>` : ""; }
 // Roter Zusatzstempel neben dem Eingangsstempel
-// Auftragsnummer beim Stempel, wenn sie nicht auf der Rechnung steht
-function stampAuftragsNr(inv){
-  const p = DB.projects.find(x=>x.id===inv.projectId);
-  if(!p) return "";
-  const ab = (p.abs||[]).find(a => a.nr && !abIsErsetzt(p, a) && !abIsNachtrag(p, a)) || (p.abs||[]).find(a => a.nr);
-  const nr = ab ? ab.nr : (auftragsNrOf(p) || "");
-  const anr = ab ? (ab.anr || "") : "";
-  if(!nr && !anr) return "";
-  const d = x => String(x||"").replace(/\D/g, "");
-  const txt = d(inv.rawText || ""), own = d(inv.auftragsnummer);
-  const onInvoice = [nr, anr].some(x => { const k = d(x); return k.length >= 6 && (txt.includes(k) || own === k); });
-  if(onInvoice) return "";
-  return [nr, anr].filter(Boolean).join(" / ");
-}
-function anrStampHtml(inv){
-  const t = stampAuftragsNr(inv);
-  const fg = inv.pruefung && inv.pruefung.status==="ok" && inv.pruefung.stempelText ? String(inv.pruefung.stempelText).trim() : "";
-  return (t ? `<div class="anrstamp"><small>Auftrag</small>${escapeHtml(t)}</div>` : "")
-    + (fg ? `<div class="fgstamp" style="top:calc(100% + ${t ? "11" : "1.5"}cqw);">${escapeHtml(fg)}</div>` : "");
-}
 function wvStampHtml(inv, posX){
   if(!wvItems(inv).length) return "";
   const below = posX < 24;
@@ -6499,9 +6227,9 @@ async function deleteInvoiceImages(invoiceId){
 }
 
 function invPrintState(inv){
-  if(inv.pruefung && inv.pruefung.status==="beanstandet") return "beanstandet"; // auch nachtraeglich (nach Freigabe/Druck) beanstandete
   if(inv.gedrucktAm) return "gedruckt";
   if(inv.pruefung && inv.pruefung.status==="ok") return "bereit";
+  if(inv.pruefung && inv.pruefung.status==="beanstandet") return "beanstandet";
   return "neu";
 }
 function hasOriginal(inv){ return !!inv.pdfId || (inv.bildSeiten||0) > 0; }
@@ -6767,10 +6495,6 @@ function renderPrintCenter(){
   const abMissingCount = printTab==="neu" ? list.filter(i => probs[i.id].d.some(x=>x.code==="ab")).length : 0;
   // Freigegebene Rechnungen sind beim Öffnen automatisch alle markiert
   if(printTab==="bereit") list.filter(i=>hasOriginal(i) && !printDeselected.has(i.id)).forEach(i=>printSel.add(i.id));
-  // Beanstandet: alle noch nicht ins PDF uebernommenen sind vorausgewaehlt
-  if(printTab==="beanstandet") list.filter(i=>!i.beanstPdfAm && !printDeselected.has(i.id)).forEach(i=>printSel.add(i.id));
-  const beanstOffen = (groups.beanstandet||[]).filter(i=>!i.beanstPdfAm).length;
-  const selLiefs = new Set(list.filter(i=>printSel.has(i.id)).map(i=>i.lieferant||""));
   Array.from(printSel).forEach(id=>{ if(!list.some(i=>i.id===id)) printSel.delete(id); });
   const missing = DB.invoices.filter(i => !hasOriginal(i) && (invPrintState(i)==="bereit" || invPrintState(i)==="neu"));
   const tabBtn = (k, label, red) => `<button class="tab ${printTab===k?"active":""}" data-ptab="${k}">${label} ${groups[k].length ? (red ? `<span class="nbadge" style="display:inline-flex;">${groups[k].length}</span>` : `<span class="muted">(${groups[k].length})</span>`) : ""}</button>`;
@@ -6780,18 +6504,27 @@ function renderPrintCenter(){
   mainEl.innerHTML = `
     ${printTab==="neu"
       ? `<h1>② Prüfen</h1><p class="subtitle">Neu eingelesene Rechnungen. Jede Rechnung braucht eine <b>AB</b> (oder die Bestätigung „Keine AB vorhanden“). <b>Klick auf eine Zeile</b> öffnet den Prüfbericht. Alles ohne Auffälligkeiten mit einem Klick freigeben – danach erscheint es unter ③ Drucken.</p>
+         ${(() => { const nb = DB.invoices.filter(i => invPrintState(i)==="beanstandet" && !i.beanstandungExport).length; return nb ? `<div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 16px;border-left:4px solid var(--danger);"><span><b>${nb}</b> beanstandete Rechnung(en) noch nicht als PDF versendet.</span><button class="small primary" id="goBeanPdf">📄 Beanstandungen als PDF</button></div>` : ""; })()}
          <details class="card" id="kalCard" ${KAL.open ? "open" : ""} style="padding:12px 16px;"><summary style="cursor:pointer;font-weight:700;">📅 Aufträge im Kalender des Subunternehmers suchen</summary><div id="kalSlot" style="margin-top:10px;"></div></details>
          ${checkTodos.length ? `<div class="todobanner"><h2><span class="nbadge" style="display:inline-flex;margin:0;">${checkTodos.length}</span> Offene Punkte bei Objekten</h2><div id="checkTodoSlot">${todosHtml(checkTodos, true)}</div></div>` : ""}`
       : `<h1>③ Drucken</h1><p class="subtitle">Freigegebene Rechnungen sind schon markiert. Ein Klick auf <b>„Drucken“</b> – alle werden mit Eingangsstempel gedruckt. Danach nur noch Barcode-Sticker aufkleben. Die gespeicherten PDFs werden nach dem Drucken gelöscht.</p>`}
-    ${printTab==="neu" && beanstOffen ? `<div class="card" style="padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-left:4px solid var(--danger);">
-        <b>📄 ${beanstOffen} beanstandete Rechnung(en) noch nicht im Beanstandungs-PDF.</b><span style="flex:1;"></span>
-        <button class="small primary" id="goBeanPdf">Beanstandungs-PDF erstellen →</button></div>` : ""}
-    ${printTab==="beanstandet" ? `<p class="muted" style="font-size:12.5px;margin:-4px 0 10px 0;">Markierte Rechnungen werden als fertiges PDF heruntergeladen: pro Subunternehmer ein Brief mit allen Punkten aus dem Prüfbericht und deinem Kommentar. Noch nicht übernommene Rechnungen sind schon markiert.</p>` : ""}
     ${printTab==="neu" ? "" : `<div class="tabs">
       ${tabBtn("bereit","Bereit zum Drucken",true)}
       ${tabBtn("gedruckt","Gedruckt (Archiv)",false)}
       ${tabBtn("beanstandet","Beanstandet",false)}
     </div>`}
+    ${printTab==="beanstandet" && list.length ? (() => {
+      const offen = list.filter(i => !i.beanstandungExport);
+      const subsB = {}; list.forEach(i => { const k = i.lieferant || "Unbekannt"; (subsB[k] = subsB[k] || []).push(i); });
+      return `<div class="card" style="border-left:4px solid var(--danger);">
+        <h2 style="margin-top:0;">📄 Beanstandungen als PDF</h2>
+        <p class="muted" style="font-size:12.5px;">Ein fertiger Brief pro Subunternehmer mit allen beanstandeten Rechnungen, den Prüfpunkten und deiner Bemerkung – zum Senden oder Drucken. Bereits exportierte sind markiert.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="primary" data-beanpdf="offen" ${offen.length ? "" : "disabled"}>📄 Neue Beanstandungen (${offen.length}) als PDF</button>
+          <button data-beanpdf="alle">📄 Alle ${list.length} als PDF</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">${Object.entries(subsB).map(([k, arr]) => `<button class="small" data-beansub="${escapeAttr(k)}">${escapeHtml(k)} (${arr.length})</button>`).join("")}</div>
+      </div>`; })() : ""}
     ${printTab==="neu" && abMissingCount ? `
       <div class="drop" id="abBulkDrop" style="padding:16px;margin-bottom:14px;border-color:#f3c7c4;background:#fff7f6;">
         <b style="color:var(--danger);">📑 Bei ${abMissingCount} Rechnung(en) fehlt die AB.</b>
@@ -6816,14 +6549,13 @@ function renderPrintCenter(){
         ${printTab==="neu" ? `<button id="pApprove" ${printSel.size?"":"disabled"}>✓ Markierte freigeben</button><button class="primary" id="pApproveClean" ${cleanNeu.length?"":"disabled"} style="font-size:14px;">✓ Alle ${cleanNeu.length} ohne Auffälligkeiten freigeben</button>` : ""}
         ${printTab==="bereit" ? `<button class="primary" id="pPrint" ${printSel.size?"":"disabled"} style="font-size:15px;padding:10px 18px;">🖨️ ${printSel.size===printable.length && printable.length ? "Alle" : printSel.size} mit Stempel drucken</button>` : ""}
         ${printTab==="gedruckt" ? `<button id="pPrint" ${printSel.size?"":"disabled"}>🖨️ Nochmals drucken (${printSel.size})</button>` : ""}
-        ${printTab==="beanstandet" ? `${selLiefs.size > 1 ? `<button id="pBeanSub" ${printSel.size?"":"disabled"} title="Eine PDF-Datei pro Subunternehmer – zum Versenden">📄 Pro Subunternehmer ein PDF (${selLiefs.size})</button>` : ""}<button class="primary" id="pBeanPdf" ${printSel.size?"":"disabled"} style="font-size:14px;">📄 Beanstandungs-PDF herunterladen (${printSel.size})</button>` : ""}
       </div>
       <div class="card" style="padding:0;"><div class="tablewrap"><table>
-        <thead><tr><th style="width:30px;"></th><th>Eingegangen</th><th>Lieferant</th><th>Objekt</th><th>Rechnungsnr.</th><th>Betrag CHF</th><th>Prüfung</th>${printTab==="neu"?"<th>Was ist auffällig?</th>":""}${printTab==="beanstandet"?"<th>Beanstandungs-PDF</th>":""}<th>Original</th>${printTab==="gedruckt"?"<th>Gedruckt</th>":"<th>Stempeldatum</th>"}</tr></thead>
+        <thead><tr><th style="width:30px;"></th><th>Eingegangen</th><th>Lieferant</th><th>Objekt</th><th>Rechnungsnr.</th><th>Betrag CHF</th><th>Prüfung</th>${printTab==="neu"?"<th>Was ist auffällig?</th>":""}<th>Original</th>${printTab==="gedruckt"?"<th>Gedruckt</th>":"<th>Stempeldatum</th>"}</tr></thead>
         <tbody>${list.map(inv=>{
           const p = proj(inv.projectId);
           const orig = hasOriginal(inv);
-          const selectable = printTab==="neu" || printTab==="beanstandet" || orig;
+          const selectable = printTab==="neu" || orig;
           return `<tr>
             <td><input type="checkbox" data-psel="${inv.id}" style="width:auto;" ${printSel.has(inv.id)?"checked":""} ${selectable?"":"disabled"}></td>
             <td>${escapeHtml((toDateSafe(inv.createdAt)||new Date()).toLocaleDateString("de-CH"))}</td>
@@ -6839,7 +6571,6 @@ function renderPrintCenter(){
                   <button class="small" data-noab="${inv.id}">🚫 Keine AB vorhanden</button>
                 </div></td>` : ""}
             ${printTab==="neu" && !probs[inv.id].d.some(x=>x.code==="ab") ? `<td style="cursor:pointer;font-size:12.5px;max-width:420px;" data-popen="${inv.id}" class="${probs[inv.id].d.length?"flag":"muted"}">${probs[inv.id].d.length||probs[inv.id].w.length ? escapeHtml(shortText((probs[inv.id].d[0]||probs[inv.id].w[0]).text, 120)) + ((probs[inv.id].d.length+probs[inv.id].w.length)>1 ? ` <b>(+${probs[inv.id].d.length+probs[inv.id].w.length-1})</b>` : "") : "✓ alles in Ordnung"}</td>` : ""}
-            ${printTab==="beanstandet" ? `<td style="font-size:12px;">${inv.pruefung && inv.pruefung.nachFreigabe ? `<span class="hchip" style="background:#fff4c2;color:#7a5a00;">nach Freigabe${inv.gedrucktAm ? " · gedruckt" : ""}</span> ` : ""}${inv.beanstPdfAm ? `<span class="hchip ok">📄 im PDF</span><div class="muted">${escapeHtml(inv.beanstPdfAm)}</div>` : `<span class="hchip">noch nicht</span>`}${inv.pruefung && inv.pruefung.kommentar ? `<div class="muted" style="max-width:260px;">${escapeHtml(shortText(inv.pruefung.kommentar, 60))}</div>` : ""}</td>` : ""}
             <td>${orig ? `<span class="hchip ok">✓ gespeichert</span>` : printTab==="gedruckt" ? `<span class="muted" style="font-size:12px;">gelöscht</span>` : `<button class="small" data-pattach="${inv.id}">PDF anhängen</button>`}</td>
             ${printTab==="gedruckt"
               ? `<td class="muted" style="font-size:12px;">${escapeHtml(inv.gedrucktAm||"")}</td>`
@@ -6850,6 +6581,8 @@ function renderPrintCenter(){
       ${printTab==="neu" ? `<p class="muted" style="font-size:12px;">„Markierte freigeben“ gibt nur Rechnungen ohne Fehler frei – Rechnungen mit Fehlern einzeln prüfen (Klick auf die Zeile).</p>` : ""}
       ${printTab==="gedruckt" ? `<p class="muted" style="font-size:12px;">Nach dem Drucken wird die PDF gelöscht, um Speicher zu sparen. Nochmals drucken geht nur, wenn das Original noch vorhanden ist.</p>` : ""}`
     : `<div class="empty">${printQuery ? `Keine Treffer für „${escapeHtml(printQuery)}“ in diesem Tab.` : printTab==="bereit" ? "Keine freigegebenen Rechnungen zum Drucken." : printTab==="neu" ? "Keine neuen Rechnungen." : "Keine Einträge."}</div>`}`;
+  const gbp = document.getElementById("goBeanPdf");
+  if(gbp) gbp.addEventListener("click", ()=>{ currentView = "print"; printTab = "beanstandet"; renderPrintCenter(); document.querySelectorAll(".navbtn").forEach(b=>b.classList.toggle("active", b.dataset.view==="print")); });
   const kc = document.getElementById("kalCard");
   if(kc){ kc.addEventListener("toggle", ()=>{ KAL.open = kc.open; }); KAL._forInv = null; renderKalSuche(document.getElementById("kalSlot"), {}); }
   const cts = document.getElementById("checkTodoSlot");
@@ -6877,16 +6610,10 @@ function renderPrintCenter(){
   const psc = document.getElementById("pSearchClear");
   if(psc) psc.addEventListener("click", ()=>{ printQuery = ""; renderPrintCenter(); });
 
-  const gbp = document.getElementById("goBeanPdf");
-  if(gbp) gbp.addEventListener("click", ()=>{ printTab = "beanstandet"; printSel.clear(); printDeselected.clear(); navigateTo("print"); });
-  const pbp = document.getElementById("pBeanPdf");
-  if(pbp) pbp.addEventListener("click", async ()=>{ await downloadBeanstandungPdf(list.filter(i=>printSel.has(i.id)), false); printSel.clear(); renderPrintCenter(); });
-  const pbs = document.getElementById("pBeanSub");
-  if(pbs) pbs.addEventListener("click", async ()=>{ await downloadBeanstandungPdf(list.filter(i=>printSel.has(i.id)), true); printSel.clear(); renderPrintCenter(); });
   mainEl.querySelectorAll("[data-ptab]").forEach(b=>b.addEventListener("click", ()=>{ printTab = b.dataset.ptab; printSel.clear(); printDeselected.clear(); renderPrintCenter(); }));
   const all = document.getElementById("pSelAll");
   if(all){
-    const selectable = list.filter(inv => printTab==="neu" || printTab==="beanstandet" || hasOriginal(inv));
+    const selectable = list.filter(inv => printTab==="neu" || hasOriginal(inv));
     all.checked = selectable.length > 0 && selectable.every(i=>printSel.has(i.id));
     all.addEventListener("change", ()=>{ selectable.forEach(i=>{ if(all.checked){ printSel.add(i.id); printDeselected.delete(i.id); } else { printSel.delete(i.id); printDeselected.add(i.id); } }); renderPrintCenter(); });
   }
@@ -6935,6 +6662,8 @@ function renderPrintCenter(){
     abd.addEventListener("dragleave", ()=> abd.classList.remove("hover"));
     abd.addEventListener("drop", e=>{ e.preventDefault(); abd.classList.remove("hover"); run(e.dataTransfer.files); });
   }
+  mainEl.querySelectorAll("[data-beanpdf]").forEach(b => b.addEventListener("click", ()=> exportBeanstandungen(b.dataset.beanpdf === "offen" ? list.filter(i=>!i.beanstandungExport) : list)));
+  mainEl.querySelectorAll("[data-beansub]").forEach(b => b.addEventListener("click", ()=> exportBeanstandungen(list.filter(i => (i.lieferant||"Unbekannt") === b.dataset.beansub), `Beanstandungen_${b.dataset.beansub.replace(/[^\w]+/g,"_")}_${new Date().toISOString().slice(0,10)}.pdf`)));
   const apc = document.getElementById("pApproveClean");
   if(apc) apc.addEventListener("click", async ()=>{
     if(!confirm(`${cleanNeu.length} Rechnung(en) ohne Fehler und ohne Hinweise freigeben?`)) return;
@@ -6986,7 +6715,7 @@ async function openPrintPreview(invs){
       ${invs.map((inv,i)=>`<a href="#" data-pjump="${inv.id}" id="pidx-${inv.id}"><span class="pnum">${i+1}</span><span class="ptxt">${escapeHtml(label(inv))}</span><span class="pst" id="pst-${inv.id}">⏳</span></a>`).join("")}
     </div>
     <div id="ppPages">${invs.map((inv,i)=>`
-      <div class="pinvhead noprint" id="phead-${inv.id}"><span class="pnum">${i+1}</span> ${escapeHtml(label(inv))} <span class="muted" id="pmsg-${inv.id}">– wird geladen…</span></div>
+      <div class="pinvhead noprint" id="phead-${inv.id}"><span class="pnum">${i+1}</span> ${escapeHtml(label(inv))}${wvItems(inv).length ? ` <span class="pill danger">↗ WEITER VERRECHNEN wird gestempelt</span>` : ""} <span class="muted" id="pmsg-${inv.id}">– wird geladen…</span></div>
       <div class="pinvbody" id="pbody-${inv.id}"><div class="ppage ploading"><div>⏳ Original wird geladen…</div></div></div>`).join("")}
     </div>`;
   document.body.appendChild(root);
@@ -7045,7 +6774,7 @@ async function openPrintPreview(invs){
       body.innerHTML = imgs.map((src, n)=>`
         <div class="ppage" data-inv="${inv.id}">
           <img src="${src}" alt="">
-          ${n===0 ? `<div class="pstamp${stampAuftragsNr(inv) || (inv.pruefung && inv.pruefung.stempelText) ? " hasanr" : ""}" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}${anrStampHtml(inv)}${wvStampHtml(inv, pos.x)}</div>` : ""}
+          ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}${wvStampHtml(inv, pos.x)}</div>` : ""}
         </div>`).join("");
       body.querySelectorAll(".pstamp").forEach(wireStamp);
       msg.textContent = `– ${imgs.length} Seite(n), Stempel verschiebbar`;
