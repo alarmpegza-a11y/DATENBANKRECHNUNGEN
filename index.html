@@ -524,6 +524,7 @@ function startDataListeners(){
     setTimeout(cleanupEmptyProjects, 2500);
     setTimeout(autoReparseBroken, 3500);
     setTimeout(()=>loadExtern(), 1200);   // Kalender gleich beim Start laden (fuer Auftragsnummern)
+    setTimeout(kalBackfill, 4500);
     renderFromSnapshot();
   }, (err)=> showDbError("projects", err));
   unsubInvoices = window.fb.watchCollection("invoices", (snap)=>{
@@ -663,9 +664,9 @@ async function cleanProjectNames(){
   const re = /\s+[A-ZÄÖÜa-zäöü][\wäöüÄÖÜ-]*,?\s*den\s+\d{1,2}\.\d{1,2}\.\d{2,4}.*$/;
   for(const p of DB.projects){
     const clean = x => String(x||"").replace(re, "").replace(/\s*(?:A-?\s?)?2\d{2,8}(?:\s\d{1,6})?\s*\/\s*[A-Z]{2,4}\b.*$/i, "").replace(/\(\s*([^)]*?)\s*\)/g, "$1").replace(/\s{2,}/g," ").replace(/[,\s]+$/,"").trim();
-    const lead = String(p.name||"").match(/^\s*(?:A-?)?(2\d{7,8})\s*\/?\s+(?=\D)/);
+    const lead = String(p.name||"").match(/^\s*(?:A-?)?(2\d{7,8})\s*\/?\s+(?=\D)/) || String(p.name||"").match(/\s(?:A-?)?(2\d{7,8})\s*(?:\/\s*[A-Z]{2,4})?\s*$/);
     if(lead && !p.auftragsnummer){ p.auftragsnummer = lead[1]; }
-    const nn = clean(String(p.name||"").replace(/^\s*(?:A-?)?2\d{7,9}\s*\/?\s+(?=\D)/, ""));
+    const nn = clean(String(p.name||"").replace(/^\s*(?:A-?)?2\d{7,9}\s*\/?\s+(?=\D)/, "").replace(/\s(?:A-?)?2\d{7,9}\s*(?:\/\s*[A-Z]{2,4})?\s*$/, ""));
     const na = clean(String(p.address||"").replace(/^\s*(?:A-?)?2\d{7,9}\s*\/?\s+(?=\D)/, ""));
     if(nn && (nn !== p.name || na !== (p.address||"") || lead)){ p.name = nn; p.address = na; try{ await saveProject(p); }catch(e){} }
   }
@@ -2086,6 +2087,7 @@ async function handleFiles(fileList){
       showProg(filesDone < files.length ? `„${(files[filesDone]||{}).name||""}“ wird gelesen…` : "");
     }
   }
+  try{ await kalBackfill(); }catch(e){}
   const secs = Math.round((Date.now() - startedAt) / 1000);
   if(progEl) progEl.innerHTML = `<div class="fd ok" style="font-size:13px;">✓ ${files.length} Datei(en) in ${secs} s verarbeitet. Weiter mit <a href="#" id="goCheck"><b>② Prüfen</b></a>.</div>`;
   const gc = document.getElementById("goCheck");
@@ -4371,14 +4373,18 @@ function kalNrForInvoice(inv){
   return best && dist(best) < 1000*60*60*24*120 ? best.nrs[0] : "";
 }
 // Einmal nach dem Laden des Kalenders: fehlende Auftragsnummern bei Rechnungen und Auftraegen nachtragen
-let kalBackfillDone = false;
+let kalBackfillDone = false, kalBackfillBusy = false;
 async function kalBackfill(){
-  if(kalBackfillDone || !EXT.loaded || !EXT.entries.length) return;
-  kalBackfillDone = true;
+  if(kalBackfillBusy) return;
+  kalBackfillBusy = true;
+  try{
   const byProj = {};
   for(const inv of DB.invoices){
     if(inv.auftragsnummer) continue;
-    const nr = kalNrForInvoice(inv); if(!nr) continue;
+    const p0 = DB.projects.find(x=>x.id===inv.projectId);
+    const pn = p0 ? auftragsNrOf(p0) : "";
+    const nr = kalNrForInvoice(inv) || extNums(pn)[0] || (extDigits(pn).length >= 8 ? extDigits(pn) : "");
+    if(!nr) continue;
     inv.auftragsnummer = nr;
     try{ await window.fb.setDocMerge("invoices", inv.id, { auftragsnummer: nr }); }catch(e){}
     (byProj[inv.projectId] = byProj[inv.projectId] || new Set()).add(nr);
@@ -4387,6 +4393,7 @@ async function kalBackfill(){
     const p = DB.projects.find(x=>x.id===pid);
     if(p && !p.auftragsnummer && set.size === 1){ p.auftragsnummer = Array.from(set)[0]; try{ await saveProject(p); }catch(e){} }
   }
+  }finally{ kalBackfillBusy = false; }
 }
 function extSearchText(inv, p){ return extFor(inv, p).map(e => [e.kunde, e.adresse, e.auftragsNr, e.memo, (e.teams||[]).join(" ")].join(" ")).join(" "); }
 
@@ -4972,10 +4979,11 @@ function renderItemsTable(container, getInv, onChange){
 const ADDR_GENERIC = new Set(["haus","häuser","block","etappe","neubau","umbau","sanierung","überbauung","uberbauung","mfh","efh","objekt","wohnung","wohnungen","baustelle","areal","parzelle","gebäude","gebaude","trakt","stockwerk","haupt"]);
 const STREET_RE = /(strasse|str|weg|gasse|platz|rain|ring|allee|halde|matt|matte|hof|quai|promenade|steig|stich|graben|berg|acker|feld|wiese|park)$/;
 function addrTokens(s){
-  return String(s||"").toLowerCase().replace(/[,.\-\/()"'„“]/g," ").split(/\s+/)
+  return String(s||"").toLowerCase().replace(/([a-zäöüß]{3,})str\.?(?=[\s,\d]|$)/g, "$1strasse").replace(/([a-zäöüß]{3,})\s+str(?:asse|\.)?(?=[\s,\d]|$)/g, "$1strasse").replace(/[,.\-\/()"'„“]/g," ").split(/\s+/)
     .filter(w => w.length>3 && !/^\d/.test(w) && !ADDR_GENERIC.has(w));
 }
 function houseNo(s, street){
+  s = String(s||"").toLowerCase().replace(/([a-zäöüß]{3,})str\.?(?=[\s,\d]|$)/g, "$1strasse");
   const m = String(s||"").toLowerCase().match(new RegExp(street.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + "[\\s,]*(\\d{1,3}[a-z]?)\\b"));
   return m ? m[1] : null;
 }
@@ -4997,7 +5005,21 @@ function tokEq(x, y){
   if(x === y) return true;
   const a = deumlaut(x), b = deumlaut(y);
   if(a === b) return true;
-  return a.length >= 7 && b.length >= 7 && editDist1(a, b);
+  if(a.length >= 7 && b.length >= 7 && editDist1(a, b)) return true;
+  // lange Strassennamen: ein Buchstabe mehr/weniger oder zwei vertauscht (Hübelistrasse / Hüeblistrasse), gleicher Anfang
+  if(a.length >= 10 && b.length >= 10 && a.slice(0,3) === b.slice(0,3) && STREET_RE.test(a) && STREET_RE.test(b)) return levLe1(a, b);
+  return false;
+}
+function levLe1(a, b){
+  if(Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while(i < a.length && j < b.length){
+    if(a[i] === b[j]){ i++; j++; continue; }
+    if(++edits > 1) return false;
+    if(a.length > b.length) i++; else if(b.length > a.length) j++;
+    else if(a[i+1] === b[j] && a[i] === b[j+1]){ i += 2; j += 2; } else { i++; j++; }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
 }
 function scoreAddress(a, b){
   const ta = addrTokens(a), tb = addrTokens(b);
@@ -5511,6 +5533,7 @@ async function addABsToProject(p0, files){
     }catch(err){ console.error(err); bad.push(file.name); }
   }
   await syncHousesWithABs(cur());
+  try{ await kalBackfill(); }catch(e){}
   toast(`${ok} AB(s) bei „${cur().name}“ hinterlegt${bad.length ? ` · nicht übernommen: ${bad.join(", ")}` : ""}.`);
   return ok;
 }
