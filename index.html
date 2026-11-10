@@ -369,6 +369,9 @@
   .pstamp{position:absolute;cursor:grab;touch-action:none;outline:1px dashed rgba(30,90,200,.55);outline-offset:4px;}
   .wvstamp{position:absolute;right:calc(100% + 6%);top:0;width:62%;}
   .wvstamp.below{right:auto;left:0;top:calc(100% + 8%);}
+  .pnr{margin-top:3%;font-family:Verdana,Arial,Helvetica,sans-serif;font-size:clamp(9px,1.45vw,13px);color:#1f2f8f;font-weight:600;line-height:1.35;}
+  .pnr ~ .wvstamp.below{top:calc(100% + 14%);}
+  body.printing .pnr{font-size:3.2mm;}
   tr.wvrow td{background:#fff3f3;}
   .pstamp:active{cursor:grabbing;}
   @media print{
@@ -5832,6 +5835,24 @@ function wvKurztext(inv){
   return (h ? `Regie ${fmtQty(h)} h` : its.map(x=>displayLabel(x.label)).slice(0,2).join(", ")) || "";
 }
 function wvTag(inv){ return wvItems(inv).length ? ` <span class="pill danger" title="An Kunde weiter verrechnen: ${escapeAttr(wvKurztext(inv))}">↗ weiter verr. CHF ${formatCHF(wvSumme(inv))}</span>` : ""; }
+// Auftrags-/AB-Nr. unter dem Stempel – nur wenn sie NICHT auf der Rechnung steht
+function stempelNummern(inv){
+  const p = DB.projects.find(x=>x.id===inv.projectId);
+  const auf = [inv.auftragsnummer, kalNrForInvoice(inv), p && auftragsNrOf(p)].map(x => extNums(x)[0]).find(Boolean) || "";
+  const ab = p ? ((p.abs||[]).find(a => !a.nachtrag && a.nr) || (p.abs||[]).find(a => a.nr) || {}).nr || "" : "";
+  const txt = String(inv.rawText || "").replace(/[\s'’.\-\/]/g, "");
+  const steht = n => n && txt && txt.includes(n);
+  const out = [];
+  const fmtA = n => n.length === 8 ? "A-" + n : n;   // A-Nummern sind 8-stellig (A-26096888)
+  if(auf && !steht(auf) && auf !== ab) out.push(`Auftrags-Nr. ${fmtA(auf)}`);
+  if(ab && !steht(ab) && !steht(auf)) out.push(`AB-Nr. ${ab}`);
+  if(!out.length && auf && !steht(auf)) out.push(`Auftrags-Nr. ${fmtA(auf)}`);
+  return out;
+}
+function stempelNrHtml(inv){
+  const n = stempelNummern(inv);
+  return n.length ? `<div class="pnr">${n.map(escapeHtml).join("<br>")}</div>` : "";
+}
 // Roter Zusatzstempel neben dem Eingangsstempel
 function wvStampHtml(inv, posX){
   if(!wvItems(inv).length) return "";
@@ -6865,7 +6886,7 @@ async function openPrintPreview(invs){
       ${invs.map((inv,i)=>`<a href="#" data-pjump="${inv.id}" id="pidx-${inv.id}"><span class="pnum">${i+1}</span><span class="ptxt">${escapeHtml(label(inv))}</span><span class="pst" id="pst-${inv.id}">⏳</span></a>`).join("")}
     </div>
     <div id="ppPages">${invs.map((inv,i)=>`
-      <div class="pinvhead noprint" id="phead-${inv.id}"><span class="pnum">${i+1}</span> ${escapeHtml(label(inv))}${wvItems(inv).length ? ` <span class="pill danger">↗ WEITER VERRECHNEN wird gestempelt</span>` : ""} <span class="muted" id="pmsg-${inv.id}">– wird geladen…</span></div>
+      <div class="pinvhead noprint" id="phead-${inv.id}"><span class="pnum">${i+1}</span> ${escapeHtml(label(inv))}${wvItems(inv).length ? ` <span class="pill danger">↗ WEITER VERRECHNEN wird gestempelt</span>` : ""}${stempelNummern(inv).length ? ` <span class="pill neutral">+ ${escapeHtml(stempelNummern(inv).join(" · "))} unter Stempel</span>` : ""} <span class="muted" id="pmsg-${inv.id}">– wird geladen…</span></div>
       <div class="pinvbody" id="pbody-${inv.id}"><div class="ppage ploading"><div>⏳ Original wird geladen…</div></div></div>`).join("")}
     </div>`;
   document.body.appendChild(root);
@@ -6924,7 +6945,7 @@ async function openPrintPreview(invs){
       body.innerHTML = imgs.map((src, n)=>`
         <div class="ppage" data-inv="${inv.id}">
           <img src="${src}" alt="">
-          ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}${wvStampHtml(inv, pos.x)}</div>` : ""}
+          ${n===0 ? `<div class="pstamp" data-stamp="${inv.id}" style="left:${pos.x}%;top:${pos.y}%;width:${STAMP_WIDTH_PCT}%;">${stampSvg(eingangsDatum(inv), matPreisVermerk(inv))}${stempelNrHtml(inv)}${wvStampHtml(inv, pos.x)}</div>` : ""}
         </div>`).join("");
       body.querySelectorAll(".pstamp").forEach(wireStamp);
       msg.textContent = `– ${imgs.length} Seite(n), Stempel verschiebbar`;
