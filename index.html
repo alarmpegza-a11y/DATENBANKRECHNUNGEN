@@ -1215,6 +1215,11 @@ function parseInvoiceText(text){
     if(m) result.objekt = sanitizeObjekt(m[1]);
   }
   if(!result.objekt){
+    m = text.match(/Baustelle\s*:?[ \t]+([A-ZÄÖÜ][A-Za-zÄÖÜäöüß.\-]*(?:str(?:asse|\.)?|weg|gasse|platz|rain|ring|halde|matte?|hof|allee|park|steig|strasse)[ \t]*\d{1,4}[a-z]?\b[^\n]*)/i)
+      || text.match(/Baustelle\s*:?[ \t]+([A-ZÄÖÜ][A-Za-zÄÖÜäöüß.\-]+(?:[ \t]+[A-Za-zÄÖÜäöüß.\-]+)?[ \t]+\d{1,4}[a-z]?[ \t,]+[A-ZÄÖÜ][^\n]*)/);
+    if(m) result.objekt = sanitizeObjekt(m[1]);
+  }
+  if(!result.objekt){
     m = text.match(/Baustelle\s+[\d\/A-Za-z.\-]+\s*\n?\s*([^\n]*?(?<!\d)\d{4}\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,30}(?:[ \t]+[A-ZÄÖÜ][A-Za-zÄÖÜäöü\-\.]{1,20})?)/i);
     if(!m) m = text.match(/Baustelle\s+[\d\/A-Za-z.\-]+\s*\n?\s*([^\n]+)/i);
     if(m) result.objekt = sanitizeObjekt(m[1]);
@@ -1799,8 +1804,16 @@ function buildProjectName(parsed){
   return "Unbenannter Auftrag";
 }
 
+// alle bekannten Auftrags-/AB-Nummern eines Auftrags (Auftrag, ABs, Rechnungen, Kalender)
+function projNums(p){
+  const raw = [p.auftragsnummer, ...(p.abs||[]).flatMap(a=>[a.nr, a.anr]), ...DB.invoices.filter(i=>i.projectId===p.id).map(i=>i.auftragsnummer)];
+  if(typeof extFor === "function" && EXT && EXT.entries && EXT.entries.length) extFor(null, p).forEach(e => raw.push(...(e.nrs||[])));
+  return new Set(raw.flatMap(x => extNums(x).concat(extDigits(x).length >= 8 && extDigits(x).length <= 9 ? [extDigits(x)] : [])));
+}
 function findMatchingProject(parsed){
   if(!parsed.objekt && !parsed.auftragsnummer) return null;
+  { const want = extNums(parsed.auftragsnummer).concat(extDigits(parsed.auftragsnummer).length >= 8 && extDigits(parsed.auftragsnummer).length <= 9 ? [extDigits(parsed.auftragsnummer)] : []);
+    if(want.length){ const hit = DB.projects.find(p => { const s = projNums(p); return want.some(n => s.has(n)); }); if(hit) return hit; } }
   const objLower = (parsed.objekt||"").toLowerCase();
   if(parsed.auftragsnummer){
     const an = String(parsed.auftragsnummer).replace(/[^0-9A-Za-z]/g,"");
@@ -3191,7 +3204,11 @@ function renderInvoiceEditPanel(panel, invoiceId){
         <label class="field"><span>Haus</span><input type="text" data-ef="haus" value="${escapeAttr(inv.haus||"")}" placeholder="z.B. 1, A"></label>
         <label class="field"><span>Bezahlt am</span><input type="date" data-ef="bezahltAm" value="${escapeAttr(inv.bezahltAm||"")}"></label>
       </div>
-      ${inv.objekt ? `<div class="muted" style="font-size:12px;margin:-4px 0 8px 0;">Objekt laut Rechnung: ${escapeHtml(inv.objekt)}</div>` : ""}
+      <div class="row" style="gap:10px;flex-wrap:wrap;margin:-2px 0 8px 0;">
+        <label class="field" style="flex:2;min-width:240px;margin:0;"><span>Objekt / Adresse (laut Rechnung)</span><input type="text" data-ef="objekt" value="${escapeAttr(inv.objekt||"")}"></label>
+        <label class="field" style="flex:1;min-width:150px;margin:0;"><span>Auftragsnr.</span><input type="text" data-ef="auftragsnummer" value="${escapeAttr(inv.auftragsnummer||"")}"></label>
+        <label class="field" style="flex:2;min-width:240px;margin:0;"><span>Gehört zu Auftrag</span><select data-efproj>${DB.projects.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(p=>`<option value="${p.id}" ${p.id===inv.projectId?"selected":""}>${escapeHtml(p.name)}</option>`).join("")}<option value="__neu">＋ Neuer Auftrag aus Objektadresse</option></select></label>
+      </div>
       <div class="section-title">Positionen</div>
       <div class="itemsSlot"></div>
       <div class="pruefSlot" style="margin-top:14px;"></div>
@@ -3202,6 +3219,19 @@ function renderInvoiceEditPanel(panel, invoiceId){
     </div>
   `;
   const pruefSlot = panel.querySelector(".pruefSlot");
+  const ps2 = panel.querySelector("[data-efproj]");
+  if(ps2) ps2.addEventListener("change", async ()=>{
+    const i = getInv(); if(!i) return;
+    const old = i.projectId;
+    let pid = ps2.value;
+    if(pid === "__neu"){
+      const nm = (i.objekt || "").trim(); if(!nm){ toast("Bitte zuerst die Objektadresse eintragen."); ps2.value = old; return; }
+      pid = await createProject({ name: stripHaus(nm), address: stripHaus(nm), auftragsnummer: i.auftragsnummer || "", soll:{}, haeuser:[] });
+    }
+    i.projectId = pid; await saveInvoice(i);
+    if(old && old !== pid) await removeProjectIfEmpty(old);
+    toast("Rechnung verschoben."); render();
+  });
   const ks = panel.querySelector("[data-kalsearch]");
   if(ks) ks.addEventListener("click", ()=> openKalSucheModal(getInv(), ()=> render()));
   const rp = panel.querySelector("[data-reparse]");
@@ -3253,7 +3283,10 @@ function renderInvoices(){
   const chip = (k, label, cls) => `<button class="tab ${invFilter===k?"active":""}" data-invf="${k}">${label} <span class="${cls||"muted"}" style="margin-left:4px;">${k==="alle" ? DB.invoices.length : cnt(k)}</span></button>`;
   mainEl.innerHTML = `
     <h1>Alle Rechnungen</h1>
-    <p class="subtitle">${DB.invoices.length} Rechnung(en) über alle Aufträge. Auffällige Rechnungen stehen zuoberst.</p>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+      <p class="subtitle" style="margin:0;">${DB.invoices.length} Rechnung(en) über alle Aufträge. Auffällige Rechnungen stehen zuoberst.</p>
+      <button class="primary" id="mergeAnalyse">🔗 Aufträge analysieren &amp; zusammenführen</button>
+    </div>
     <div class="tabs">
       ${chip("abkl","📌 Abklärung offen")}
       ${chip("alle","Alle")}
@@ -3287,6 +3320,7 @@ function renderInvoices(){
     </div>
   `;
   mainEl.querySelectorAll("[data-invf]").forEach(b=>b.addEventListener("click", ()=>{ invFilter = b.dataset.invf; renderInvoices(); }));
+  document.getElementById("mergeAnalyse").addEventListener("click", ()=>{ loadExtern(); openMergeAnalysis(); });
   mainEl.querySelectorAll("[data-abkl]").forEach(b=>b.addEventListener("click", async e=>{ e.stopPropagation(); const i = DB.invoices.find(x=>x.id===b.dataset.abkl); if(i && await toggleAbklaerung(i)) renderInvoices(); }));
   addSearchBox(document.getElementById("searchSlot"), "Rechnungen suchen…", (q)=>{
     document.querySelectorAll("#invTableBody tr").forEach(el=>{
@@ -3501,6 +3535,8 @@ function normMaterial(s){
   if(/aqua\s*-?pan/.test(t)) return "Aquapanel";
   const m = t.match(/(\d)\s*[x×]\s*(\d{1,2}(?:[.,]\d)?)\s*(?:mm)?(?!\d)/);
   if(m) return `${m[1]}x${m[2].replace(",",".")}mm`;
+  const one = t.match(/(?:^|[^\dx×.,])(12[.,]5|15|18|20|25)\s*mm\b/);
+  if(one && /beplank|gips|gkb|platte|fermacell|diamant/.test(t)) return `1x${one[1].replace(",",".")}mm`;
   return null;
 }
 
@@ -5624,7 +5660,8 @@ function wireTodos(container, todos, rerender){
   }));
 }
 
-async function mergeProjects(src, target){
+async function mergeProjects(src, target, opts){
+  opts = opts || {};
   const hint = (p, other)=>{
     let h = hausFromText(p.address) || hausFromText(p.name);
     if(!h){
@@ -5636,7 +5673,7 @@ async function mergeProjects(src, target){
     }
     return h;
   };
-  const srcHaus = hint(src, target), tgtHaus = hint(target, src);
+  const srcHaus = opts.noHaus ? "" : hint(src, target), tgtHaus = opts.noHaus ? "" : hint(target, src);
   for(const inv of DB.invoices.filter(i=>i.projectId===src.id)){
     inv.projectId = target.id;
     if(!inv.haus && srcHaus) inv.haus = srcHaus;
@@ -5649,12 +5686,93 @@ async function mergeProjects(src, target){
     target.abs = (target.abs||[]).map(a=> a.haus ? a : { ...a, haus: tgtHaus });
   }
   const srcAbs = (src.abs||[]).map(a=> a.haus || !srcHaus ? a : { ...a, haus: srcHaus });
-  const nrs = new Set(srcAbs.map(a=>a.nr));
-  target.abs = (target.abs||[]).filter(a=>!nrs.has(a.nr)).concat(srcAbs);
+  const keys = new Set(srcAbs.map(abKey));
+  target.abs = (target.abs||[]).filter(a=>!keys.has(abKey(a))).concat(srcAbs);
+  if(!target.auftragsnummer && src.auftragsnummer) target.auftragsnummer = src.auftragsnummer;
+  if(opts.name){ target.name = opts.name; target.address = opts.name; }
   target.haeuser = Array.from(new Set([...(target.haeuser||[]), ...(src.haeuser||[]), srcHaus, tgtHaus].filter(Boolean)));
   if(srcHaus || tgtHaus){ target.name = stripHaus(target.name); target.address = stripHaus(target.address||""); }
   await saveProject(target);
   await deleteProjectDoc(src.id);
+}
+
+/* ============================= AUFTRAEGE ANALYSIEREN & ZUSAMMENFUEHREN ============================= */
+function projectInvTotal(p){ return DB.invoices.filter(i=>i.projectId===p.id).reduce((s,i)=>s+(num(i.total)||0),0); }
+// Gruppen von Auftraegen, die zusammengehoeren: gleiche Auftragsnummer (sicher) oder gleiche Adresse ohne widersprechende Nummer
+function findMergeGroups(){
+  const ps = DB.projects.slice();
+  const nums = new Map(ps.map(p => [p.id, projNums(p)]));
+  const parent = new Map(ps.map(p => [p.id, p.id]));
+  const find = x => { while(parent.get(x) !== x){ parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+  const why = {};
+  for(let i = 0; i < ps.length; i++) for(let j = i+1; j < ps.length; j++){
+    const a = ps[i], b = ps[j], na = nums.get(a.id), nb = nums.get(b.id);
+    if((a.notDup||[]).includes(b.id) || (b.notDup||[]).includes(a.id)) continue;
+    const shared = [...na].filter(n => nb.has(n));
+    let reason = "";
+    if(shared.length) reason = "nr:" + shared[0];
+    else if(!(na.size && nb.size) && projectAddrScore(a.address || a.name, b) >= 3) reason = "adr";
+    if(!reason) continue;
+    parent.set(find(a.id), find(b.id));
+    why[a.id + "|" + b.id] = reason;
+  }
+  const groups = {};
+  ps.forEach(p => { const r = find(p.id); (groups[r] = groups[r] || []).push(p); });
+  return Object.values(groups).filter(g => g.length > 1).map(g => {
+    const reasons = Object.entries(why).filter(([k]) => g.some(p => k.startsWith(p.id + "|")) ).map(([,v]) => v);
+    const sicher = reasons.some(r => r.startsWith("nr:"));
+    const nr = (reasons.find(r => r.startsWith("nr:")) || "").slice(3);
+    // Ziel: Auftrag mit AB, sonst mit den meisten Rechnungen
+    const target = g.slice().sort((x,y) => ((y.abs||[]).length - (x.abs||[]).length) || (DB.invoices.filter(i=>i.projectId===y.id).length - DB.invoices.filter(i=>i.projectId===x.id).length))[0];
+    // bester Name: Kalenderadresse, sonst AB-Baustelle, sonst laengster Name
+    const kal = nr && EXT.entries.find(e => (e.nrs||[]).includes(nr) && e.adresse);
+    const abB = g.flatMap(p => (p.abs||[]).map(a => a.baustelle)).find(Boolean);
+    const longest = g.map(p => p.name).sort((x,y) => y.length - x.length)[0];
+    const name = [kal && kal.adresse, abB, ...g.map(p => p.name)].filter(Boolean).sort((x,y) => (/\d{4}/.test(y) - /\d{4}/.test(x)) || (y.length - x.length))[0] || longest;
+    return { projects: g, target, sicher, nr, name };
+  });
+}
+function openMergeAnalysis(){
+  const groups = findMergeGroups();
+  if(!groups.length){ toast("Keine doppelt erfassten Aufträge gefunden. 👍"); return; }
+  showModal(`<h2>🔗 Doppelt erfasste Aufträge</h2>
+    <p class="subtitle" style="margin-bottom:8px;">${groups.length} Gruppe(n) gefunden. <b>Sicher</b> = gleiche Auftragsnummer. <b>Prüfen</b> = gleiche Adresse ohne Auftragsnummer – bitte kontrollieren. Ausgewählte werden zu <b>einem</b> Auftrag zusammengeführt (Rechnungen, ABs und Häuser bleiben erhalten).</p>
+    <div style="max-height:60vh;overflow:auto;">${groups.map((g, k) => `
+      <label class="card" style="display:block;padding:10px 12px;margin-bottom:8px;cursor:pointer;border-left:4px solid ${g.sicher ? "var(--ok)" : "var(--warn)"};">
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <input type="checkbox" data-mg="${k}" ${g.sicher ? "checked" : ""} style="width:auto;margin-top:3px;">
+          <div style="flex:1;">
+            <div><span class="pill ${g.sicher ? "ok" : "warn"}">${g.sicher ? "Sicher · Auftrag " + escapeHtml(g.nr) : "Prüfen · gleiche Adresse"}</span> → <b>${escapeHtml(g.name)}</b></div>
+            <ul style="margin:6px 0 0 0;padding-left:18px;font-size:12.5px;">${g.projects.map(p => `<li>${escapeHtml(p.name)} <span class="muted">· ${DB.invoices.filter(i=>i.projectId===p.id).length} Rechnung(en) · CHF ${formatCHF(projectInvTotal(p))}${(p.abs||[]).length ? " · AB" : ""}</span></li>`).join("")}</ul>
+            <div class="muted" style="font-size:12px;margin-top:4px;">Total danach: <b>CHF ${formatCHF(g.projects.reduce((s,p)=>s+projectInvTotal(p),0))}</b></div>
+          </div>
+        </div>
+      </label>`).join("")}</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;"><button id="mgCancel">Abbrechen</button><button class="primary" id="mgGo">🔗 Ausgewählte zusammenführen</button></div>`);
+  document.getElementById("mgCancel").addEventListener("click", closeModal);
+  document.getElementById("mgGo").addEventListener("click", async ()=>{
+    const pick = [...document.querySelectorAll("[data-mg]")].filter(c=>c.checked).map(c=>groups[+c.dataset.mg]);
+    if(!pick.length){ toast("Nichts ausgewählt."); return; }
+    closeModal(); toast("Wird zusammengeführt…");
+    let n = 0;
+    for(const g of pick){
+      for(const p of g.projects){ if(p.id === g.target.id) continue; await mergeProjects(p, g.target, { noHaus: g.sicher, name: g.name }); n++; }
+      if(g.sicher && g.nr && !g.target.auftragsnummer){ g.target.auftragsnummer = g.nr; await saveProject(g.target); }
+    }
+    toast(`${n} Auftrag/Aufträge zusammengeführt.`); render();
+  });
+}
+// Automatisch: Auftraege mit gleicher Auftragsnummer sofort zusammenfuehren (nach dem Hochladen und beim Start)
+let autoMergeRunning = false;
+async function autoMergeSameNumber(){
+  if(autoMergeRunning || !hasPerm("deleteAuftraege")) return;
+  autoMergeRunning = true;
+  try{
+    for(const g of findMergeGroups().filter(x => x.sicher)){
+      for(const p of g.projects){ if(p.id !== g.target.id) await mergeProjects(p, g.target, { noHaus: true, name: g.name }); }
+    }
+  }catch(e){ console.warn(e); }
+  autoMergeRunning = false;
 }
 
 /* ============================= NACHRICHTEN & TEILEN ============================= */
