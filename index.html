@@ -2118,7 +2118,7 @@ async function appendReviewCard(parsed){
     objekt: parsed.objekt || "",
     sammel: parsed.sammel || null,
     ausmass: parsed.ausmass || null,
-    auftragsnummer: String(parsed.auftragsnummer || auftragsNrFromText(parsed._rawText) || kalNrForInvoice({ objekt: parsed.objekt, lieferant: parsed.lieferant, datum: parsed.datum, projectId }) || auftragsNrOf(DB.projects.find(p=>p.id===projectId)) || ""),
+    auftragsnummer: String([parsed.auftragsnummer, auftragsNrFromText(parsed._rawText)].find(validPENr) || kalNrForInvoice({ objekt: parsed.objekt, lieferant: parsed.lieferant, datum: parsed.datum, projectId }) || auftragsNrOf(DB.projects.find(p=>p.id===projectId)) || ""),
     haus: detectInvoiceHaus({ rawText: parsed._rawText, objekt: parsed.objekt, auftragsnummer: parsed.auftragsnummer }, projectId),
     rawText: String(parsed._rawText||"").slice(0, 30000),
     filename: parsed._filename || "",
@@ -3208,7 +3208,12 @@ function renderInvoiceEditPanel(panel, invoiceId){
       </div>
       <div class="row" style="gap:10px;flex-wrap:wrap;margin:-2px 0 8px 0;">
         <label class="field" style="flex:2;min-width:240px;margin:0;"><span>Objekt / Adresse (laut Rechnung)</span><input type="text" data-ef="objekt" value="${escapeAttr(inv.objekt||"")}"></label>
-        <label class="field" style="flex:1;min-width:150px;margin:0;"><span>Auftragsnr.</span><input type="text" data-ef="auftragsnummer" value="${escapeAttr(inv.auftragsnummer||"")}"></label>
+        <label class="field" style="flex:1;min-width:150px;margin:0;"><span>Auftragsnr.</span><input type="text" data-ef="auftragsnummer" value="${escapeAttr(inv.auftragsnummer||"")}">
+          ${(() => { const k = kalNrForInvoice(inv), pk = extNums(auftragsNrOf(DB.projects.find(x=>x.id===inv.projectId)))[0] || "";
+            const sug = k || pk;
+            if(sug && sug !== extDigits(inv.auftragsnummer)) return `<button type="button" class="small" data-takenr="${escapeAttr(sug)}" style="margin-top:4px;">${k ? "📅" : "📑"} ${escapeHtml(sug)} übernehmen</button>`;
+            if(!sug && !validPENr(inv.auftragsnummer)) return `<span class="muted" style="font-size:11px;">${EXT.loaded ? `Kein Kalendereintrag für „${escapeHtml(shortText(inv.objekt||"",40))}“ gefunden` : "Kalender noch nicht geladen"}</span>`;
+            return ""; })()}</label>
         <label class="field" style="flex:2;min-width:240px;margin:0;"><span>Gehört zu Auftrag</span><select data-efproj>${DB.projects.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(p=>`<option value="${p.id}" ${p.id===inv.projectId?"selected":""}>${escapeHtml(p.name)}</option>`).join("")}<option value="__neu">＋ Neuer Auftrag aus Objektadresse</option></select></label>
       </div>
       <div class="section-title">Positionen</div>
@@ -3221,6 +3226,8 @@ function renderInvoiceEditPanel(panel, invoiceId){
     </div>
   `;
   const pruefSlot = panel.querySelector(".pruefSlot");
+  const tk = panel.querySelector("[data-takenr]");
+  if(tk) tk.addEventListener("click", async ()=>{ const i = getInv(); if(!i) return; i.auftragsnummer = tk.dataset.takenr; await saveInvoice(i); toast(`Auftragsnr. ${i.auftragsnummer} übernommen.`); render(); });
   const ps2 = panel.querySelector("[data-efproj]");
   if(ps2) ps2.addEventListener("change", async ()=>{
     const i = getInv(); if(!i) return;
@@ -4287,6 +4294,7 @@ async function exportBeanstandungen(invs, name){
 /* ============================= AUFTRAGSVERZEICHNIS AUS KALENDER / MONTAGE ============================= */
 let EXT = { entries: [], loaded: false, loading: false, at: null, errors: [] };
 const extDigits = s => String(s||"").replace(/\/[A-Za-z]{1,5}\s*$/,"").replace(/\D/g,"");
+function validPENr(x){ return extNums(x).length > 0; }
 function extNums(s){ return Array.from(new Set((String(s||"").match(/(?<!\d)2\d{7,8}(?!\d)/g) || []))); }
 // Auftragsnummer eines Auftrags: zuerst aus Kalender/Montage, sonst aus Auftrag bzw. AB
 function auftragsNrOf(p){
@@ -4380,18 +4388,19 @@ async function kalBackfill(){
   try{
   const byProj = {};
   for(const inv of DB.invoices){
-    if(inv.auftragsnummer) continue;
+    if(validPENr(inv.auftragsnummer)) continue;   // nur echte PE-Nummern zaehlen (keine Kunden-/Sub-Referenzen)
     const p0 = DB.projects.find(x=>x.id===inv.projectId);
     const pn = p0 ? auftragsNrOf(p0) : "";
     const nr = kalNrForInvoice(inv) || extNums(pn)[0] || (extDigits(pn).length >= 8 ? extDigits(pn) : "");
     if(!nr) continue;
+    const subRef = inv.auftragsnummer && !validPENr(inv.auftragsnummer) ? inv.auftragsnummer : "";
     inv.auftragsnummer = nr;
-    try{ await window.fb.setDocMerge("invoices", inv.id, { auftragsnummer: nr }); }catch(e){}
+    try{ await window.fb.setDocMerge("invoices", inv.id, { auftragsnummer: nr, ...(subRef ? { referenzSub: subRef } : {}) }); }catch(e){}
     (byProj[inv.projectId] = byProj[inv.projectId] || new Set()).add(nr);
   }
   for(const [pid, set] of Object.entries(byProj)){
     const p = DB.projects.find(x=>x.id===pid);
-    if(p && !p.auftragsnummer && set.size === 1){ p.auftragsnummer = Array.from(set)[0]; try{ await saveProject(p); }catch(e){} }
+    if(p && !validPENr(p.auftragsnummer) && set.size === 1){ p.auftragsnummer = Array.from(set)[0]; try{ await saveProject(p); }catch(e){} }
   }
   }finally{ kalBackfillBusy = false; }
 }
