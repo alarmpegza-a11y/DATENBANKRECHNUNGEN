@@ -899,7 +899,7 @@ function updateSidebarForUser(){
     <div style="font-size:11.5px;opacity:.7;">${escapeHtml(currentUser.email)}</div>
     <div style="font-size:11px;opacity:.55;margin-bottom:8px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
     <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
-    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 10.11.2026 · Nr. unter Stempel</div>
+    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 12.11.2026 · Elemente = VW+TW</div>
   `;
   document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
@@ -3904,8 +3904,17 @@ function getSoll(p, cat, haus){
     const man = p && p.soll && p.soll[cat];
     if(man && num(man.menge)!=null) return { menge:+man.menge, quelle:"manuell" };
   }
-  const a = abSoll(p, haus)[cat];
+  const all = abSoll(p, haus);
+  const a = all[cat];
   if(a) return { menge: roundNum(a.menge), quelle: haus ? "AB "+haus : "AB" };
+  // "Element" ohne VW/TW-Angabe: gegen alle Vorwand- + Trennwand-Elemente der AB pruefen
+  // (abzueglich der Elemente, die bereits ausdruecklich als VW/TW verrechnet wurden)
+  if(cat === "Elemente" && p && (all.VW || all.TW)){
+    const vw = all.VW ? num(all.VW.menge) || 0 : 0, tw = all.TW ? num(all.TW.menge) || 0 : 0;
+    const schon = DB.invoices.filter(i => i.projectId === p.id && isActiveInvoice(i) && (!haus || normHaus(i.haus) === normHaus(haus)))
+      .reduce((s2, i) => s2 + (i.items||[]).filter(x => x.category === "VW" || x.category === "TW").reduce((q, x) => q + (num(x.menge)||0), 0), 0);
+    return { menge: roundNum(Math.max(0, vw + tw - schon)), quelle: `${haus ? "AB "+haus : "AB"}: ${fmtQty(vw)} VW + ${fmtQty(tw)} TW${schon ? `, davon ${fmtQty(schon)} schon als VW/TW verrechnet` : ""}` };
+  }
   return null;
 }
 function abMaterials(p, haus){ return (abSoll(p, haus).Beplankung || {}).materials || []; }
