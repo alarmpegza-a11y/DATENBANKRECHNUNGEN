@@ -899,7 +899,7 @@ function updateSidebarForUser(){
     <div style="font-size:11.5px;opacity:.7;">${escapeHtml(currentUser.email)}</div>
     <div style="font-size:11px;opacity:.55;margin-bottom:8px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
     <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
-    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 12.11.2026 · Elemente = VW+TW</div>
+    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 12.11.2026 b · Elemente in VW/TW-Zeile</div>
   `;
   document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
@@ -2740,7 +2740,7 @@ function projectControlRows(p, haus){
   const fold = abNebenFold(p, haus);
   const cats = new Set(Object.keys(ab));
   if(haus===undefined) Object.keys(p.soll||{}).forEach(k=>{ if(p.soll[k] && num(p.soll[k].menge)!=null) cats.add(k); });
-  const ist = {};
+  const ist = {}, generic = [];
   invs.forEach(inv=>{ const mainCat = invoiceMainCat(inv); (inv.items||[]).forEach(it=>{
     if(it.category==="Sonstiges" && !itemAssigned(inv, it)) return;
     // Pauschale auf derselben Rechnung -> zur Hauptleistung zaehlen (nur CHF, nicht die Menge)
@@ -2749,11 +2749,28 @@ function projectControlRows(p, haus){
       if(num(it.preis)!=null){ m.chf += +it.preis; m.nebenChf = (m.nebenChf||0) + +it.preis; }
       return;
     }
+    // "Element" ohne VW/TW-Angabe: spaeter in die VW-/TW-Zeile der AB einrechnen
+    if(it.category === "Elemente" && (ab.VW || ab.TW)){ generic.push({ inv, it }); return; }
     const o = ist[it.category] || (ist[it.category] = { menge:0, chf:0, subs:{} });
     if(num(it.menge)!=null) o.menge += +it.menge;
     if(num(it.preis)!=null) o.chf += +it.preis;
     const s = inv.lieferant || "?"; o.subs[s] = (o.subs[s]||0) + 1;
   }); });
+  // allgemeine Elemente verteilen: Preis = VW-/TW-Tarif des Subs -> dorthin, sonst in die Zeile mit dem meisten offenen Soll
+  generic.forEach(({ inv, it }) => {
+    const sub = getSubFor(inv.lieferant);
+    const tf = (sub && sub.tarife || []).filter(t => (t.category === "VW" || t.category === "TW") && num(t.preis) != null && Math.abs(+t.preis - (num(it.ep)||-1)) < 0.01).map(t => t.category);
+    let cat = tf.length === 1 ? tf[0] : null;
+    if(!cat){
+      const rest = c => ab[c] ? (num(ab[c].menge)||0) - ((ist[c] && ist[c].menge) || 0) : -Infinity;
+      cat = rest("VW") >= rest("TW") ? "VW" : "TW";
+    }
+    const o = ist[cat] || (ist[cat] = { menge:0, chf:0, subs:{} });
+    if(num(it.menge)!=null) o.menge += +it.menge;
+    if(num(it.preis)!=null) o.chf += +it.preis;
+    o.generic = (o.generic||0) + (num(it.menge)||0);
+    const sname = inv.lieferant || "?"; o.subs[sname] = (o.subs[sname]||0) + 1;
+  });
   Object.keys(ist).forEach(k=>cats.add(k));
   if(!ist.Sonstiges) cats.delete("Sonstiges");
   const order = (DB.categories||DEFAULT_CATEGORIES).map(c=>c.key);
