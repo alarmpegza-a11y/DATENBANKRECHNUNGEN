@@ -899,7 +899,7 @@ function updateSidebarForUser(){
     <div style="font-size:11.5px;opacity:.7;">${escapeHtml(currentUser.email)}</div>
     <div style="font-size:11px;opacity:.55;margin-bottom:8px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
     <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
-    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 13.11.2026 · Doppelte Objekte (Adresse)</div>
+    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 13.11.2026 b · Positionen "1 UG / 2x TW"</div>
   `;
   document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
@@ -1321,6 +1321,7 @@ function parseInvoiceText(text){
     let tri = line.match(/^(.*?\S)\s+(-?\d[\d']*(?:[.,]\d+)?)\s*(m2|m²|m3|m³|stk\.?|st\.?|std\.?|stunden|ore|h|app\.?|psch\.?|pauschal|le|kg|lt)?\s+(?:CHF\s*)?(-?[\d']+[.,]\d{2})\s+(?:CHF\s*)?(-?[\d']+[.,]\d{2})\s*(?:CHF)?\s*$/i);
     // keine Ausmass-Zeilen ("4.OG 3.00 2.75 0.30 1 2.48 150.00 371.25"): Beschreibung braucht Text und hoechstens eine Dezimalzahl
     if(tri && /^\d{1,2}\s+[\d.,\-\s]{3,}$/.test(tri[1].trim())) { /* Pos + Datum, Text kommt darunter */ }
+    else if(tri && /^\d{1,2}\s+[A-ZÄÖÜa-zäöü0-9.]{1,8}(?:\s+[A-ZÄÖÜa-zäöü0-9.]{1,6})?$/.test(tri[1].trim())) { /* Pos + Stockwerk/Haus ("1 UG", "1 Haus B"), Text kommt darunter */ }
     else if(tri && (!/[A-Za-zÄÖÜäöü]{3,}/.test(tri[1]) || (tri[1].replace(/\b\d{1,2}(?:[.,]\d{1,2})*[.,]\d{1,2}[.,]\d{2,4}\b/g, "").replace(/\b\d{1,2}\.\d{1,2}\.?\d{2,4}\b/g, "").match(/\d+[.,]\d+/g)||[]).length >= 2)) tri = null;
     if(tri){
       const m0 = parseSwissNumber(tri[2]), e0 = parseSwissNumber(tri[4]), t0 = parseSwissNumber(tri[5]);
