@@ -899,7 +899,7 @@ function updateSidebarForUser(){
     <div style="font-size:11.5px;opacity:.7;">${escapeHtml(currentUser.email)}</div>
     <div style="font-size:11px;opacity:.55;margin-bottom:8px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
     <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
-    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 12.11.2026 b · Elemente in VW/TW-Zeile</div>
+    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 13.11.2026 · Doppelte Objekte (Adresse)</div>
   `;
   document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
@@ -5018,7 +5018,7 @@ function renderItemsTable(container, getInv, onChange){
 const ADDR_GENERIC = new Set(["haus","häuser","block","etappe","neubau","umbau","sanierung","überbauung","uberbauung","mfh","efh","objekt","wohnung","wohnungen","baustelle","areal","parzelle","gebäude","gebaude","trakt","stockwerk","haupt"]);
 const STREET_RE = /(strasse|str|weg|gasse|platz|rain|ring|allee|halde|matt|matte|hof|quai|promenade|steig|stich|graben|berg|acker|feld|wiese|park)$/;
 function addrTokens(s){
-  return String(s||"").toLowerCase().replace(/([a-zäöüß]{3,})str\.?(?=[\s,\d]|$)/g, "$1strasse").replace(/([a-zäöüß]{3,})\s+str(?:asse|\.)?(?=[\s,\d]|$)/g, "$1strasse").replace(/[,.\-\/()"'„“]/g," ").split(/\s+/)
+  return String(s||"").toLowerCase().replace(/·\s*auftrag\b.*$/,"").replace(/([a-zäöüß])-(?=[a-zäöüß])/g, "$1 ").replace(/([a-zäöüß]{3,})str\.?(?=[\s,\d]|$)/g, "$1strasse").replace(/([a-zäöüß]{3,})\s+str(?:asse|\.)?(?=[\s,\d]|$)/g, "$1strasse").replace(/[,.\-\/()"'„“]/g," ").split(/\s+/)
     .filter(w => w.length>3 && !/^\d/.test(w) && !ADDR_GENERIC.has(w));
 }
 function houseNo(s, street){
@@ -5773,7 +5773,7 @@ function findMergeGroups(){
     const shared = [...na].filter(n => nb.has(n));
     let reason = "";
     if(shared.length) reason = "nr:" + shared[0];
-    else if(!(na.size && nb.size) && projectAddrScore(a.address || a.name, b) >= 3) reason = "adr";
+    else if(Math.max(projectAddrScore(a.address || a.name, b), projectAddrScore(b.address || b.name, a)) >= 2) reason = (na.size && nb.size) ? "adrnr" : "adr";
     if(!reason) continue;
     parent.set(find(a.id), find(b.id));
     why[a.id + "|" + b.id] = reason;
@@ -5782,7 +5782,8 @@ function findMergeGroups(){
   ps.forEach(p => { const r = find(p.id); (groups[r] = groups[r] || []).push(p); });
   return Object.values(groups).filter(g => g.length > 1).map(g => {
     const reasons = Object.entries(why).filter(([k]) => g.some(p => k.startsWith(p.id + "|")) ).map(([,v]) => v);
-    const sicher = reasons.some(r => r.startsWith("nr:"));
+    const sicher = reasons.length > 0 && reasons.every(r => r.startsWith("nr:"));
+    const verschNr = Array.from(new Set(g.flatMap(p => [...nums.get(p.id)]))).filter(n => n.length === 9 || n.length === 8);
     const nr = (reasons.find(r => r.startsWith("nr:")) || "").slice(3);
     // Ziel: Auftrag mit AB, sonst mit den meisten Rechnungen
     const target = g.slice().sort((x,y) => ((y.abs||[]).length - (x.abs||[]).length) || (DB.invoices.filter(i=>i.projectId===y.id).length - DB.invoices.filter(i=>i.projectId===x.id).length))[0];
@@ -5790,21 +5791,22 @@ function findMergeGroups(){
     const kal = nr && EXT.entries.find(e => (e.nrs||[]).includes(nr) && e.adresse);
     const abB = g.flatMap(p => (p.abs||[]).map(a => a.baustelle)).find(Boolean);
     const longest = g.map(p => p.name).sort((x,y) => y.length - x.length)[0];
-    const name = [kal && kal.adresse, abB, ...g.map(p => p.name)].filter(Boolean).sort((x,y) => (/\d{4}/.test(y) - /\d{4}/.test(x)) || (y.length - x.length))[0] || longest;
-    return { projects: g, target, sicher, nr, name };
+    const clean = x => String(x||"").replace(/\s*·\s*Auftrag\b.*$/,"").trim();
+    const name = [kal && kal.adresse, abB, ...g.map(p => p.name), ...g.map(p => p.address)].filter(Boolean).map(clean).sort((x,y) => (/\d{4}/.test(y) - /\d{4}/.test(x)) || (y.length - x.length))[0] || clean(longest);
+    return { projects: g, target, sicher, nr, name, verschNr };
   });
 }
 function openMergeAnalysis(){
   const groups = findMergeGroups();
   if(!groups.length){ toast("Keine doppelt erfassten Aufträge gefunden. 👍"); return; }
   showModal(`<h2>🔗 Doppelt erfasste Aufträge</h2>
-    <p class="subtitle" style="margin-bottom:8px;">${groups.length} Gruppe(n) gefunden. <b>Sicher</b> = gleiche Auftragsnummer. <b>Prüfen</b> = gleiche Adresse ohne Auftragsnummer – bitte kontrollieren. Ausgewählte werden zu <b>einem</b> Auftrag zusammengeführt (Rechnungen, ABs und Häuser bleiben erhalten).</p>
+    <p class="subtitle" style="margin-bottom:8px;">${groups.length} Gruppe(n) gefunden. <b>Sicher</b> = gleiche Auftragsnummer. <b>Prüfen</b> = gleiche Adresse (auch mit verschiedenen Auftrags-/AB-Nummern, z.B. mehrere ABs für ein Objekt) – bitte kontrollieren und ankreuzen. Ausgewählte werden zu <b>einem</b> Auftrag zusammengeführt (Rechnungen, ABs und Häuser bleiben erhalten).</p>
     <div style="max-height:60vh;overflow:auto;">${groups.map((g, k) => `
       <label class="card" style="display:block;padding:10px 12px;margin-bottom:8px;cursor:pointer;border-left:4px solid ${g.sicher ? "var(--ok)" : "var(--warn)"};">
         <div style="display:flex;gap:8px;align-items:flex-start;">
           <input type="checkbox" data-mg="${k}" ${g.sicher ? "checked" : ""} style="width:auto;margin-top:3px;">
           <div style="flex:1;">
-            <div><span class="pill ${g.sicher ? "ok" : "warn"}">${g.sicher ? "Sicher · Auftrag " + escapeHtml(g.nr) : "Prüfen · gleiche Adresse"}</span> → <b>${escapeHtml(g.name)}</b></div>
+            <div><span class="pill ${g.sicher ? "ok" : "warn"}">${g.sicher ? "Sicher · Auftrag " + escapeHtml(g.nr) : "Prüfen · gleiche Adresse" + (g.verschNr.length > 1 ? " · verschiedene Nr. " + escapeHtml(g.verschNr.join(", ")) : "")}</span> → <b>${escapeHtml(g.name)}</b></div>
             <ul style="margin:6px 0 0 0;padding-left:18px;font-size:12.5px;">${g.projects.map(p => `<li>${escapeHtml(p.name)} <span class="muted">· ${DB.invoices.filter(i=>i.projectId===p.id).length} Rechnung(en) · CHF ${formatCHF(projectInvTotal(p))}${(p.abs||[]).length ? " · AB" : ""}</span></li>`).join("")}</ul>
             <div class="muted" style="font-size:12px;margin-top:4px;">Total danach: <b>CHF ${formatCHF(g.projects.reduce((s,p)=>s+projectInvTotal(p),0))}</b></div>
           </div>
@@ -5818,7 +5820,7 @@ function openMergeAnalysis(){
     closeModal(); toast("Wird zusammengeführt…");
     let n = 0;
     for(const g of pick){
-      for(const p of g.projects){ if(p.id === g.target.id) continue; await mergeProjects(p, g.target, { noHaus: g.sicher, name: g.name }); n++; }
+      for(const p of g.projects){ if(p.id === g.target.id) continue; await mergeProjects(p, g.target, { noHaus: true, name: g.name }); n++; }
       if(g.sicher && g.nr && !g.target.auftragsnummer){ g.target.auftragsnummer = g.nr; await saveProject(g.target); }
     }
     toast(`${n} Auftrag/Aufträge zusammengeführt.`); render();
