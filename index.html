@@ -596,9 +596,18 @@ async function saveProject(p){
   const { id, ...data } = p;
   await window.fb.setDocMerge("projects", id, data);
 }
+let saveErrShown = 0;
+function showSaveError(err){
+  console.error("Speichern fehlgeschlagen", err);
+  if(Date.now() - saveErrShown < 15000) return;
+  saveErrShown = Date.now();
+  showDbError("Speichern", err);
+  toast("⚠ Änderung NICHT gespeichert – siehe rote Meldung oben.");
+}
 async function saveInvoice(inv){
   const { id, ...data } = inv;
-  await window.fb.setDocMerge("invoices", id, data);
+  try{ await window.fb.setDocMerge("invoices", id, data); }
+  catch(err){ showSaveError(err); throw err; }
 }
 async function createProject(data){
   return await window.fb.addDoc("projects", { ...data, createdBy: currentUser.uid, createdAt: window.fb.serverTimestamp() });
@@ -904,7 +913,7 @@ function updateSidebarForUser(){
     <div style="font-size:11.5px;opacity:.7;">${escapeHtml(currentUser.email)}</div>
     <div style="font-size:11px;opacity:.55;margin-bottom:8px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
     <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
-    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 16.11.2026 · Kontingent-Meldung</div>
+    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 16.11.2026 b · Weiter verrechnen im Druck</div>
   `;
   document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
@@ -4879,7 +4888,7 @@ function renderPruefPanel(el, getInv){
           <button class="small" data-copybean>📋 Beanstandung kopieren</button>
           ${inv.pruefung && inv.pruefung.status==="beanstandet" ? `<button class="small" data-beanone>📄 Als PDF</button>` : ""}
           ${(inv.duplikatVersuche||[]).length ? dupButtonsHtml(inv.id) : ""}
-          ${(inv.items||[]).some(x=>x.category==="Regie") || wvItems(inv).length ? `<button class="small ${wvItems(inv).length ? "st-bad" : ""}" data-wvall title="Alle Regie-Positionen an Kunde weiter verrechnen">${wvItems(inv).length ? "↗ Wird weiter verrechnet" : "↗ Regie weiter verrechnen"}</button>` : ""}
+          ${(inv.items||[]).length ? `<button class="small ${wvItems(inv).length ? "st-bad" : ""}" data-wvall title="Regie-Positionen (oder ganze Rechnung) an Kunde weiter verrechnen">${wvItems(inv).length ? "↗ Wird weiter verrechnet" : "↗ Weiter verrechnen"}</button>` : ""}
           <button class="small ${abklOffen(inv) ? "st-warn" : ""}" data-abklp>${abklOffen(inv) ? "📌 Abklärung erledigt" : "📌 Zur Abklärung markieren"}</button>
           <button class="small ${inv.ohneAB ? "st-ok" : ""}" data-ohneab title="Für diese Rechnung gibt es keine AB (z.B. Regie, Reparatur) – AB-Meldungen ausblenden">${inv.ohneAB ? "✓ Keine AB vorhanden" : "🚫 Keine AB vorhanden!"}</button>
         </div>
@@ -4914,9 +4923,8 @@ function renderPruefPanel(el, getInv){
   if(wva) wva.addEventListener("click", async ()=>{
     const i = getInv(); if(!i) return;
     const on = !wvItems(i).length;
-    const targets = (i.items||[]).filter(x => x.category==="Regie");
-    (on ? (targets.length ? targets : []) : (i.items||[])).forEach(x => { x.weiterVerrechnen = on; });
-    await saveInvoice(i);
+    wvSetAll(i, on);
+    try{ await saveInvoice(i); }catch(e){ wvSetAll(i, !on); return; }
     renderPruefPanel(el, getInv);
     const tbl = el.parentElement && el.parentElement.querySelector(".itemsSlot");
     if(tbl) renderItemsTable(tbl, getInv, ()=>renderPruefPanel(el, getInv));
@@ -6916,6 +6924,14 @@ function renderPrintCenter(){
   if(pp) pp.addEventListener("click", ()=> openPrintPreview(list.filter(i=>printSel.has(i.id))));
 }
 
+function wvSetAll(inv, on){
+  const items = inv.items || [];
+  if(!on){ items.forEach(x => { x.weiterVerrechnen = false; }); return; }
+  // zuerst Regie, sonst Stundenpositionen (h), sonst die ganze Rechnung
+  const regie = items.filter(x => x.category === "Regie");
+  const std = items.filter(x => /^(h|std\.?|stunden)$/i.test(String(x.einheit||"").trim()));
+  (regie.length ? regie : std.length ? std : items).forEach(x => { x.weiterVerrechnen = true; });
+}
 async function openPrintPreview(invs){
   if(!invs.length) return;
   closePrintPreview();
@@ -6936,12 +6952,23 @@ async function openPrintPreview(invs){
       ${invs.map((inv,i)=>`<a href="#" data-pjump="${inv.id}" id="pidx-${inv.id}"><span class="pnum">${i+1}</span><span class="ptxt">${escapeHtml(label(inv))}</span><span class="pst" id="pst-${inv.id}">⏳</span></a>`).join("")}
     </div>
     <div id="ppPages">${invs.map((inv,i)=>`
-      <div class="pinvhead noprint" id="phead-${inv.id}"><span class="pnum">${i+1}</span> ${escapeHtml(label(inv))}${wvAny(inv) ? ` <span class="pill danger">↗ WEITER VERRECHNEN wird gestempelt</span>` : ""}${stempelNummern(inv).length ? ` <span class="pill neutral">+ ${escapeHtml(stempelNummern(inv).join(" · "))} unter Stempel</span>` : ""} <span class="muted" id="pmsg-${inv.id}">– wird geladen…</span></div>
+      <div class="pinvhead noprint" id="phead-${inv.id}"><span class="pnum">${i+1}</span> ${escapeHtml(label(inv))}<button class="small ${wvAny(inv) ? "st-bad" : ""}" data-pwv="${inv.id}" style="margin-left:8px;">${wvAny(inv) ? "↗ WEITER VERRECHNEN wird gestempelt ✕" : "↗ Weiter verrechnen"}</button>${stempelNummern(inv).length ? ` <span class="pill neutral">+ ${escapeHtml(stempelNummern(inv).join(" · "))} unter Stempel</span>` : ""} <span class="muted" id="pmsg-${inv.id}">– wird geladen…</span></div>
       <div class="pinvbody" id="pbody-${inv.id}"><div class="ppage ploading"><div>⏳ Original wird geladen…</div></div></div>`).join("")}
     </div>`;
   document.body.appendChild(root);
   document.body.classList.add("printing");
   document.getElementById("ppClose").addEventListener("click", closePrintPreview);
+  root.querySelectorAll("[data-pwv]").forEach(b => b.addEventListener("click", async ()=>{
+    const inv = invs.find(x => x.id === b.dataset.pwv) || DB.invoices.find(x => x.id === b.dataset.pwv); if(!inv) return;
+    const on = !wvAny(inv);
+    wvSetAll(inv, on);
+    try{ await saveInvoice(inv); }catch(e){ wvSetAll(inv, !on); return; }
+    b.classList.toggle("st-bad", on);
+    b.textContent = on ? "↗ WEITER VERRECHNEN wird gestempelt ✕" : "↗ Weiter verrechnen";
+    const st = root.querySelector(`.pstamp[data-stamp="${inv.id}"]`);
+    if(st){ st.querySelectorAll(".wvstamp").forEach(x => x.remove()); if(on) st.insertAdjacentHTML("beforeend", wvStampHtml(inv, parseFloat(st.style.left) || 0)); }
+    toast(on ? "Roter Stempel „WEITER VERRECHNEN“ hinzugefügt." : "Roter Stempel entfernt.");
+  }));
   root.querySelectorAll("[data-pjump]").forEach(a=>a.addEventListener("click", e=>{
     e.preventDefault();
     const el = document.getElementById("phead-"+a.dataset.pjump);
