@@ -15,6 +15,7 @@
   import {
     getFirestore, collection, doc, setDoc, addDoc, updateDoc, deleteDoc,
     onSnapshot, getDoc, getDocs, serverTimestamp, query, where
+    , initializeFirestore, getDocFromServer
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -28,7 +29,8 @@
 
   const fbApp = initializeApp(firebaseConfig);
   const auth = getAuth(fbApp);
-  const dbFs = getFirestore(fbApp);
+  // undefined-Felder (z.B. Position ohne Einheit) nicht mehr als Fehler behandeln – sonst wird die GANZE Rechnung nicht gespeichert
+  const dbFs = initializeFirestore(fbApp, { ignoreUndefinedProperties: true });
   setPersistence(auth, browserLocalPersistence).catch(e => console.warn("Persistence-Fehler:", e));
 
   // Bruecke zum bestehenden (nicht-modularen) App-Code: einfache, promise-basierte Helfer.
@@ -50,6 +52,7 @@
 
     setDoc: (col, id, data) => setDoc(doc(dbFs, col, id), data),
     setDocMerge: (col, id, data) => setDoc(doc(dbFs, col, id), data, { merge: true }),
+    getServerDoc: async (col, id) => { const d = await getDocFromServer(doc(dbFs, col, id)); return d.exists() ? d.data() : null; },
     updateDoc: (col, id, data) => updateDoc(doc(dbFs, col, id), data),
     deleteDoc: (col, id) => deleteDoc(doc(dbFs, col, id)),
     addDoc: async (col, data) => {
@@ -604,8 +607,16 @@ function showSaveError(err){
   showDbError("Speichern", err);
   toast("⚠ Änderung NICHT gespeichert – siehe rote Meldung oben.");
 }
+function stripUndef(v){
+  if(Array.isArray(v)) return v.map(stripUndef);
+  if(v && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype){
+    const o = {}; for(const [k, x] of Object.entries(v)) if(x !== undefined) o[k] = stripUndef(x); return o;
+  }
+  return v;
+}
 async function saveInvoice(inv){
-  const { id, ...data } = inv;
+  const { id, ...data0 } = inv;
+  const data = stripUndef(data0);
   try{ await window.fb.setDocMerge("invoices", id, data); }
   catch(err){ showSaveError(err); throw err; }
 }
@@ -634,7 +645,7 @@ async function removeProjectIfEmpty(projectId){
 }
 let emptyCleanupDone = false;
 async function fixFallbackProjects(){
-  const re = /^.+\s–\s\d{1,2}\.\d{1,2}\.\d{4}$/;
+  const re = /^.+\s–\s(?:\d{1,2}\.\d{1,2}\.\d{4}|Auftrag\b.*)$/;
   // falsche Rechnungsnummern (PLZ wie "8572") korrigieren, Positionen nachlesen
   for(const inv of DB.invoices){
     if(!inv.rawText || inv.gedrucktAm) continue;
@@ -664,8 +675,9 @@ async function fixFallbackProjects(){
     const invs = DB.invoices.filter(i=>i.projectId===p.id && i.rawText);
     for(const inv of invs){
       const r = parseInvoiceText(inv.rawText);
+      if(!r.objekt && r.auftragsnummer){ const k = EXT.entries.find(e => (e.nrs||[]).some(n => extNums(r.auftragsnummer).includes(n)) && e.adresse); if(k) r.objekt = k.adresse; }
       if(!r.objekt || /diverse/i.test(r.objekt)) continue;
-      let target = findMatchingProject({ objekt: r.objekt, auftragsnummer: r.auftragsnummer || "" });
+      let target = findMatchingProject({ objekt: r.objekt, auftragsnummer: r.auftragsnummer || "", lieferant: r.lieferant, datum: r.datum }, p.id);
       if(target && target.id === p.id) target = null;
       const pid = target ? target.id : await createProject({ name: stripHaus(buildProjectName(r)), address: stripHaus(r.objekt), auftragsnummer: String(r.auftragsnummer||""), soll:{}, haeuser:[] });
       const upd = { projectId: pid, objekt: r.objekt, ...(r.auftragsnummer ? { auftragsnummer: r.auftragsnummer } : {}) };
@@ -913,7 +925,7 @@ function updateSidebarForUser(){
     <div style="font-size:11.5px;opacity:.7;">${escapeHtml(currentUser.email)}</div>
     <div style="font-size:11px;opacity:.55;margin-bottom:8px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
     <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
-    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 16.11.2026 d · WV nur aus Prüfung</div>
+    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 16.11.2026 f · WV-Speicherkontrolle</div>
   `;
   document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
@@ -1538,6 +1550,20 @@ function parseInvoiceText(text){
 
   // "Höhenstrasse 22, 8954 Geroldswil Galgenen, den 03.03.2026": Ort des Briefdatums gehoert nicht zum Objekt
   if(result.objekt) result.objekt = result.objekt.replace(/\s+[A-ZÄÖÜa-zäöü][\wäöüÄÖÜ-]*,?\s*den\s+\d{1,2}\.\d{1,2}\.\d{2,4}.*$/, "").replace(/[,\s]+$/,"");
+  // "Referenz: Altendorf, Zurcherstrasse / Rif. 250561898" (NC u.a.): Objekt + Auftragsnr. aus der Referenz
+  { const rm = text.match(/(?:^|\n)[ \t]*Referenz[ \t]*:?[ \t]*([^\n]*)((?:\n[ \t]*[^\n]*){0,2})/i);
+    if(rm){
+      const lines = [rm[1]].concat(String(rm[2]||"").split("\n").map(x=>x.trim()).filter(Boolean));
+      const block = [];
+      for(const l of lines){ if(!l || /^(vielen dank|wir erlauben|pos\.?\s|datum|zahlbar|guten tag|sehr geehrte)/i.test(l)) break; block.push(l); if(/Rif\.?\s*(?:A-?\s?)?\d{8,9}/i.test(l)) break; }
+      const joined = block.join(" ").replace(/\s+/g," ").trim();
+      const nr = joined.match(/Rif\.?\s*((?:A-?\s?)?\d{8,9})/i);
+      if(nr && !validPENr(result.auftragsnummer)) result.auftragsnummer = nr[1].replace(/\s/g,"");
+      const adr = joined.replace(/\s*Rif\.?\s*(?:(?:A-?\s?)?\d{8,9})?\s*$/i, "").replace(/[,\s]+$/,"").trim();
+      const adrLike = nr || /str(?:asse|\.)|weg\b|gasse|platz|halde|matt|rain|\b\d{4}\s+[A-ZÄÖÜ]/i.test(adr);
+      if(adrLike && adr && adr.length >= 4 && /[A-Za-zÄÖÜäöü]{4,}/.test(adr) && !/^\d+$/.test(adr)) result.objekt = sanitizeObjekt(adr);
+    }
+  }
   if(result.objekt){
     const lead = result.objekt.match(/^\s*(?:A-?)?(2\d{7,9})\s*\/?\s+(?=\D)/);
     if(lead){ if(!result.auftragsnummer && lead[1].length <= 9) result.auftragsnummer = lead[1]; result.objekt = result.objekt.slice(lead[0].length); }
@@ -1811,6 +1837,9 @@ async function learnRechnungsnr(inv){
 /* ============================= AUFTRAG MATCHING ============================= */
 
 function buildProjectName(parsed){
+  { const want = extNums(parsed.auftragsnummer);
+    const kal = want.length && EXT && EXT.entries ? EXT.entries.find(e => (e.nrs||[]).some(n => want.includes(n)) && e.adresse) : null;
+    if(kal) return kal.adresse; }   // Adresse aus dem Kalender ist zuverlaessiger als Tippfehler auf der Rechnung
   if(parsed.objekt){
     const base = parsed.objekt.trim();
     const an = String(parsed.auftragsnummer||"").trim();
@@ -1819,6 +1848,8 @@ function buildProjectName(parsed){
   }
   const lief = (parsed.lieferant||"").trim();
   const auf = (parsed.auftragsnummer||"").trim();
+  const kal = auf && EXT && EXT.entries ? EXT.entries.find(e => (e.nrs||[]).some(n => extNums(auf).includes(n)) && e.adresse) : null;
+  if(kal) return kal.adresse;
   if(lief && auf) return `${lief} – Auftrag ${auf}`;
   if(lief) return `${lief} – ${new Date().toLocaleDateString("de-CH")}`;
   return "Unbenannter Auftrag";
@@ -1830,27 +1861,36 @@ function projNums(p){
   if(typeof extFor === "function" && EXT && EXT.entries && EXT.entries.length) extFor(null, p).forEach(e => raw.push(...(e.nrs||[])));
   return new Set(raw.flatMap(x => extNums(x).concat(extDigits(x).length >= 8 && extDigits(x).length <= 9 ? [extDigits(x)] : [])));
 }
-function findMatchingProject(parsed){
+function findMatchingProject(parsed, excludeId){
   if(!parsed.objekt && !parsed.auftragsnummer) return null;
+  const ALL = DB.projects;
+  const DBP = excludeId ? DB.projects.filter(p => p.id !== excludeId) : DB.projects;
   if(!validPENr(parsed.auftragsnummer) && parsed.objekt && typeof kalNrForInvoice === "function"){
     const k = kalNrForInvoice({ objekt: parsed.objekt, lieferant: parsed.lieferant, datum: parsed.datum, projectId: null });
-    if(k){ const hit = DB.projects.find(p => projNums(p).has(k)); if(hit) return hit; }
+    if(k){ const hit = DBP.find(p => projNums(p).has(k)); if(hit) return hit; }
   }
   { const want = extNums(parsed.auftragsnummer).concat(extDigits(parsed.auftragsnummer).length >= 8 && extDigits(parsed.auftragsnummer).length <= 9 ? [extDigits(parsed.auftragsnummer)] : []);
-    if(want.length){ const hit = DB.projects.find(p => { const s = projNums(p); return want.some(n => s.has(n)); }); if(hit) return hit; } }
+    if(want.length){ const hit = DBP.find(p => { const s = projNums(p); return want.some(n => s.has(n)); }); if(hit) return hit;
+      // Nummer steht im Kalender -> ueber die Kalender-Adresse ein bestehendes Objekt suchen
+      const kal = EXT && EXT.entries ? EXT.entries.find(e => (e.nrs||[]).some(n => want.includes(n)) && e.adresse) : null;
+      if(kal){
+        let best = null, bs = 0;
+        DBP.forEach(p => { const sc = Math.max(projectAddrScore(kal.adresse, p), projectAddrScore(p.address || p.name, { name: kal.adresse, address: kal.adresse })); if(sc > bs){ bs = sc; best = p; } });
+        if(best && bs >= 2) return best;
+      } } }
   const objLower = (parsed.objekt||"").toLowerCase();
   if(parsed.auftragsnummer){
     const an = String(parsed.auftragsnummer).replace(/[^0-9A-Za-z]/g,"");
-    const byNum = DB.projects.find(p => p.auftragsnummer && p.auftragsnummer === parsed.auftragsnummer);
+    const byNum = DBP.find(p => p.auftragsnummer && p.auftragsnummer === parsed.auftragsnummer);
     if(byNum) return byNum;
     // Subunternehmer schreiben oft unsere AB-Nummer als "Auftragsnr." auf die Rechnung (z.B. 202417612)
-    const byAB = an.length >= 6 && DB.projects.find(p => (p.abs||[]).some(a => a.nr === an || String(a.anr||"").replace(/[^0-9A-Za-z]/g,"") === an || String(a.anr||"").replace(/\D/g,"") === an.replace(/\D/g,"")));
+    const byAB = an.length >= 6 && DBP.find(p => (p.abs||[]).some(a => a.nr === an || String(a.anr||"").replace(/[^0-9A-Za-z]/g,"") === an || String(a.anr||"").replace(/\D/g,"") === an.replace(/\D/g,"")));
     if(byAB) return byAB;
   }
   if(objLower){
     let best = null, bestScore = 0;
     const an0 = String(parsed.auftragsnummer||"").replace(/\D/g,"");
-    for(const p of DB.projects){
+    for(const p of DBP){
       const pNums = [p.auftragsnummer, ...(p.abs||[]).flatMap(a=>[a.nr, a.anr])].map(x=>String(x||"").replace(/\D/g,"")).filter(Boolean);
       // gleiche Adresse = gleiches Objekt, auch wenn die Nummer abweicht (ein Objekt hat oft mehrere ABs / Häuser)
       const s = Math.max(projectAddrScore(parsed.objekt, p), projectAddrScore(p.address || p.name, { name: parsed.objekt, address: parsed.objekt }));
@@ -4925,6 +4965,7 @@ function renderPruefPanel(el, getInv){
     const on = !wvItems(i).length;
     wvSetAll(i, on);
     try{ await saveInvoice(i); }catch(e){ wvSetAll(i, !on); return; }
+    verifyWvSaved(i);
     renderPruefPanel(el, getInv);
     const tbl = el.parentElement && el.parentElement.querySelector(".itemsSlot");
     if(tbl) renderItemsTable(tbl, getInv, ()=>renderPruefPanel(el, getInv));
@@ -5012,7 +5053,9 @@ function renderItemsTable(container, getInv, onChange){
         const i = getInv(); if(!i) return;
         const it = i.items.find(x=>x.id===cb.dataset.wv); if(!it) return;
         it.weiterVerrechnen = cb.checked;
-        commit(true);
+        const inv2 = i;
+        Promise.resolve(saveInvoice(inv2)).then(()=>verifyWvSaved(inv2)).catch(()=>{ it.weiterVerrechnen = !cb.checked; cb.checked = !cb.checked; });
+        draw(); if(onChange) onChange();
       });
     });
     container.querySelectorAll("[data-removeitem]").forEach(btn=>{
@@ -5086,7 +5129,7 @@ function scoreAddress(a, b){
   if(sa && sb){
     if(!tokEq(sa, sb)) return 0;                  // verschiedene Strassen = verschiedene Objekte
     const na = houseNo(a, sa), nb = houseNo(b, sb);
-    if(na && nb && na !== nb) return 1;           // gleiche Strasse, andere Hausnummer -> unsicher
+    if(na && nb && na.replace(/\D/g,"") !== nb.replace(/\D/g,"")) return 1;   // andere Hausnummer -> unsicher (36a = 36)
     return 2 + (overlap.length - 1) * 0.5 + (na && nb ? 0.5 : 0);
   }
   if(sa || sb) return overlap.length >= 2 ? 1 : 0; // nur eine Seite hat eine Strasse -> hoechstens unsicher
@@ -6925,6 +6968,19 @@ function renderPrintCenter(){
   if(pp) pp.addEventListener("click", ()=> openPrintPreview(list.filter(i=>printSel.has(i.id))));
 }
 
+async function verifyWvSaved(inv){
+  try{
+    if(!window.fb.getServerDoc) return;
+    await new Promise(r => setTimeout(r, 1500));
+    const srv = await window.fb.getServerDoc("invoices", inv.id); if(!srv) return;
+    const want = (inv.items||[]).filter(x=>x.weiterVerrechnen).map(x=>x.id).sort().join(",");
+    const have = (srv.items||[]).filter(x=>x.weiterVerrechnen).map(x=>x.id).sort().join(",");
+    if(want !== have){
+      showDbError("„Weiter verrechnen“ wurde NICHT gespeichert", { code: `Server hat ${have ? "andere Positionen" : "keine Markierung"} (soll: ${want || "keine"}). Bitte Foto dieser Meldung an Claude.` });
+      toast("⚠ „Weiter verrechnen“ NICHT gespeichert – siehe Meldung oben.");
+    } else toast(want ? "✓ „Weiter verrechnen“ gespeichert." : "✓ Markierung entfernt.");
+  }catch(e){ console.warn("Kontrolle fehlgeschlagen", e); }
+}
 function wvSetAll(inv, on){
   const items = inv.items || [];
   if(!on){ items.forEach(x => { x.weiterVerrechnen = false; }); return; }
