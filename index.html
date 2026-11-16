@@ -508,7 +508,12 @@ function showDbError(context, err){
   console.error(context, err);
   const banner = document.createElement("div");
   banner.style.cssText = "position:fixed;top:0;left:0;right:0;background:var(--danger);color:#fff;padding:10px 20px;font-size:13px;z-index:9999;text-align:center;";
-  banner.textContent = `⚠ Datenbankfehler (${context}): ${err.code || err.message || err}. Meist bedeutet das: die Firestore-Regeln wurden noch nicht veröffentlicht, oder du bist nicht als Nutzer in "users/{uid}" eingetragen.`;
+  const code = String(err && (err.code || err.message) || err);
+  const quota = /resource-exhausted|^8$|quota|RESOURCE_EXHAUSTED/i.test(code);
+  banner.textContent = quota
+    ? `⚠ Firebase-Kontingent aufgebraucht (${context.replace(/\s*\(Firestore-Regeln aktualisieren\)/,"")}): Das Tageslimit (Lesen/Schreiben) oder der Speicherplatz des kostenlosen Firebase-Plans ist erreicht. Die Rechnung wurde gespeichert, nur das Original-PDF nicht. Tageslimits setzen sich jeden Morgen ca. 09:00 Uhr zurück – Details: Firebase Console → Firestore → Nutzung.`
+    : `⚠ Datenbankfehler (${context}): ${code}. Meist bedeutet das: die Firestore-Regeln wurden noch nicht veröffentlicht, oder du bist nicht als Nutzer in "users/{uid}" eingetragen.`;
+  banner.style.cursor = "pointer"; banner.title = "Klicken zum Schliessen"; banner.addEventListener("click", ()=> banner.remove());
   document.body.prepend(banner);
 }
 
@@ -899,7 +904,7 @@ function updateSidebarForUser(){
     <div style="font-size:11.5px;opacity:.7;">${escapeHtml(currentUser.email)}</div>
     <div style="font-size:11px;opacity:.55;margin-bottom:8px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
     <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
-    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 13.11.2026 d · Objekte automatisch zusammen</div>
+    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 16.11.2026 · Kontingent-Meldung</div>
   `;
   document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
@@ -6472,7 +6477,7 @@ async function storePdfFile(file){
     const gz = await gzipBytes(raw, "c");
     if(gz && gz.length < raw.length * 0.97){ bytes = gz; gzip = true; }
     const b64 = bytesToB64(bytes);
-    const fileId = uid("pdf");
+    var fileId = uid("pdf"), written = 0;
     const total = Math.max(1, Math.ceil(b64.length / PDF_CHUNK_CHARS));
     for(let i=0;i<total;i++){
       await window.fb.setDoc("pdfteile", `${fileId}_${String(i).padStart(4,"0")}`, {
@@ -6480,10 +6485,13 @@ async function storePdfFile(file){
         data: b64.slice(i*PDF_CHUNK_CHARS, (i+1)*PDF_CHUNK_CHARS),
         createdBy: currentUser.uid, createdAt: window.fb.serverTimestamp(),
       });
+      written++;
     }
     return fileId;
   }catch(err){
     console.error("PDF konnte nicht gespeichert werden", err);
+    // halb gespeicherte Teile wieder entfernen (belegen sonst nur Speicherplatz)
+    try{ for(let i=0;i<(typeof written==="number"?written:0);i++) await window.fb.deleteDoc("pdfteile", `${fileId}_${String(i).padStart(4,"0")}`); }catch(e){}
     showDbError("pdfteile (Firestore-Regeln aktualisieren)", err);
     return null;
   }
