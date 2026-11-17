@@ -925,7 +925,7 @@ function updateSidebarForUser(){
     <div style="font-size:11.5px;opacity:.7;">${escapeHtml(currentUser.email)}</div>
     <div style="font-size:11px;opacity:.55;margin-bottom:8px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
     <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
-    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 16.11.2026 h · Folgeseiten + WV</div>
+    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 16.11.2026 i · Weiter verrechnen = 1 Knopf</div>
   `;
   document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
@@ -4090,7 +4090,7 @@ function checkInvoice(inv){
   const houses = p ? projectHouses(p) : [];
   const invHaus = inv.haus || "";
   let scopeHaus; // undefined = ganzes Objekt
-  if(wvItems(inv).length) f.push({ level:"info", text:`↗ Weiter verrechnen an Kunde: ${wvKurztext(inv)} · CHF ${fmt(wvSumme(inv))} – erscheint beim Drucken als roter Stempel.` });
+  if(invWv(inv)) f.push({ level:"info", text:`↗ Wird an Kunde weiter verrechnet – erscheint beim Drucken als roter Stempel.` });
   // Ausmassblaetter: gehoeren sie zu diesem Objekt / Haus?
   if((inv.ausmass||[]).length){
     const pr = DB.projects.find(x=>x.id===inv.projectId);
@@ -4166,7 +4166,7 @@ function checkInvoice(inv){
     if(ex) f.push({ level:"warn", itemId:it.id, text:`${name}: laut AB nicht im Auftrag („${shortText(ex,70)}“) → ablehnen oder als Nachtrag an den Kunden weiterverrechnen.` });
 
     // --- Regie ---
-    if(it.category==="Regie" && num(it.menge)) f.push({ level:"info", itemId:it.id, text:`${name}: ${fmtQty(it.menge)} h Regie – visierten Regierapport prüfen${it.weiterVerrechnen ? " · wird an Kunde weiter verrechnet" : " · an Kunde weiter verrechnen? (Häkchen „↗ an Kunde“)"}.` });
+    if(it.category==="Regie" && num(it.menge)) f.push({ level:"info", itemId:it.id, text:`${name}: ${fmtQty(it.menge)} h Regie – visierten Regierapport prüfen${invWv(inv) ? " · wird an Kunde weiter verrechnet" : " · an Kunde weiter verrechnen? (Knopf „↗ Weiter verrechnen“)"}.` });
 
     // --- Vergleich mit anderen Objekten ---
     const o = outlierFor(inv, it);
@@ -4935,7 +4935,7 @@ function renderPruefPanel(el, getInv){
           <button class="small" data-copybean>📋 Beanstandung kopieren</button>
           ${inv.pruefung && inv.pruefung.status==="beanstandet" ? `<button class="small" data-beanone>📄 Als PDF</button>` : ""}
           ${(inv.duplikatVersuche||[]).length ? dupButtonsHtml(inv.id) : ""}
-          ${(inv.items||[]).length ? `<button class="small ${wvItems(inv).length ? "st-bad" : ""}" data-wvall title="Regie-Positionen (oder ganze Rechnung) an Kunde weiter verrechnen">${wvItems(inv).length ? "↗ Wird weiter verrechnet" : "↗ Weiter verrechnen"}</button>` : ""}
+          <button class="small ${invWv(inv) ? "st-bad" : ""}" data-wvall title="Diese Rechnung an den Kunden weiter verrechnen – roter Vermerk beim Stempel">${invWv(inv) ? "↗ WIRD WEITER VERRECHNET ✕" : "↗ Weiter verrechnen"}</button>
           <button class="small ${abklOffen(inv) ? "st-warn" : ""}" data-abklp>${abklOffen(inv) ? "📌 Abklärung erledigt" : "📌 Zur Abklärung markieren"}</button>
           <button class="small ${inv.ohneAB ? "st-ok" : ""}" data-ohneab title="Für diese Rechnung gibt es keine AB (z.B. Regie, Reparatur) – AB-Meldungen ausblenden">${inv.ohneAB ? "✓ Keine AB vorhanden" : "🚫 Keine AB vorhanden!"}</button>
         </div>
@@ -4969,14 +4969,12 @@ function renderPruefPanel(el, getInv){
   const wva = el.querySelector("[data-wvall]");
   if(wva) wva.addEventListener("click", async ()=>{
     const i = getInv(); if(!i) return;
-    const on = !wvItems(i).length;
-    wvSetAll(i, on);
-    try{ await saveWv(i); }catch(e){ wvSetAll(i, !on); return; }
-    verifyWvSaved(i);
+    const on = !invWv(i);
+    i.weiterVerrechnen = on;
+    try{ await window.fb.setDocMerge("invoices", i.id, { weiterVerrechnen: on }); }
+    catch(err){ i.weiterVerrechnen = !on; showSaveError(err); renderPruefPanel(el, getInv); return; }
     renderPruefPanel(el, getInv);
-    const tbl = el.parentElement && el.parentElement.querySelector(".itemsSlot");
-    if(tbl) renderItemsTable(tbl, getInv, ()=>renderPruefPanel(el, getInv));
-    toast(on ? "Regie wird an Kunde weiter verrechnet – roter Stempel beim Drucken." : "Markierung entfernt.");
+    verifyWvSaved(i);
   });
   el.querySelector("[data-ohneab]").addEventListener("click", async ()=>{
     const i = getInv(); if(!i) return;
@@ -5012,7 +5010,7 @@ function renderItemsTable(container, getInv, onChange){
     const tarife = sub ? (sub.tarife||[]).filter(t=>num(t.preis)!=null) : [];
     container.innerHTML = `
       <div class="tablewrap"><table class="itemtable">
-        <thead><tr><th>Kategorie</th><th>Beschreibung (Original)</th><th>Menge</th><th>Einh.</th><th title="Einheitspreis – leer = Betrag ÷ Menge">EP CHF</th><th>Betrag CHF</th><th>Vereinbarter Preis (Sub)</th><th title="Diese Position an den Kunden weiter verrechnen (roter Stempel beim Drucken)">↗ an Kunde</th><th></th></tr></thead>
+        <thead><tr><th>Kategorie</th><th>Beschreibung (Original)</th><th>Menge</th><th>Einh.</th><th title="Einheitspreis – leer = Betrag ÷ Menge">EP CHF</th><th>Betrag CHF</th><th>Vereinbarter Preis (Sub)</th><th></th></tr></thead>
         <tbody>${inv.items.map(it=>{
           const r = sub ? findTarif(sub, inv, it) : { tarif:null };
           const autoLabel = r.tarif && !r.manual ? `auto: ${r.tarif.bezeichnung} · ${fmt(r.tarif.preis)}` : (tarife.length ? "– bitte wählen –" : "keine Preise hinterlegt");
@@ -5025,7 +5023,6 @@ function renderItemsTable(container, getInv, onChange){
             <td style="width:92px;"><input type="number" step="any" data-if="ep" value="${it.ep!=null?it.ep:""}" placeholder="${epCalc}"></td>
             <td style="width:104px;"><input type="number" step="any" data-if="preis" value="${it.preis!=null?it.preis:""}"></td>
             <td style="min-width:170px;"><select data-if="tarifId"><option value="">${escapeHtml(autoLabel)}</option>${tarife.map(t=>`<option value="${escapeAttr(t.id)}">${escapeHtml(t.bezeichnung||"?")} · ${fmt(t.preis)}/${escapeHtml(t.einheit||"")}</option>`).join("")}</select></td>
-            <td style="text-align:center;"><input type="checkbox" data-wv="${escapeAttr(it.id)}" ${it.weiterVerrechnen ? "checked" : ""} style="width:auto;" title="An Kunde weiter verrechnen"></td>
             <td><button class="close-x" data-removeitem="${escapeAttr(it.id)}" title="Position entfernen">✕</button></td>
           </tr>`;
         }).join("")}</tbody>
@@ -5051,18 +5048,6 @@ function renderItemsTable(container, getInv, onChange){
           it[fld] = ["menge","preis","ep"].includes(fld) ? (inp.value===""?null:parseFloat(inp.value)) : inp.value;
         });
         inp.addEventListener("change", ()=>commit(false));
-      });
-    });
-    container.querySelectorAll("[data-wv]").forEach(cb=>{
-      const row = cb.closest("tr"); const it0 = inv.items.find(i=>i.id===cb.dataset.wv);
-      if(row && it0 && it0.weiterVerrechnen) row.classList.add("wvrow");
-      cb.addEventListener("change", ()=>{
-        const i = getInv(); if(!i) return;
-        const it = i.items.find(x=>x.id===cb.dataset.wv); if(!it) return;
-        it.weiterVerrechnen = cb.checked;
-        const inv2 = i;
-        saveWv(inv2).then(()=>verifyWvSaved(inv2)).catch(()=>{ it.weiterVerrechnen = !cb.checked; cb.checked = !cb.checked; });
-        draw(); if(onChange) onChange();
       });
     });
     container.querySelectorAll("[data-removeitem]").forEach(btn=>{
@@ -5924,7 +5909,9 @@ function deepLinkUrl(link, msgId){
   return `${location.origin}${location.pathname}#open=${link.type}:${encodeURIComponent(link.id)}${msgId?`&msg=${msgId}`:""}`;
 }
 // "Weiter verrechnen" (an den Kunden): markierte Positionen, meist Regie
-function wvItems(inv){ const ids = new Set((inv && inv.wvIds) || []); return (inv && inv.items || []).filter(it => it.weiterVerrechnen || ids.has(it.id)); }
+// "Weiter verrechnen": EIN Schalter pro Rechnung (inv.weiterVerrechnen)
+function invWv(inv){ return !!(inv && inv.weiterVerrechnen === true); }
+function wvItems(inv){ return invWv(inv) ? (inv.items || []) : []; }
 // Markierung speichern: als eigenes Feld (wvIds) per Teil-Update + in den Positionen
 async function saveWv(inv){
   inv.wvIds = (inv.items||[]).filter(x => x.weiterVerrechnen).map(x => x.id);
@@ -5937,7 +5924,7 @@ function wvKurztext(inv){
   const h = its.filter(x=>x.category==="Regie").reduce((s,x)=>s+(num(x.menge)||0),0);
   return (h ? `Regie ${fmtQty(h)} h` : its.map(x=>displayLabel(x.label)).slice(0,2).join(", ")) || "";
 }
-function wvTag(inv){ return wvItems(inv).length ? ` <span class="pill danger" title="An Kunde weiter verrechnen: ${escapeAttr(wvKurztext(inv))}">↗ weiter verr. CHF ${formatCHF(wvSumme(inv))}</span>` : ""; }
+function wvTag(inv){ return invWv(inv) ? ` <span class="pill danger" title="Wird an Kunde weiter verrechnet">↗ weiter verrechnen</span>` : ""; }
 // Auftrags-/AB-Nr. unter dem Stempel – nur wenn sie NICHT auf der Rechnung steht
 function stempelNummern(inv){
   const p = DB.projects.find(x=>x.id===inv.projectId);
@@ -5961,7 +5948,7 @@ function stempelNrHtml(inv){
 }
 // Roter Zusatzstempel neben dem Eingangsstempel
 function wvAny(inv){
-  return wvItems(inv).length > 0 || ((inv.wvIds||[]).length > 0) || (!!inv.pdfId && DB.invoices.some(o => o.id !== inv.id && o.pdfId === inv.pdfId && wvItems(o).length));
+  return invWv(inv) || (!!inv.pdfId && DB.invoices.some(o => o.id !== inv.id && o.pdfId === inv.pdfId && invWv(o)));
 }
 function wvStampHtml(inv, posX){
   if(!wvAny(inv)) return "";
@@ -6986,12 +6973,10 @@ async function verifyWvSaved(inv){
     if(!window.fb.getServerDoc) return;
     await new Promise(r => setTimeout(r, 1500));
     const srv = await window.fb.getServerDoc("invoices", inv.id); if(!srv) return;
-    const want = (inv.items||[]).filter(x=>x.weiterVerrechnen).map(x=>x.id).sort().join(",");
-    const have = (srv.wvIds||[]).slice().sort().join(",");
-    const haveItems = (srv.items||[]).filter(x=>x.weiterVerrechnen).map(x=>x.id).sort().join(",");
+    const want = invWv(inv), have = srv.weiterVerrechnen === true;
     if(want !== have){
       const last = (srv.verlauf||[]).slice(-1)[0] || {};
-      showDbError("„Weiter verrechnen“ wurde NICHT gespeichert", { code: `Server: wvIds=[${have}] items=[${haveItems}] soll=[${want}] · zuletzt geschrieben von ${srv.geaendertVon||"?"} ${srv.geaendertAm||""} (${last.was||"?"}) · Dok ${inv.id}. Bitte Foto an Claude.` });
+      showDbError("„Weiter verrechnen“ wurde NICHT gespeichert", { code: `Server=${have} soll=${want} · zuletzt geschrieben von ${srv.geaendertVon||"?"} ${srv.geaendertAm||""} (${last.was||"?"}) · Dok ${inv.id}` });
       toast("⚠ „Weiter verrechnen“ NICHT gespeichert – siehe Meldung oben.");
     } else toast(want ? "✓ „Weiter verrechnen“ gespeichert." : "✓ Markierung entfernt.");
   }catch(e){ console.warn("Kontrolle fehlgeschlagen", e); }
