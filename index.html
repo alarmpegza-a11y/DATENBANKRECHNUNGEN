@@ -925,7 +925,7 @@ function updateSidebarForUser(){
     <div style="font-size:11.5px;opacity:.7;">${escapeHtml(currentUser.email)}</div>
     <div style="font-size:11px;opacity:.55;margin-bottom:8px;">${roleLabel}${profileFound?"":" (kein Profil gefunden!)"}</div>
     <button id="logoutBtn" style="width:100%;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-size:12px;">Abmelden</button>
-    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 16.11.2026 i · Weiter verrechnen = 1 Knopf</div>
+    <div id="appVersion" style="margin-top:8px;font-size:10.5px;color:rgba(255,255,255,0.55);text-align:center;">Version 17.11.2026 · Beanstandungstext bearbeiten</div>
   `;
   document.getElementById("logoutBtn").addEventListener("click", ()=> window.fb.logout());
   document.getElementById("navAdmin").style.display = isAdmin() ? "" : "none";
@@ -4345,7 +4345,8 @@ async function buildBeanstandungPdf(invs){
     y += 4;
     bySub[sub].forEach((inv, k) => {
       const p = DB.projects.find(x=>x.id===inv.projectId);
-      const punkte = beanPunkte(inv);
+      const eigen = String(inv.beanstandungText || "").split("\n").map(x => pdfSafe(x.replace(/^\s*[-–•]\s*/,""))).filter(Boolean);
+      const punkte = eigen.length ? eigen : beanPunkte(inv);
       const kom = inv.pruefung && inv.pruefung.kommentar ? pdfSafe(inv.pruefung.kommentar) : "";
       need(22);
       doc.setDrawColor(200); doc.line(L, y, L + W, y); y += 6;
@@ -4377,8 +4378,29 @@ async function buildBeanstandungPdf(invs){
   for(let i = 1; i <= n; i++){ doc.setPage(i); doc.setFontSize(8); doc.setTextColor(130); doc.text(`Seite ${i} / ${n}`, L + W, 290, { align:"right" }); }
   return doc.output("arraybuffer");
 }
-async function exportBeanstandungen(invs, name){
+function exportBeanstandungen(invs, name){
   if(!invs.length){ toast("Keine Beanstandungen ausgewählt."); return; }
+  showModal(`<h2>✏️ Beanstandungen – Text prüfen &amp; ergänzen</h2>
+    <p class="subtitle" style="margin-bottom:8px;">Pro Rechnung steht hier, was ins PDF kommt. Du kannst alles ändern oder eigenen Text dazuschreiben – eine Zeile pro Punkt.</p>
+    <div style="max-height:62vh;overflow:auto;">${invs.map(i => `
+      <div class="card" style="padding:10px 12px;margin-bottom:8px;">
+        <b>${escapeHtml(i.lieferant||"")} · ${escapeHtml(i.rechnungsnr||"")}</b> <span class="muted" style="font-size:12px;">${escapeHtml(((DB.projects.find(p=>p.id===i.projectId)||{}).name)||i.objekt||"")} · CHF ${formatCHF(+i.total||0)}</span>
+        <textarea data-bt="${i.id}" rows="${Math.min(8, Math.max(3, (i.beanstandungText ? i.beanstandungText.split("\n").length : beanPunkte(i).length) + 1))}" style="width:100%;margin-top:6px;font:inherit;">${escapeHtml(i.beanstandungText || beanPunkte(i).map(x => "– " + x).join("\n"))}</textarea>
+        <input type="text" data-bk="${i.id}" value="${escapeAttr((i.pruefung && i.pruefung.kommentar) || "")}" placeholder="Bemerkung (optional)" style="width:100%;margin-top:4px;">
+      </div>`).join("")}</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;"><button id="beCancel">Abbrechen</button><button class="primary" id="beGo">📄 PDF erstellen</button></div>`);
+  document.getElementById("beCancel").addEventListener("click", closeModal);
+  document.getElementById("beGo").addEventListener("click", async ()=>{
+    for(const i of invs){
+      const t = document.querySelector(`[data-bt="${i.id}"]`).value, k = document.querySelector(`[data-bk="${i.id}"]`).value;
+      i.beanstandungText = t; i.pruefung = { ...(i.pruefung||{}), kommentar: k };
+      try{ await window.fb.setDocMerge("invoices", i.id, { beanstandungText: t, pruefung: i.pruefung }); }catch(err){ showSaveError(err); }
+    }
+    closeModal();
+    await doExportBeanstandungen(invs, name);
+  });
+}
+async function doExportBeanstandungen(invs, name){
   toast("PDF wird erstellt…");
   const pdf = await buildBeanstandungPdf(invs);
   downloadBlob(new Blob([pdf], { type:"application/pdf" }), name || `Beanstandungen_${new Date().toISOString().slice(0,10)}.pdf`);
@@ -4925,6 +4947,13 @@ function renderPruefPanel(el, getInv){
       </div>
       ${findingsHtml(f)}
       ${(inv.assistentLog||[]).length ? `<details style="margin-top:6px;"><summary class="muted" style="font-size:11.5px;cursor:pointer;">🤖 Anweisungen an den Assistenten (${inv.assistentLog.length})</summary><ul style="font-size:12px;margin:4px 0 0 0;padding-left:18px;">${inv.assistentLog.slice().reverse().map(e=>`<li><b>${escapeHtml(e.am)}</b> – ${escapeHtml(nameFromEmail(e.von))}: ${escapeHtml(e.befehl)}</li>`).join("")}</ul></details>` : ""}
+      ${st === "beanstandet" ? `<div style="margin-top:12px;padding:10px 12px;border:1px solid #f1c3c3;background:#fff7f7;border-radius:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <b style="font-size:13px;">✏️ Text der Beanstandung (kommt so ins PDF)</b>
+          <button class="small" data-beanfill title="Die erkannten Prüfpunkte als Vorschlag einfügen">⤵ Prüfpunkte einfügen</button>
+        </div>
+        <textarea data-beantext rows="4" style="width:100%;margin-top:6px;font:inherit;" placeholder="Eigener Text – eine Zeile pro Punkt. Leer lassen = automatische Prüfpunkte.">${escapeHtml(inv.beanstandungText||"")}</textarea>
+      </div>` : ""}
       <div class="row" style="margin-top:12px;align-items:flex-end;flex-wrap:wrap;">
         <label class="field" style="flex:3;min-width:220px;margin:0;"><span>Kommentar zur Prüfung</span>
           <input type="text" data-pk value="${escapeAttr((inv.pruefung && inv.pruefung.kommentar)||"")}" placeholder="z.B. Gutschrift verlangt am …"></label>
@@ -4941,10 +4970,14 @@ function renderPruefPanel(el, getInv){
         </div>
       </div>
     </div>`;
+  const bt = el.querySelector("[data-beantext]");
+  if(bt) bt.addEventListener("change", async ()=>{ const i = getInv(); if(!i) return; i.beanstandungText = bt.value; try{ await window.fb.setDocMerge("invoices", i.id, { beanstandungText: bt.value }); toast("Beanstandungstext gespeichert."); }catch(err){ showSaveError(err); } });
+  const bf = el.querySelector("[data-beanfill]");
+  if(bf && bt) bf.addEventListener("click", async ()=>{ const i = getInv(); if(!i) return; const auto = beanPunkte(i).map(x => "– " + x).join("\n"); bt.value = (bt.value ? bt.value.replace(/\s+$/,"") + "\n" : "") + auto; bt.dispatchEvent(new Event("change")); });
   const kom = el.querySelector("[data-pk]");
   kom.addEventListener("change", ()=>{
     const i = getInv(); if(!i) return;
-    i.pruefung = { status: (i.pruefung && i.pruefung.status) || "offen", kommentar: kom.value, by: (i.pruefung && i.pruefung.by) || "", at: (i.pruefung && i.pruefung.at) || "" };
+    i.pruefung = { ...(i.pruefung||{}), status: (i.pruefung && i.pruefung.status) || "offen", kommentar: kom.value };
     saveInvoice(i);
   });
   el.querySelectorAll("[data-ps]").forEach(btn=>{
